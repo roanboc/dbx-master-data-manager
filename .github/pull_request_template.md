@@ -57,10 +57,12 @@
 ## Verification
 
 <!-- The commands that were run and what they said, plus anything checked by
-     hand. Both validators must be green:
+     hand. All three validators and the public-safety scan must be green:
 
      python3 scripts/check_links.py
      python3 scripts/check_model.py
+     python3 scripts/check_prose.py
+     python3 scripts/scan_public_safe.py --root . --terms .public-safe-terms.txt
 -->
 
 ## Out of scope / follow-ups

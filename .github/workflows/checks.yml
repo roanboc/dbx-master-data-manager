@@ -1,9 +1,7 @@
-# The three validators, on every change. Activated by `establish-project` for
-# any project hosted on GitHub — public or private — because no validator
-# needs a repository setting enabled, a dependency installed, or a secret.
-#
-# Not active where it sits: the automation host reads `.github/workflows/`
-# and nothing else. Moving this file there is what switches it on.
+# The three validators and the public-safety scan, on every change. Activated
+# by `establish-project` for any project hosted on GitHub — public or private —
+# because no validator needs a repository setting enabled, a dependency
+# installed, or a secret.
 
 name: Model checks
 
@@ -25,3 +23,12 @@ jobs:
         run: python3 scripts/check_model.py
       - name: Check that every model page speaks about its subject
         run: python3 scripts/check_prose.py
+
+  public-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Built-in patterns only: the denylist that names the organisation is
+      # kept outside the repository, so it is absent here and the scan skips it.
+      - name: Scan for content that must not be published
+        run: python3 scripts/scan_public_safe.py --root .

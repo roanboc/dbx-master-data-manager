@@ -22,3 +22,7 @@ __pycache__/
 # The JSON export, for a consumer that cannot read Markdown. Nothing in the
 # method reads it back; delete it and nothing is lost.
 .model/
+
+# The private denylist for the public-safety scan. It names the organisation, so
+# it never enters the history; CI runs the scan with its built-in patterns only.
+.public-safe-terms.txt

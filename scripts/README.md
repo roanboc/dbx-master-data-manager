@@ -2,28 +2,30 @@
 
 _[← Project home](../README.md)_
 
-**Three validators, and the parse two of them share.** They came with the
-scaffold, so this project has had them since its first commit, and CI should
-run all three on every pull request.
+**Three validators, the parse behind `check_model.py`, and the public-safety scan.**
+The validators came with the scaffold, so this project has had them since its
+first commit. CI runs all three, and the scan, on every pull request.
 
 ```bash
 python3 scripts/check_links.py    # relative links and HTML anchors resolve
 python3 scripts/check_model.py    # element-ID references resolve
 python3 scripts/check_prose.py    # every model page speaks about its subject, not about its governance or the method
+python3 scripts/scan_public_safe.py --root . --terms .public-safe-terms.txt   # nothing unsafe to publish
 ```
 
-All three exit `0` when everything passes and `1` otherwise, printing what failed.
+All four exit `0` when everything passes and `1` otherwise, printing what failed.
 They need nothing but Python — no network, no plugin installed, no packages —
 which is the point: a project has to be able to check itself on its own.
 
 | File | What it is |
 | ---- | ---------- |
 | `check_links.py` | Executable. Every relative Markdown link and every HTML `href`, `src` and `#fragment` points at something that exists |
-| `check_model.py` | Executable. Every backticked element ID resolves to a definition, none is defined twice, none is both live and retired, a levelled ID has its parent defined, every document that defines an element declares how far it has been validated, no relationship table in its full form restates an element's name differently from the catalogue that defines it (the compact form, `From | To | Relationship | Notes`, restates no name), and every reference that names another model either resolves in this repository or is declared in `architecture/imports.md` |
+| `check_model.py` | Executable. Every backticked element ID resolves to a definition, none is defined twice, none is both live and retired, a levelled ID has its parent defined, every document that defines an element declares how far it has been validated, no relationship table in its full form restates an element's name differently from the catalogue that defines it (the compact form, `From \| To \| Relationship \| Notes`, restates no name), and every reference that names another model either resolves in this repository or is declared in `architecture/imports.md` |
 | `check_prose.py` | Executable. No model page carries a sentence about its governance (who approves, at which session), about the method (ArchiMate, validators, identifiers, folders) or about itself ("this table", "this layer is derived"). It skips the narrative folders, the relationship catalogue, the front door, the contract pages, a layer not yet started, the status and viewpoint lines, headings, tables, fenced code, HTML comments and the `## Metamodel` section of a layer README. `--report` lists without failing |
 | `prose-denylist.json` | Data, read by `check_prose.py`. Regular expressions grouped by what they betray — governance, method, the document itself — and the labels the script skips, so a project in another language translates this file and keeps the script identical to the scaffold's |
-| `model_graph.py` | Library, imported by `check_links.py` and `check_model.py`. The single parse of the document convention — element IDs, catalogue tables, relationship tables in either form (compact `From | To | Relationship | Notes`, or full with each end's name), the resolution of a bare identifier inside a domain, and the neighbourhood walk the reading tools use |
+| `model_graph.py` | Library, imported by `check_model.py` and by the method's reading tools. The single parse of the document convention — element IDs, catalogue tables, relationship tables in either form (compact `From \| To \| Relationship \| Notes`, or full with each end's name), the resolution of a bare identifier inside a domain, and the neighbourhood walk the reading tools use |
 | `element-prefixes.json` | Data, read by `model_graph.py`. The element-ID prefixes and what each stands for |
+| `scan_public_safe.py` | Executable, from the Reference Data Manager. Not a model check: it scans every path and line for what must never reach this public repository (workspace hosts, storage URIs, e-mail addresses, UUIDs) and the private denylist, matched inside words, when `--terms` names it or `.public-safe-terms.txt` is present. `.public-safe-allow.txt` at the root lists literals it may ignore. CI runs it with the built-in patterns only |
 
 ## Everything else runs from the method
 
