@@ -3,7 +3,7 @@
 _[← Scope index](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Implementation & Migration.
-**Delivered as:** branch `claude/master-data-management-app-mhba1t`; pull request to be opened.
+**Delivered as:** branch `claude/master-data-management-app-mhba1t`, [pull request #1](https://github.com/roanboc/dbx-master-data-manager/pull/1).
 
 On 26 September 2026 the product owner asked for a Master Data Manager (the
 hub). It is a Databricks App, with a local mode on DuckDB, that manages master
