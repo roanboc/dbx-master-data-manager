@@ -1,0 +1,66 @@
+{
+  "_comment": "Element-ID prefixes. The human-readable source is the table in the architecture-document-style skill; check_skills.py keeps the two in step. This copy ships with check_model.py because a project has the scripts and not the skills.",
+  "prefixes": {
+    "Motivation": {
+      "STK": "Stakeholder",
+      "DRV": "Driver",
+      "ASM": "Assessment",
+      "G": "Goal",
+      "OUT": "Outcome",
+      "P": "Principle"
+    },
+    "Strategy": {
+      "CAP": "Capability",
+      "RES": "Resource",
+      "COA": "Course of Action",
+      "VS": "Value Stream"
+    },
+    "Business": {
+      "ACT": "Actor",
+      "ROLE": "Role",
+      "BCOL": "Business Collaboration",
+      "PROD": "Product",
+      "BSVC": "Business Service",
+      "BPROC": "Business Process",
+      "BOBJ": "Business Object",
+      "BIF": "Business Interface",
+      "CTR": "Contract",
+      "RULE": "Business Rule",
+      "VAL": "Value"
+    },
+    "Information": {
+      "DOBJ": "Data Object"
+    },
+    "Application": {
+      "ASVC": "Application Service",
+      "ACMP": "Application Component"
+    },
+    "Technology": {
+      "TSVC": "Technology Service",
+      "NODE": "Node",
+      "ART": "Artifact"
+    },
+    "Implementation & Migration": {
+      "PLAT": "Plateau",
+      "GAP": "Gap"
+    },
+    "Canvas (VPC)": {
+      "JOB": "Job",
+      "PAIN": "Pain",
+      "GAIN": "Gain",
+      "PREL": "Pain Reliever",
+      "GCRE": "Gain Creator"
+    },
+    "Canvas (BMC)": {
+      "KP": "Key Partner",
+      "KA": "Key Activity",
+      "KR": "Key Resource",
+      "VP": "Value Proposition",
+      "CR": "Customer Relationship",
+      "CH": "Channel",
+      "CS": "Customer Segment",
+      "RS": "Revenue Stream",
+      "COST": "Cost"
+    }
+  }
+}

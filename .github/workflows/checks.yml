@@ -1,0 +1,27 @@
+# The three validators, on every change. Activated by `establish-project` for
+# any project hosted on GitHub — public or private — because no validator
+# needs a repository setting enabled, a dependency installed, or a secret.
+#
+# Not active where it sits: the automation host reads `.github/workflows/`
+# and nothing else. Moving this file there is what switches it on.
+
+name: Model checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # All three validators are Python standard library, so there is nothing
+      # to install and no lockfile to keep current.
+      - name: Check relative Markdown and HTML links
+        run: python3 scripts/check_links.py
+      - name: Check element-ID references
+        run: python3 scripts/check_model.py
+      - name: Check that every model page speaks about its subject
+        run: python3 scripts/check_prose.py

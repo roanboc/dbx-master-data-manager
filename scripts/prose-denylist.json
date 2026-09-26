@@ -1,0 +1,40 @@
+{
+  "_comment": "Words that give away a sentence about the model's governance, about the method, or about the document itself. A model page speaks about its subject; the rest lives in AGENTS.md, the contributing guide, the model's front door or the status line. Regular expressions; case is ignored unless a pattern opens with (?-i:. A project in another language translates this file and keeps check_prose.py identical to the scaffold's.",
+  "_preamble_lines": ["**ArchiMate viewpoint:**", "**Status:**"],
+  "_exempt_sections": ["Metamodel"],
+  "_not_started": "**Status:** ○",
+  "governance": [
+    "\\bRequester\\b",
+    "\\bReviewer\\b(?! of record)",
+    "(?-i:\\bapproves? (?:this|these|the canvases|the catalogue|it) at\\b)",
+    "\\bmerged (?:this|the) pull request\\b",
+    "\\bstopped for (?:a contradiction|an ambiguity|authorization)\\b",
+    "\\b(?:first|second|next) session\\b"
+  ],
+  "method": [
+    "\\bArchiMate\\b",
+    "\\barchreator\\b",
+    "\\bskills?\\b",
+    "\\bvalidators?\\b",
+    "\\bparser\\b",
+    "\\bMarkdown\\b",
+    "\\bstereotypes?\\b",
+    "\\bprefix(?:es)?\\b",
+    "\\bidentifiers?\\b",
+    "\\bnumbering\\b",
+    "\\brenumber\\w*",
+    "\\bare numbered\\b",
+    "\\bfolders?\\b",
+    "\\bscaffold\\b",
+    "\\bdraft catalogue\\b",
+    "\\bapproved baseline\\b"
+  ],
+  "document": [
+    "\\b(?:this|these) (?:documents?|pages?|files?|folders?|tables?|sections?|canvases describe)\\b",
+    "\\b(?:this layer|the layer) (?:is derived|motivates|has no elements|is filled)\\b",
+    "\\bspeaks? about the document\\b",
+    "\\bw(?:as|ere) consolidated\\b",
+    "\\bno longer (?:says|carries|lives)\\b",
+    "\\bknown gap\\b"
+  ]
+}
