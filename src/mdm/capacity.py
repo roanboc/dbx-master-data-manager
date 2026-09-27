@@ -48,6 +48,20 @@ MAX_TEXT_CHARS = 4_000
 MAX_GROUP_ITEMS = 100
 MAX_PAYLOAD_BYTES = 64 * 1024
 
+# The steward workbench (initiative 3)
+INBOX_PAGE = 50  # tasks in one page of the inbox, keyed by (due time, task ID)
+COUNT_CAP = 1_000  # a count on screen reads at most this many rows; at the cap it shows "999+"
+COUNTS_REFRESH_SECONDS = 30  # how often a tab refreshes its counts
+TRAY_POLL_SECONDS = 2  # how often a tab refreshes its tray while one of its decisions is staged
+CANDIDATES_SHOWN = 3  # candidate columns in the decide pane
+CASE_CACHE = 64  # prepared cases kept per process (masked, per task version and role)
+MEMBERS_SHOWN = 200  # members listed on a record; the rest are counted
+RELATIONSHIPS_SHOWN = 200  # relationships listed on a record; the rest are counted
+TIMELINE_PAGE = 50  # events in one page of a record's timeline, newest first
+TRAY_SHOWN = 50  # entries in the tray's popover
+FLUSH_BATCH = 100  # staged decisions one flush pass commits, each in its own transaction
+FLUSH_ATTEMPTS = 3  # passes an unexpected failure is retried before the decision settles failed
+
 #: tables no statement may read without a key document, a full key or a LIMIT; + every entity table
 LARGE_TABLES = (
     "source_state",
@@ -63,6 +77,8 @@ LARGE_TABLES = (
     "relationship",
     "arrival_queue",
     "arrival_gap",
+    "tray_entry",
+    "match_label",
 )
 
 

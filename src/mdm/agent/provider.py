@@ -25,8 +25,16 @@ from mdm.agent.prompt import MaskedPrompt
 from mdm.config import Settings
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import ConfigError
-from mdm.models.match import LEVEL_NULL, Band, Contribution, Counterfactual, Explanation
+from mdm.models.match import LEVEL_NULL, Explanation
 from mdm.models.safety import SAFE_TEXT_RE, safe_message
+from mdm.models.wording import (
+    BAND_WORDS,
+    comparison_name,
+    contribution_words,
+    counterfactual_sentence,
+    hard_rule_sentence,
+    score_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,25 +94,6 @@ class StubProvider:
         return Suggestion(text=text, provider=self.name, purpose=purpose)
 
 
-_BAND_WORDS = {Band.AUTO: "automatic", Band.REVIEW: "review", Band.DISTINCT: "distinct"}
-#: how a level reads after a comparison's name: "family name exact", "birth date in the same year"
-_LEVEL_WORDS = {
-    "exact": "exact",
-    "else": "differs",
-    "null": "missing",
-    "phonetic": "sounding alike",
-    "swap_or_digit": "with day and month swapped or one digit different",
-    "same_year": "in the same year",
-    "equal_unchecked": "equal without a valid checksum",
-    "last7": "equal in the last seven digits",
-    "local_part": "alike in the local part",
-    "prefix": "sharing a prefix",
-}
-_THRESHOLD_LABEL = re.compile(r"^(jw|lev|tokens)(>=|<=)([0-9.]+)\Z")
-_NAME_WORDS = {"id": "ID", "ref": "reference", "reg": "registration"}
-_MINUS = "−"
-
-
 def narrate(fields: Mapping[str, Any]) -> str:
     """The case narrative's stub text: the score and band, the strongest and weakest comparisons, what is
     missing, the hard rule that decided, and the smallest change that would move the band.
@@ -113,99 +102,31 @@ def narrate(fields: Mapping[str, Any]) -> str:
     A matching person reference would give 99 (automatic)."
     """
     explanation = Explanation.from_dict(fields["explanation"])
-    sentences = [f"Scores {_score(explanation.score)} ({_BAND_WORDS[explanation.band]})."]
+    sentences = [f"Scores {score_text(explanation.score)} ({BAND_WORDS[explanation.band]})."]
     if explanation.hard_rule:
-        sentences.append(_hard_rule_sentence(explanation.hard_rule))
+        sentences.append(hard_rule_sentence(explanation.hard_rule))
     else:
         weighed = [c for c in explanation.contributions if c.level != LEVEL_NULL]
         strongest = max((c for c in weighed if c.weight > 0), key=lambda c: c.weight, default=None)
         weakest = min((c for c in weighed if c.weight < 0), key=lambda c: c.weight, default=None)
         if strongest is not None:
-            sentences.append(f"Strongest: {_contribution_words(strongest)}.")
+            sentences.append(f"Strongest: {contribution_words(strongest)}.")
         if weakest is not None:
-            sentences.append(f"Weakest: {_contribution_words(weakest)}.")
-    missing = [_name(c.comparison) for c in explanation.contributions if c.level == LEVEL_NULL]
+            sentences.append(f"Weakest: {contribution_words(weakest)}.")
+    missing = [comparison_name(c.comparison) for c in explanation.contributions if c.level == LEVEL_NULL]
     if missing:
         sentences.append(f"Missing on one side: {', '.join(missing)}.")
     bands = fields.get("bands")
     edges = (float(bands["upper"]), float(bands["lower"])) if isinstance(bands, Mapping) else None
-    sentences.extend(_counterfactual_sentence(c, edges) for c in explanation.counterfactuals)
+    sentences.extend(counterfactual_sentence(c, edges) for c in explanation.counterfactuals)
     blocked_by = fields.get("blocked_by")
     if isinstance(blocked_by, str) and blocked_by:
         kind, _, attribute = blocked_by.partition(":")
         sentences.append(
-            f"Blocked: the {kind.replace('_', '-')} rule on {_name(attribute)} holds against a member "
+            f"Blocked: the {kind.replace('_', '-')} rule on {comparison_name(attribute)} holds against a member "
             "of this golden record."
         )
     return " ".join(sentences)
-
-
-def _score(score: float) -> str:
-    """A whole-number score; a score short of certainty never reads 100."""
-    shown = round(score)
-    if shown >= 100 and score < 100:
-        shown = 99
-    return str(int(shown))
-
-
-def _signed(weight: float) -> str:
-    return f"{weight:+.1f}".replace("-", _MINUS)
-
-
-def _name(comparison: str) -> str:
-    """`person_ref` -> "person reference", `registered_id` -> "registered ID"."""
-    return " ".join(_NAME_WORDS.get(part, part) for part in comparison.split("_") if part)
-
-
-def _level_words(label: str) -> str:
-    if label in _LEVEL_WORDS:
-        return _LEVEL_WORDS[label]
-    found = _THRESHOLD_LABEL.match(label)
-    if found is None:
-        return label
-    measure, _relation, value = found.groups()
-    if measure == "jw":
-        return f"similar (Jaro-Winkler at least {value})"
-    if measure == "lev":
-        return f"within {value} edit{'' if value == '1' else 's'}"
-    return f"sharing most words (token-set ratio at least {value})"
-
-
-def _contribution_words(contribution: Contribution) -> str:
-    return f"{_name(contribution.comparison)} {_level_words(contribution.label)} ({_signed(contribution.weight)})"
-
-
-def _counterfactual_sentence(counterfactual: Counterfactual, edges: tuple[float, float] | None) -> str:
-    """The smallest change that moves the band, read: `A matching person reference would give 99
-    (automatic).`, or, when a hard rule and not the score would set the band, `A different person
-    reference would make it distinct by a hard rule.`"""
-    name = _name(counterfactual.comparison)
-    if counterfactual.to_label == "exact":
-        subject = f"A matching {name}"
-    elif counterfactual.to_label == "else":
-        subject = f"A different {name}"
-    else:
-        subject = f"{name[:1].upper()}{name[1:]} {_level_words(counterfactual.to_label)}"
-    band = _BAND_WORDS[counterfactual.band]
-    if edges is not None and _band_of(counterfactual.score, edges) is not counterfactual.band:
-        return f"{subject} would make it {band} by a hard rule."
-    return f"{subject} would give {_score(counterfactual.score)} ({band})."
-
-
-def _band_of(score: float, edges: tuple[float, float]) -> Band:
-    upper, lower = edges
-    if score >= upper:
-        return Band.AUTO
-    return Band.REVIEW if score >= lower else Band.DISTINCT
-
-
-def _hard_rule_sentence(rule: str) -> str:
-    kind, _, attribute = rule.partition(":")
-    if kind == "must_link":
-        return f"Decided by the must-link rule: the {_name(attribute)} matches."
-    if kind == "cannot_link":
-        return f"Kept apart by the cannot-link rule: the {_name(attribute)} differs."
-    return f"Decided by the rule {rule}."
 
 
 # ------------------------------------------------------------------------------------------- the endpoint

@@ -23,6 +23,8 @@ IMPORT_RULE = {
     "services": {"models", "config", "capacity", "engine", "backend"},
     "agent": {"models", "config", "capacity", "backend", "services.privacy"},
     "demo": {"models", "config", "capacity", "engine", "backend"},
+    # the workbench reaches the hub through the services only (services.context for Hub)
+    "ui": {"models", "config", "capacity", "services"},
 }
 
 
@@ -56,6 +58,71 @@ def test_every_statement_of_an_arrival_is_tagged_and_large_tables_are_read_keyed
         if tag.group(1) == "paged" and " LIMIT " not in sql.upper():
             problems.append(("paged without limit", sql[:120]))
     assert problems == []
+
+
+def _tag_problems(statements: list[str], prefix: str) -> list[tuple[str, str]]:
+    """The capacity rule: every statement tagged; a read of a large table keyed or paged; a paged one limited."""
+    large = "|".join(sorted(capacity.LARGE_TABLES) + ["person", "organisation"])
+    on_large = re.compile(rf"\b{re.escape(prefix)}_(?:work|hub|vault|core|landing|audit)\.(?:{large})\b")
+    problems = []
+    for sql in statements:
+        if sql.lstrip().upper().startswith(("CREATE", "ALTER", "DROP", "BEGIN", "COMMIT", "ROLLBACK", "SET")):
+            continue
+        tag = _TAG.match(sql)
+        if tag is None:
+            problems.append(("untagged", sql[:80]))
+            continue
+        body = sql[tag.end() :].lstrip().upper()
+        if body.startswith("SELECT") and on_large.search(sql) and tag.group(1) not in ("keyed", "paged"):
+            problems.append(("unbounded read", sql[:120]))
+        if tag.group(1) == "paged" and " LIMIT " not in sql.upper():
+            problems.append(("paged without limit", sql[:120]))
+    return problems
+
+
+def test_every_statement_of_the_workbench_is_tagged_and_no_count_reads_a_whole_table(hub) -> None:
+    """An inbox page, the counts, the health strip, a case, a reveal, a stage, a flush and each record read."""
+    from datetime import timedelta
+
+    from mdm.models.canonical import utcnow
+    from tests.helpers import STEWARD, person_review, seen, task_of, workbench_world
+
+    workbench_world(hub)
+    source = person_review(hub)
+    task = task_of(hub, kind="review", source=source)
+    statements: list[str] = []
+    remove = hub.store.add_listener(statements.append)
+    try:
+        hub.inbox.page("mine", actor=STEWARD)
+        hub.inbox.counts(actor=STEWARD)
+        hub.inbox.health(actor=STEWARD)
+        case = hub.decisions.case(task.task_id, actor=STEWARD)
+        hub.decisions.reveal(task.task_id, actor=STEWARD, reason="deciding_task")
+        entry = hub.tray.stage(task.task_id, "link", actor=STEWARD, **seen(hub, task.task_id))
+        hub.tray.entries(actor=STEWARD)
+        moment = utcnow() + timedelta(seconds=hub.settings.undo_seconds + 1)
+        hub.tray.clock = lambda: moment
+        assert hub.tray.flush().committed == 1
+        master = case.candidates[0].master_id
+        hub.lookup.resolve(master, actor=STEWARD)
+        hub.lookup.header("person", master, actor=STEWARD)
+        hub.lookup.golden("person", master, actor=STEWARD)
+        hub.lookup.why("person", master, "given_name", actor=STEWARD)
+        hub.lookup.members("person", master, actor=STEWARD)
+        hub.lookup.timeline("person", master, actor=STEWARD)
+        hub.lookup.relationships("person", master, actor=STEWARD)
+        hub.lookup.source(source, actor=STEWARD)
+        hub.inbox.backfill_due_times()
+        assert entry.entry_id
+    finally:
+        remove()
+    assert statements
+    assert _tag_problems(statements, hub.store.prefix) == []
+    # a count on screen never aggregates over the task or tray tables: it counts a limited subquery
+    counts = [
+        s for s in statements if "COUNT(" in s.upper() and ("_work.task" in s or "_work.tray_entry" in s)
+    ]
+    assert counts and all(s.startswith("/*mdm:paged*/") and " LIMIT " in s.upper() for s in counts)
 
 
 def _imports(path: Path) -> set[str]:
@@ -107,6 +174,23 @@ def test_no_sql_outside_the_backend() -> None:
     assert found == []
 
 
+#: what the workbench never holds: the store (callbacks call services), and anything that renders HTML
+_UI_FORBIDDEN = re.compile(r"\.store\b|dangerously_allow_html|dcc\.Markdown|dangerously_allow_code|innerHTML")
+
+
+def test_the_workbench_reaches_the_hub_through_the_services_and_renders_no_html() -> None:
+    """No file of `src/mdm/ui/` reads a `.store` attribute, and none renders raw HTML (decision 20)."""
+    files = sorted(p for p in (SRC / "ui").rglob("*") if p.suffix in (".py", ".js", ".css"))
+    assert files
+    found = [
+        f"{path.relative_to(SRC)}:{number}"
+        for path in files
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if _UI_FORBIDDEN.search(line)
+    ]
+    assert found == []
+
+
 def test_the_declared_figures_are_consistent() -> None:
     assert capacity.DECLARED_GOLDEN_PER_ENTITY < capacity.PATH_TO_GOLDEN_PER_ENTITY
     assert capacity.ARRIVAL_BATCH <= capacity.BULK_BATCH
@@ -117,6 +201,10 @@ def test_the_declared_figures_are_consistent() -> None:
     assert capacity.DECLARED_ARRIVALS_PER_DAY <= capacity.PROPOSED_BULK_ROWS_PER_HOUR * 24
     names = {t.name for t in ddl.TABLES}
     assert set(capacity.LARGE_TABLES) <= names
+    assert capacity.CANDIDATES_SHOWN <= 3  # the keys 1, 2 and 3 choose one
+    assert capacity.INBOX_PAGE <= capacity.COUNT_CAP
+    assert capacity.TRAY_SHOWN <= capacity.COUNT_CAP
+    assert capacity.FLUSH_ATTEMPTS >= 1 and capacity.FLUSH_BATCH <= capacity.READ_PAGE
 
 
 def test_the_paging_helpers() -> None:

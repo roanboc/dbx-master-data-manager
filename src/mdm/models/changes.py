@@ -21,6 +21,7 @@ from mdm.models.canonical import canonical_json
 from mdm.models.match import PairScore
 from mdm.models.records import SourceKey
 from mdm.models.tasks import Task
+from mdm.models.workbench import MatchLabel, TraySettlement
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +227,14 @@ def new_change_set(
 
 @dataclass(frozen=True, slots=True)
 class WorkWrites:
-    """Written in the same transaction as the commit, or alone when nothing publishes."""
+    """Written in the same transaction as the commit, or alone when nothing publishes.
+
+    The workbench's writes (initiative 3) ride here too, so a steward's decision, its label, the record
+    queued again and the tray's settlement commit or roll back with the change set. `expect_events` and
+    `close_task_ids` are checked first, before any write: a record no longer at the expected event, or a
+    task no longer open, rolls the whole transaction back with `Conflict` (`record_changed`,
+    `task_closed`).
+    """
 
     entity: str
     settle: tuple[
@@ -239,15 +247,55 @@ class WorkWrites:
     release: tuple[SourceKey, ...] = ()  # held := false
     tasks: tuple[Task, ...] = ()  # upserted through open_task
     pairs: tuple[PairScore, ...] = ()  # candidate pairs at or above the lower band
+    labels: tuple[MatchLabel, ...] = ()  # a steward's labels, upserted per pair
+    requeue: tuple[
+        tuple[SourceKey, str, int], ...
+    ] = ()  # (source, event ID, landing sequence): back to arrival
+    tray: tuple[TraySettlement, ...] = ()  # the staged decisions this commit settles
+    expect_events: tuple[tuple[SourceKey, str], ...] = ()  # each record must still be at this event
+    close_task_ids: tuple[str, ...] = ()  # each task must still be open; closed by its ID
 
     def empty(self) -> bool:
-        return not (self.settle or self.approve or self.hold or self.release or self.tasks or self.pairs)
+        return not (
+            self.settle
+            or self.approve
+            or self.hold
+            or self.release
+            or self.tasks
+            or self.pairs
+            or self.labels
+            or self.requeue
+            or self.tray
+            or self.expect_events
+            or self.close_task_ids
+        )
+
+    def merged(self, other: WorkWrites) -> WorkWrites:
+        """Both writes in one, `self`'s first in every field; the entities must be the same (ValueError)."""
+        if other.entity != self.entity:
+            raise ValueError("work of two entities")
+        return WorkWrites(
+            entity=self.entity,
+            settle=self.settle + other.settle,
+            approve=self.approve + other.approve,
+            hold=self.hold + other.hold,
+            release=self.release + other.release,
+            tasks=self.tasks + other.tasks,
+            pairs=self.pairs + other.pairs,
+            labels=self.labels + other.labels,
+            requeue=self.requeue + other.requeue,
+            tray=self.tray + other.tray,
+            expect_events=self.expect_events + other.expect_events,
+            close_task_ids=self.close_task_ids + other.close_task_ids,
+        )
 
     def split(self, sources: Collection[SourceKey]) -> tuple[WorkWrites, WorkWrites]:
         """(the part for `sources`, the rest), for `CommitService.apply_chunked`.
 
         A task goes with its source; a task without a source (one naming master IDs) stays in the rest,
-        which goes with the last chunk. A pair goes with the part when either end is in `sources`.
+        which goes with the last chunk. A pair goes with the part when either end is in `sources`. The
+        workbench's writes (labels, requeue, tray, expect_events, close_task_ids) all stay in the rest, so
+        they are checked and written with the last chunk.
         """
         chosen = frozenset(sources)
         part = WorkWrites(
@@ -267,6 +315,11 @@ class WorkWrites:
             release=tuple(s for s in self.release if s not in chosen),
             tasks=tuple(t for t in self.tasks if t.source is None or t.source not in chosen),
             pairs=tuple(p for p in self.pairs if p.left not in chosen and p.right not in chosen),
+            labels=self.labels,
+            requeue=self.requeue,
+            tray=self.tray,
+            expect_events=self.expect_events,
+            close_task_ids=self.close_task_ids,
         )
         return part, rest
 

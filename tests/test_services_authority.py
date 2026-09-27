@@ -92,3 +92,37 @@ def test_the_automated_authority_names_rule_versions_and_clauses(hub) -> None:
         model, "rule1:x"
     )
     assert bootstrap_authority("person", "model", 1).kind == "bootstrap"
+
+
+def test_the_workbench_actor_is_a_persona_locally_and_the_forwarded_user_in_an_app() -> None:
+    """Decision 21: a persona only on a local store (the data steward by default, two tabs one actor); in a
+    Databricks App the user the platform forwards, as a consumer, a persona never honoured; a laptop pointed at
+    a shared store is the signed-in user as a consumer."""
+    local = _service({})
+    steward = Actor("persona:data_steward", "person", "data_steward", persona=True)
+    assert local.actor_for_request(persona=None, forwarded_user=None) == steward
+    assert local.actor_for_request(persona="data_steward", forwarded_user="someone") == steward
+    assert local.actor_for_request(persona="data_owner", forwarded_user=None).role == "data_owner"
+    assert (
+        _service({"MDM_ROLE": "coordinating_steward"})
+        .actor_for_request(persona=None, forwarded_user=None)
+        .role
+        == "coordinating_steward"
+    )
+    with pytest.raises(Forbidden) as unknown:
+        local.actor_for_request(persona="wizard", forwarded_user=None)
+    assert unknown.value.code == "unknown_role"
+    app = _service({"DATABRICKS_APP_NAME": "mdm", "DATABRICKS_APP_PORT": "8000"})
+    forwarded = app.actor_for_request(persona="data_owner", forwarded_user="reader-two")
+    assert forwarded == Actor("reader-two", "person", "consumer")
+    with pytest.raises(PlatformRefused) as nobody:
+        app.actor_for_request(persona=None, forwarded_user=None)
+    assert nobody.value.code == "no_forwarded_user"
+    with pytest.raises(PlatformRefused):
+        app.actor_for_request(persona=None, forwarded_user="  ")
+    laptop = _service(
+        {"MDM_LAKEBASE_ENDPOINT": "projects/p/branches/b/endpoints/e"}, workspace=_workspace("reader-three")
+    )
+    assert laptop.actor_for_request(persona="data_owner", forwarded_user="ignored") == Actor(
+        "reader-three", "person", "consumer"
+    )

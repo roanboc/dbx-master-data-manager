@@ -396,3 +396,112 @@ def test_the_test_mini_world_is_invented_and_valid() -> None:
     assert all(r.payload.get("email", "@example.org").endswith("@example.org") for r in world.rows)
     assert {r.entity for r in world.rows} == {"person", "organisation"}
     assert set(world.truth) == {(r.entity, SourceKey(r.source_system, r.source_key)) for r in world.rows}
+
+
+# ---------------------------------------------------------------------------------------------- hard cases (initiative 3)
+
+#: the rows of the seed-7 world at 400 persons and 120 organisations before hard cases existed, pinned
+WORLD_400_DIGEST = "115953a892b06928ef981e08838ed1cb2a36517d85fe6d1d33d4c1068f829607"
+HARD = {"persons": 400, "organisations": 120, "seed": 7, "hard_cases": 0.05}
+
+
+def _digest(world: DemoWorld) -> str:
+    import hashlib
+
+    from mdm.models.canonical import canonical_json
+
+    rows = [
+        [
+            r.event_id,
+            r.source_system,
+            r.source_key,
+            r.entity,
+            r.op,
+            r.occurred_at,
+            dict(r.payload),
+            r.source_version,
+        ]
+        + [r.initial_load]
+        for r in world.rows
+    ]
+    return hashlib.sha256(canonical_json(rows).encode()).hexdigest()
+
+
+def _regular(row) -> tuple:
+    return (
+        row.source_system,
+        row.source_key,
+        row.entity,
+        row.op,
+        row.occurred_at,
+        row.source_version,
+        row.payload,
+    )
+
+
+def test_no_hard_case_is_the_world_as_before() -> None:
+    assert _digest(generate(DemoConfig(persons=400, organisations=120, seed=7))) == WORLD_400_DIGEST
+    assert (
+        _digest(generate(DemoConfig(persons=400, organisations=120, seed=7, hard_cases=0.0)))
+        == WORLD_400_DIGEST
+    )
+
+
+def test_hard_cases_leave_the_regular_rows_as_they_are_and_repeat() -> None:
+    plain = generate(DemoConfig(persons=400, organisations=120, seed=7))
+    hard = generate(DemoConfig(**HARD))
+    assert _digest(hard) == _digest(generate(DemoConfig(**HARD)))  # the same config, the same rows
+    extra = len(hard.rows) - len(plain.rows)
+    assert extra > 0
+    keyed = {(r.source_system, r.source_key) for r in plain.rows}
+    added = [r for r in hard.rows if (r.source_system, r.source_key) not in keyed]
+    assert len(added) == extra
+    assert [_regular(r) for r in hard.rows if (r.source_system, r.source_key) in keyed] == [
+        _regular(r) for r in plain.rows
+    ]
+    namesakes = [r for r in added if r.source_system == "finance"]
+    close_calls = [r for r in added if r.source_system == "crm" and r.entity == "organisation"]
+    reviews = [r for r in added if r.source_system == "crm" and r.entity == "person"]
+    assert namesakes and len(close_calls) == len(namesakes) and reviews
+    assert all("website" not in r.payload and "phone" not in r.payload for r in namesakes + close_calls)
+    assert all(
+        r.payload["name"].split()[0].isupper() and r.payload["name"].endswith(".") for r in close_calls
+    )
+    assert not any(k in r.payload for r in reviews for k in ("postcode", "email", "phone", "person_ref"))
+    assert set(hard.truth) >= {(r.entity, SourceKey(r.source_system, r.source_key)) for r in added}
+
+
+def test_creations_only_are_the_creations_of_the_whole_world() -> None:
+    whole = generate(DemoConfig(**HARD))
+    creations = generate(DemoConfig(**HARD, creations_only=True))
+    assert creations.rows == whole.rows[: len(creations.rows)]
+    assert all(r.op == "upsert" for r in creations.rows)
+    later = whole.rows[len(creations.rows) :]
+    assert later and min(r.occurred_at for r in later) > max(r.occurred_at for r in creations.rows)
+
+
+@pytest.mark.slow
+def test_the_hard_cases_give_a_steward_something_to_decide(hub) -> None:
+    """Landed creations-only, then in full: reviews, a close call, held updates, an orphan and a possible
+    duplicate; the Organisation close call scores 79.19 against both, the Person review 88.66."""
+    from tests.helpers import STEWARD, open_tasks
+
+    land(hub.store, hub.settings, generate(DemoConfig(**HARD, creations_only=True)))
+    hub.arrival.run(started_by=hub.actor)
+    land(hub.store, hub.settings, generate(DemoConfig(**HARD)))
+    hub.arrival.run(started_by=hub.actor)
+    tasks = open_tasks(hub)
+    kinds = Counter(t.kind for t in tasks)
+    assert (
+        kinds["review"] >= 3
+        and kinds["held"] >= 3
+        and kinds["orphan"] >= 1
+        and kinds["possible_duplicate"] >= 1
+    )
+    cases = [hub.decisions.case(t.task_id, actor=STEWARD) for t in tasks if t.kind == "review" and t.source]
+    close = [c for c in cases if c.close_call]
+    assert close and all(c.row.entity == "organisation" for c in close)
+    for case in close:
+        assert [round(c.score, 2) for c in case.candidates] == [79.19, 79.19]
+    people = [c for c in cases if c.row.entity == "person"]
+    assert people and all(round(c.candidates[0].score, 2) == 88.66 for c in people)

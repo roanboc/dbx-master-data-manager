@@ -165,11 +165,14 @@ class MatchService:
         *,
         states: Mapping[SourceKey, SourceState] | None = None,
         linked: Mapping[SourceKey, str] | None = None,
+        declined: Mapping[SourceKey, frozenset[str]] | None = None,
     ) -> dict[SourceKey, list[GoldenCandidate]]:
         """Best member per golden record; `blocked_by` when the record's valid strong IDs conflict with any
         active member's (at most MAX_MEMBERS_CHECKED per golden record).
 
-        `states` are member states already read; `linked` the active cross-references already read.
+        `states` are member states already read; `linked` the active cross-references already read;
+        `declined` the golden records a steward said each record is not (decision 22), which are never its
+        candidates.
         """
         model = self.registry.published(entity)
         others = sorted({p.right for ps in pairs.values() for p in ps})
@@ -178,10 +181,12 @@ class MatchService:
         if missing:
             known.update(self.store.xrefs_for_sources(entity, missing))
         grouped: dict[SourceKey, dict[str, list[PairScore]]] = {}
+        refused = declined or {}
         for record, found in pairs.items():
+            not_these = refused.get(record, frozenset())
             for pair in found:
                 master = known.get(pair.right)
-                if master is not None:
+                if master is not None and master not in not_these:
                     grouped.setdefault(record, {}).setdefault(master, []).append(pair)
         masters = sorted({m for by_master in grouped.values() for m in by_master})
         member_ids: dict[str, frozenset[tuple[str, str]]] = {}
@@ -206,6 +211,48 @@ class MatchService:
             found.sort(key=lambda g: (-g.best.explanation.score, g.master_id))
             out[record] = found
         return out
+
+    def blocked_by(self, entity: str, record: SourceState, master_id: str) -> str | None:
+        """`cannot_link:<attribute>` when a cannot-link rule holds between `record` and an active member of
+        `master_id` (at most MAX_MEMBERS_CHECKED), as `golden_candidates` finds it; None otherwise."""
+        model = self.registry.published(entity)
+        if not cannot_link_schemes(model):
+            return None
+        mine = strong_ids_of(model, record.ids)
+        if not mine:
+            return None
+        members = self.store.members(entity, [master_id], capacity.MAX_MEMBERS_CHECKED).get(master_id, [])
+        others = [s for s in members if s != record.source]
+        states = self.store.source_states(entity, others) if others else {}
+        theirs = frozenset(i for s in states.values() for i in s.strong_ids(model))
+        return conflict(model, mine, theirs)
+
+    def explain_pair(
+        self, entity: str, left: SourceState, right: SourceState, rules: CompiledRules | None = None
+    ):
+        """The explanation of one pair of source records, as arrival scores it (the waterfall of a task that
+        names two golden records)."""
+        compiled = rules if rules is not None else self.registry.compiled(entity)
+        first, second = (left, right) if left.source < right.source else (right, left)
+        weight, levels, rule = fast_weight(compiled, first.match, second.match, first.ids, second.ids)
+        return explain(compiled, levels, weight, rule)
+
+    def masters_conflict(self, entity: str, left: str, right: str) -> str | None:
+        """`cannot_link:<attribute>` when a cannot-link rule holds between an active member of one golden
+        record and one of the other (at most MAX_MEMBERS_CHECKED each); None otherwise."""
+        model = self.registry.published(entity)
+        if not cannot_link_schemes(model):
+            return None
+        members = self.store.members(entity, [left, right], capacity.MAX_MEMBERS_CHECKED)
+        wanted = sorted({s for ms in members.values() for s in ms})
+        states = self.store.source_states(entity, wanted) if wanted else {}
+
+        def ids_of(master: str) -> frozenset[tuple[str, str]]:
+            return frozenset(
+                i for s in members.get(master, []) if s in states for i in states[s].strong_ids(model)
+            )
+
+        return conflict(model, ids_of(left), ids_of(right))
 
     # ------------------------------------------------------------------ the match test
 

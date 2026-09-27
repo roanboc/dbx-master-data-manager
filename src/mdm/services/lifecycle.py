@@ -16,6 +16,7 @@ need a checker other than the maker.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -177,6 +178,7 @@ class LifecycleService:
         checker: Actor | None = None,
         work: WorkWrites | None = None,
         evidence: Mapping[str, Any] | None = None,
+        audit_always: bool = False,
     ) -> CommitResult:
         cs = new_change_set(
             entity,
@@ -189,7 +191,7 @@ class LifecycleService:
             checker=checker,
             evidence=dict(evidence or {}),
         )
-        return self.commit.apply(cs, work)
+        return self.commit.apply(cs, work, audit_always=audit_always)
 
     @staticmethod
     def _require_reason(reason: str) -> None:
@@ -198,19 +200,26 @@ class LifecycleService:
 
     # ------------------------------------------------------------------ link and detach
 
-    def link(
-        self, entity: str, source: SourceKey, master_id: str, *, actor: Actor, reason: str
-    ) -> CommitResult:
-        require(actor, "link")
-        self._require_reason(reason)
+    def plan_link(
+        self, entity: str, source: SourceKey, master_id: str, *, event_id: str | None = None
+    ) -> tuple[list[ChangeItem], WorkWrites]:
+        """The items and work writes of linking `source` to `master_id`, written nothing: the link, the target
+        recomputed with the record's current values, the record's former golden record recomputed (or an
+        orphan task), its relationships; the work approves the record at `event_id` (default: its current
+        event) and releases a hold. No item when the record is linked to the target already."""
         model = self.registry.published(entity)
         state = self._state(entity, source)
         target = self._golden(entity, model, master_id)
         if target.status != "active":
             raise Conflict([token(master_id)], code="not_active")
         current = self.store.xrefs_for_sources(entity, [source]).get(source)
+        work = WorkWrites(
+            entity,
+            approve=((source, event_id or state.event_id),),
+            release=(source,) if state.held else (),
+        )
         if current == master_id:
-            return CommitResult("", None, {}, {})
+            return [], work
         items: list[ChangeItem] = [LinkSource(source, master_id, current)]
         members = self._members(entity, master_id)
         values, provenance = self._survive(model, master_id, [*members, source], current=[source])
@@ -225,13 +234,111 @@ class LifecycleService:
             else:
                 tasks.append(self._orphan_task(entity, current, "last_member_moved"))
         items.extend(self._relationship_items(model, state, master_id))
-        work = WorkWrites(
+        return items, replace(work, tasks=tuple(tasks))
+
+    def link(
+        self,
+        entity: str,
+        source: SourceKey,
+        master_id: str,
+        *,
+        actor: Actor,
+        reason: str,
+        event_id: str | None = None,
+        work: WorkWrites | None = None,
+        evidence: Mapping[str, Any] | None = None,
+    ) -> CommitResult:
+        """Links the record to the golden record. With `work` (the workbench's), the steward's writes commit in
+        the same transaction, always audited, and the method never returns without applying them: a record
+        linked to the target already commits an audited change set with no items."""
+        require(actor, "link")
+        self._require_reason(reason)
+        items, own = self.plan_link(entity, source, master_id, event_id=event_id)
+        if not items:
+            if work is None:
+                return CommitResult("", None, {}, {})
+            return self.decide_only(entity, "link", actor=actor, reason=reason, work=work, evidence=evidence)
+        return self._commit(
             entity,
-            approve=((source, state.event_id),),
-            release=(source,) if state.held else (),
-            tasks=tuple(tasks),
+            "link",
+            actor,
+            items,
+            reason,
+            work=own.merged(work) if work is not None else own,
+            evidence=evidence,
+            audit_always=work is not None,
         )
-        return self._commit(entity, "link", actor, items, reason, work=work)
+
+    # ------------------------------------------------------------------ a steward's decisions on held updates
+
+    def plan_approve_update(
+        self, entity: str, source: SourceKey, *, event_id: str | None = None
+    ) -> tuple[list[ChangeItem], WorkWrites]:
+        """The items and work writes of taking a held update into the golden record, written nothing: the
+        golden record recomputed with the record's current values, and its relationships; the work approves
+        the record at `event_id` (default: its current event) and releases the hold. `Conflict(not_held)` when
+        the record is not linked or not held."""
+        model = self.registry.published(entity)
+        state = self._state(entity, source)
+        master_id = self.store.xrefs_for_sources(entity, [source]).get(source)
+        if master_id is None or not state.held:
+            raise Conflict([source_token(source)], code="not_held")
+        golden = self._golden(entity, model, master_id)
+        if golden.status != "active":
+            raise Conflict([token(master_id)], code="not_active")
+        members = self._members(entity, master_id)
+        values, provenance = self._survive(model, master_id, [*members, source], current=[source])
+        items: list[ChangeItem] = [UpdateGolden(master_id, golden.row_version, values, provenance)]
+        items.extend(self._relationship_items(model, state, master_id))
+        work = WorkWrites(entity, approve=((source, event_id or state.event_id),), release=(source,))
+        return items, work
+
+    def approve_update(
+        self,
+        entity: str,
+        source: SourceKey,
+        *,
+        actor: Actor,
+        reason: str,
+        event_id: str | None = None,
+        work: WorkWrites | None = None,
+        evidence: Mapping[str, Any] | None = None,
+    ) -> CommitResult:
+        """A steward's decision alone (rule RULE2): the value the source asserted and its policy held reaches
+        the golden record, and the hold is released. Always audited: when nothing publishes (another source
+        outranks the new value), the change set and the work still commit."""
+        require(actor, "approve_update")
+        self._require_reason(reason)
+        items, own = self.plan_approve_update(entity, source, event_id=event_id)
+        return self._commit(
+            entity,
+            "approve_update",
+            actor,
+            items,
+            reason,
+            work=own.merged(work) if work is not None else own,
+            evidence=evidence,
+            audit_always=True,
+        )
+
+    def decide_only(
+        self,
+        entity: str,
+        action: str,
+        *,
+        actor: Actor,
+        reason: str,
+        work: WorkWrites,
+        evidence: Mapping[str, Any] | None = None,
+    ) -> CommitResult:
+        """A steward's decision that publishes nothing (not a match, keep apart, keep an orphan, reject a held
+        update, or a link that holds already): a change set with no items, audited, with the work."""
+        require(actor, action)
+        self._require_reason(reason)
+        self.registry.published(entity)  # NotFound for an entity with no published model
+        return self._commit(
+            entity, action, actor, [], reason, work=work, evidence=evidence, audit_always=True
+        )
 
     def detach(self, entity: str, source: SourceKey, *, actor: Actor, reason: str) -> CommitResult:
         require(actor, "detach")

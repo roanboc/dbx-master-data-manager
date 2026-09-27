@@ -177,6 +177,7 @@ class ArrivalReport:
             linked=self.linked,
             updated=self.updated,
             commits=self.commits,
+            tasks=sum(self.tasks.values()),
         )
 
 
@@ -258,6 +259,7 @@ class _PagePlan:
     pending: list[tuple] = field(default_factory=list)
     unpend: list[tuple] = field(default_factory=list)
     linked_now: list[SourceKey] = field(default_factory=list)  # sources linked or created by this page
+    declined_by: set[str] = field(default_factory=set)  # tray entries whose "not a match" removed a candidate
     report: ArrivalReport = field(default_factory=ArrivalReport)
     initial_load: bool = False
     planning_version: int = 0
@@ -756,6 +758,19 @@ class ArrivalService:
                     break
         return report
 
+    def settle_records(self, entity: str, sources: Sequence[SourceKey]) -> ArrivalReport:
+        """Settles these queued records now, as any distinct arrival under their sources' policies (decision
+        22): the tray calls it after a steward's "not a match" queued a record again. Takes the arrival lease
+        without waiting; when another run holds it, the records stay queued for that run (`skipped_busy`).
+        No role: the steward's decision was checked when it was staged and again when it committed."""
+        with self.store.exclusive_lease("arrival") as held:
+            if not held:
+                return ArrivalReport(skipped_busy=True)
+            rows = self.store.queue_rows(entity, sorted(set(sources)))
+            if not rows:
+                return ArrivalReport()
+            return self._settle_page(entity, rows, False)
+
     def _settle_page(
         self, entity: str, page: Sequence[tuple[SourceKey, str, int]], bulk: bool
     ) -> ArrivalReport:
@@ -783,7 +798,9 @@ class ArrivalService:
                 planning_version=planned.planning_version,
                 initial_load=planned.initial_load,
                 reason="arrival",
-                evidence=safe_detail(records=len(page)),
+                evidence=safe_detail(records=len(page), declined_by=sorted(planned.declined_by))
+                if planned.declined_by
+                else safe_detail(records=len(page)),
             )
             work = WorkWrites(
                 entity,
@@ -913,12 +930,20 @@ class ArrivalService:
         deleted = [s for s, st in states.items() if st.status == "deleted" and s not in plans]
         deleted_set = set(deleted)
 
-        # candidates for every active record
+        # candidates for every active record, less the golden records a steward said it is not (decision 22)
         search = self.matching.search(model, rules, [states[s] for s in active])
         out.report.candidates_capped += search.capped
         known_states = {**search.states, **states}
         strong = {s: states[s].strong_ids(model) for s in active}
-        golden = self.matching.golden_candidates(entity, search.pairs, strong, states=known_states)
+        declined, rights_linked = self._declined(entity, active, search, out)
+        golden = self.matching.golden_candidates(
+            entity,
+            search.pairs,
+            strong,
+            states=known_states,
+            linked=rights_linked,
+            declined=declined,
+        )
         for source in active:
             for pair in search.pairs.get(source, []):
                 key = (pair.left, pair.right) if pair.left < pair.right else (pair.right, pair.left)
@@ -1063,6 +1088,50 @@ class ArrivalService:
         found = self.store.xrefs_for_sources(entity, others) if others else {}
         return set(found) | set(linked)
 
+    def _declined(
+        self, entity: str, active: Sequence[SourceKey], search: Any, out: _PagePlan
+    ) -> tuple[dict[SourceKey, frozenset[str]], dict[SourceKey, str] | None]:
+        """The golden records each record's "not a match" labels decline (with the survivors they were merged
+        into), and the cross-references of the candidates when labels were read. Every candidate pair between
+        a record and a member of a golden record it declined is dropped from `search.pairs`, before clustering,
+        and the entries of the labels that removed one are kept for the change set's evidence."""
+        labels = (
+            [
+                lab
+                for lab in self.store.labels_for(entity, [s.text() for s in active])
+                if lab.label == "not_a_match"
+            ]
+            if active
+            else []
+        )
+        if not labels:
+            return {}, None
+        named = sorted({lab.right_ref for lab in labels})
+        survivors = self.store.resolve_retired(named)
+        by_record: dict[SourceKey, dict[str, set[str]]] = {}
+        for lab in labels:
+            try:
+                record = SourceKey.from_text(lab.left_ref)
+            except ValueError:
+                continue
+            masters = by_record.setdefault(record, {})
+            for master in {lab.right_ref, survivors.get(lab.right_ref, lab.right_ref)}:
+                masters.setdefault(master, set()).update({lab.entry_id} if lab.entry_id else set())
+        rights = sorted({p.right for s in by_record for p in search.pairs.get(s, [])})
+        linked = self.store.xrefs_for_sources(entity, rights) if rights else {}
+        for record, masters in by_record.items():
+            kept: list[PairScore] = []
+            for pair in search.pairs.get(record, []):
+                master = linked.get(pair.right)
+                if master is not None and master in masters:
+                    out.declined_by.update(masters[master])
+                    continue
+                kept.append(pair)
+            if record in search.pairs:
+                search.pairs[record] = kept
+        declined = {record: frozenset(masters) for record, masters in by_record.items()}
+        return declined, linked
+
     @staticmethod
     def _best_score(rules: Any, state: SourceState, others: Sequence[SourceState]) -> Explanation | None:
         best: Explanation | None = None
@@ -1086,6 +1155,8 @@ class ArrivalService:
     ) -> None:
         kind = "possible_duplicate" if resolution.reason == "possible_duplicate" else "review"
         refs = tuple(resolution.clusters)
+        if self._kept_apart(entity, refs):
+            return  # a steward said these two golden records are not the same (decision 22)
         opened_by = states[resolution.sources[0]].event_id
         key = task_key(kind, entity, None, refs)
         best = resolution.best
@@ -1114,6 +1185,16 @@ class ArrivalService:
         out.report.tasks[kind] = out.report.tasks.get(kind, 0) + 1
         a, b = resolution.sources[0], resolution.sources[1]
         out.links.append(("s:" + a.text(), "s:" + b.text()))
+
+    def _kept_apart(self, entity: str, refs: Sequence[str]) -> bool:
+        """True when both are golden records a steward's "keep apart" label names (new clusters never are)."""
+        if len(refs) != 2 or any(is_ref(r) for r in refs):
+            return False
+        lower, higher = sorted(refs)
+        return any(
+            lab.right_ref == higher and lab.label == "keep_apart"
+            for lab in self.store.labels_for(entity, [lower])
+        )
 
     # ------------------------------------------------------------------ items, survivorship, relationships, work
 

@@ -47,6 +47,8 @@ __all__ = [
 
 PERSONA_PREFIX = "persona:"
 DEFAULT_PERSONA = "data_owner"
+#: the workbench's persona when none is asked for (adopted): the command line keeps the data owner
+WORKBENCH_PERSONA = "data_steward"
 CLAUSES_MARK = "; clauses "
 
 
@@ -121,6 +123,29 @@ class AuthorityService:
         if asked:
             raise PlatformRefused("persona_refused", role=token(asked))
         return Actor(self._user_name(), "person", "consumer")
+
+    def actor_for_request(self, *, persona: str | None, forwarded_user: str | None) -> Actor:
+        """The workbench's actor for one request (decision 21).
+
+        On a local store: the persona asked for, else `MDM_ROLE`, else the data steward (the command line
+        keeps the data owner); an unknown role is `Forbidden(unknown_role)`. Two tabs with the same persona
+        are the same actor. Inside a Databricks App on a shared store: the user the platform forwards, as a
+        consumer until initiative 4 maps groups to roles, and `PlatformRefused(no_forwarded_user)` when it
+        names nobody; a persona is never honoured there. On a shared
+        store outside an App (a laptop pointed at Lakebase): the signed-in user as a consumer.
+        """
+        if self.settings.local_mode:
+            role = (persona or "").strip() or self.settings.role.strip() or WORKBENCH_PERSONA
+            if role not in ROLES:
+                raise Forbidden("unknown_role", role=token(role))
+            return Actor(f"{PERSONA_PREFIX}{role}", "person", role, persona=True)
+        if self.settings.in_databricks_app:
+            name = (forwarded_user or "").strip()
+            if not name:
+                # never one shared identity for every request the platform did not name
+                raise PlatformRefused("no_forwarded_user")
+            return Actor(name, "person", "consumer")
+        return self.resolve_actor(None)
 
     def _user_name(self) -> str:
         workspace = self._workspace

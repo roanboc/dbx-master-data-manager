@@ -36,5 +36,7 @@ dist/
 # Local state: the local mode's DuckDB store and the spike's results. Demo data
 # lives only here, never in the history.
 .mdm/
+# The browser checks' screenshots and traces on failure.
+.testrun/
 *.duckdb
 *.duckdb.wal

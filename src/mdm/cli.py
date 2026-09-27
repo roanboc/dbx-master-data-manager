@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ import yaml
 from mdm import capacity
 from mdm.backend import ddl as ddl_sql
 from mdm.backend.factory import open_store
-from mdm.config import Settings
+from mdm.config import LOCAL_HOSTS, Settings
 from mdm.demo import DemoConfig, evaluate, generate, land
 from mdm.models.canonical import canonical_json
 from mdm.models.entity_model import NAME_RE
@@ -41,6 +42,7 @@ from mdm.models.records import SourceKey
 from mdm.models.safety import SAFE_TEXT_RE
 from mdm.models.tasks import TASK_KINDS
 from mdm.services.context import Hub
+from mdm.services.support import token
 
 app = typer.Typer(
     name="mdm",
@@ -55,6 +57,7 @@ demo_app = typer.Typer(help="The demo world (local store only).", no_args_is_hel
 task_app = typer.Typer(help="Tasks for people.", no_args_is_help=True)
 record_app = typer.Typer(help="Golden records.", no_args_is_help=True)
 feed_app = typer.Typer(help="The change feed, as a consumer reads it.", no_args_is_help=True)
+tray_app = typer.Typer(help="The undo tray.", no_args_is_help=True)
 app.add_typer(model_app, name="model")
 app.add_typer(rules_app, name="rules")
 app.add_typer(codelists_app, name="codelists")
@@ -62,6 +65,7 @@ app.add_typer(demo_app, name="demo")
 app.add_typer(task_app, name="task")
 app.add_typer(record_app, name="record")
 app.add_typer(feed_app, name="feed")
+app.add_typer(tray_app, name="tray")
 
 RULE_KINDS = ("match", "survivorship", "validation")
 ESTIMATION_METHODS = ("auto", "em", "identifier")
@@ -239,6 +243,7 @@ def init(
     with _hub(ctx, initialised=False) as hub:
         settings, store = hub.settings, hub.store
         store.init_schema(create_landing=settings.local_mode)
+        due_times = hub.inbox.backfill_due_times()
         lists: dict[str, int] = {}
         loaded: list[dict[str, Any]] = []
         if models is not None:
@@ -257,6 +262,7 @@ def init(
             "landing": settings.local_mode,
             "code_lists": lists,
             "models": loaded,
+            "due_times": due_times,
         }
 
         def lines() -> list[str]:
@@ -273,6 +279,8 @@ def init(
                 f"model {m['entity']} v{m['version']} {'published' if m['published'] else 'draft'}"
                 for m in loaded
             )
+            if due_times:
+                out.append(f"due times given to {due_times} open tasks")
             return out
 
         _emit(state, data, lines)
@@ -532,10 +540,16 @@ def demo_land(
     initial_load: Annotated[bool, typer.Option("--initial-load")] = False,
     updates: Annotated[float, typer.Option("--updates")] = 0.1,
     deletes: Annotated[float, typer.Option("--deletes")] = 0.01,
+    hard_cases: Annotated[
+        float, typer.Option("--hard-cases", help="Share of records given an invented hard case, 0 to 1.")
+    ] = 0.0,
+    creations_only: Annotated[
+        bool, typer.Option("--creations-only", help="Land the creations only, no later event.")
+    ] = False,
 ) -> None:
     """Land an invented world into the landing table, as the integration platform would."""
     state = _state(ctx)
-    config = _config(persons, organisations, seed, updates, deletes, initial_load)
+    config = _config(persons, organisations, seed, updates, deletes, initial_load, hard_cases, creations_only)
     with _hub(ctx) as hub:
         if hub.settings.local_mode and not hub.store.table_columns("landing", "source_change"):
             raise NotFound("landing_table_missing", prefix=hub.store.prefix)
@@ -561,7 +575,14 @@ def demo_land(
 
 
 def _config(
-    persons: int, organisations: int, seed: int, updates: float, deletes: float, initial_load: bool = False
+    persons: int,
+    organisations: int,
+    seed: int,
+    updates: float,
+    deletes: float,
+    initial_load: bool = False,
+    hard_cases: float = 0.0,
+    creations_only: bool = False,
 ) -> DemoConfig:
     try:
         return DemoConfig(
@@ -571,10 +592,12 @@ def _config(
             updates=updates,
             deletes=deletes,
             initial_load=initial_load,
+            hard_cases=hard_cases,
+            creations_only=creations_only,
         )
     except ValueError:
         raise _usage(
-            "counts are not negative; updates and deletes are shares from 0 to 1", "--updates"
+            "counts are not negative; updates, deletes and hard cases are shares from 0 to 1", "--updates"
         ) from None
 
 
@@ -1000,6 +1023,127 @@ def feed_read(
             return out
 
         _emit(state, data, lines)
+
+
+# ---------------------------------------------------------------------------------------------- the workbench
+
+
+def _refuse(state: CliState, error: MdmError, sentence: str) -> typer.Exit:
+    """One plain sentence on stderr (the error's code and fields with `--json`); exit code 1."""
+    if state.json:
+        typer.echo(canonical_json({"error": error.detail()}), err=True)
+    else:
+        typer.echo(f"mdm: {sentence}", err=True)
+    return typer.Exit(1)
+
+
+@app.command()
+def ui(
+    ctx: typer.Context,
+    host: Annotated[
+        str, typer.Option("--host", help="The address to listen on: loopback only.")
+    ] = "127.0.0.1",
+    port: Annotated[int | None, typer.Option("--port", min=1, max=65535, help="Default MDM_UI_PORT.")] = None,
+    dev: Annotated[bool, typer.Option("--dev", help="Dash's development tools (local store only).")] = False,
+    worker: Annotated[
+        bool | None,
+        typer.Option(
+            "--worker/--no-worker", help="Flush the undo tray in this process (default: local store)."
+        ),
+    ] = None,
+) -> None:
+    """Serve the steward workbench in a browser. It listens on a loopback address unless a Databricks App runs it."""
+    state = _state(ctx)
+    with _refusals(state):
+        settings = Settings.from_env()
+        if state.as_role:
+            settings = settings.with_(role=state.as_role)
+        if settings.role and not settings.local_mode:
+            raise _refuse(
+                state,
+                PlatformRefused("persona_refused", role=token(settings.role)),
+                f"{'--as' if state.as_role else 'MDM_ROLE'} names a persona, and personas work only on a local store.",
+            )
+        if host not in LOCAL_HOSTS and not settings.in_databricks_app:
+            raise _refuse(
+                state,
+                PlatformRefused("workbench_needs_loopback", host=token(host)),
+                "The workbench listens on 127.0.0.1 only, because whoever can reach it acts as you "
+                "(or as any persona on a local store).",
+            )
+        if dev and not settings.local_mode:
+            raise _refuse(
+                state,
+                PlatformRefused("dev_needs_local_store"),
+                "Dash's development tools work only on a local store.",
+            )
+        engine = _workbench_store(state, settings)
+    port = port or settings.ui_port
+    who = f"persona {settings.role or 'data_steward'}" if settings.local_mode else "the signed-in user"
+    typer.echo(f"the workbench is on http://{host}:{port} ({engine}, {who}); Ctrl-C stops it")
+    from mdm.ui.server import serve  # here, so the command line starts without Dash when not asked
+
+    serve(settings, host=host, port=port, dev=dev, worker=worker)
+
+
+def _workbench_store(state: CliState, settings: Settings) -> str:
+    """The engine's name when the store holds the workbench's tables; else one sentence and exit 1."""
+    import duckdb  # the driver's own error for a file another process holds
+
+    try:
+        hub = Hub.open(settings)
+    except duckdb.IOException:
+        if settings.backend == "duckdb" and Path(settings.duckdb_path).exists():
+            raise _refuse(
+                state,
+                MdmError("store_in_use"),
+                "The store is in use by another process; stop it, or point MDM_DUCKDB_PATH elsewhere.",
+            ) from None
+        raise
+    try:
+        if not hub.store.table_columns("work", "tray_entry"):
+            raise _refuse(
+                state,
+                MdmError("workbench_tables_missing", prefix=hub.store.prefix),
+                "The store has no workbench tables yet; run `mdm init --models models` first.",
+            )
+        return hub.badges().engine
+    finally:
+        hub.close()
+
+
+def _flush_line(report: Any) -> str:
+    if report.skipped_busy:
+        return "another flush holds the tray; nothing done"
+    failures = {code: n for code, n in sorted(report.outcomes.items()) if code != "committed" and n}
+    why = f" ({_counts(failures)})" if failures else ""
+    return (
+        f"flushed: committed {report.committed}, failed {report.failed}{why}, "
+        f"records queued again {report.requeued}"
+    )
+
+
+@tray_app.command("flush")
+def tray_flush(
+    ctx: typer.Context,
+    watch: Annotated[
+        float | None,
+        typer.Option("--watch", min=0.5, help="Seconds between passes; runs until stopped."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=capacity.READ_PAGE)] = capacity.FLUSH_BATCH,
+) -> None:
+    """Commit the staged decisions whose undo window has passed (a job runs this on the platform)."""
+    state = _state(ctx)
+    with _hub(ctx) as hub:
+        try:
+            while True:
+                report = hub.tray.flush(started_by=hub.actor, limit=limit)
+                _emit(state, _plain(report), lambda: [_flush_line(report)])  # noqa: B023 - called at once
+                if watch is None:
+                    return
+                time.sleep(watch)
+        except KeyboardInterrupt:  # --watch runs until stopped
+            return
 
 
 def main() -> None:

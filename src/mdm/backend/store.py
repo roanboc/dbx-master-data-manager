@@ -34,7 +34,7 @@ import secrets
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
 
@@ -64,8 +64,9 @@ from mdm.models.records import (
     StewardValue,
     XrefRow,
 )
-from mdm.models.safety import safe
+from mdm.models.safety import SAFE_TEXT_RE, safe, safe_signature
 from mdm.models.tasks import Task
+from mdm.models.workbench import MatchLabel, TaskQuery, TrayEntry
 
 _TENTH = Decimal("1E-10")
 _T = ddl.table
@@ -179,6 +180,13 @@ def _dedupe_last(rows: Sequence[Any], key: Callable[[Any], Any]) -> list[Any]:
 
 def _source(system: str | None, key: str | None) -> SourceKey | None:
     return SourceKey(system, key) if system is not None and key is not None else None
+
+
+def _key_token(text: str) -> str:
+    """A key a `Conflict` may carry: `text` when it is safe text, else a stable hash of it."""
+    if SAFE_TEXT_RE.match(text):
+        return text
+    return "h-" + hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 class SqlStore(ABC):
@@ -1432,11 +1440,21 @@ class SqlStore(ABC):
     def apply_work(self, work: WorkWrites) -> None:
         """Inside the caller's transaction: settle (DELETE … WHERE key AND event_id = ?), approve, hold,
         release, tasks through open_task (update the open task of the same key, else insert task and
-        open_task), pairs (upsert)."""
+        open_task), pairs (upsert).
+
+        The workbench's writes (initiative 3): first, before any other write, `expect_events` (each record
+        still at the event the steward saw, else `Conflict(record_changed)`) and `close_task_ids` (each task
+        still open, else `Conflict(task_closed)`), by conditional statements that also hold those rows until
+        the transaction ends; last, the labels, the records queued again, and each tray settlement (an entry
+        no longer staged is `Conflict(tray_entry_settled)`). A `Conflict` rolls back everything the
+        transaction wrote.
+        """
         if work.empty():
             return
         entity = work.entity
         with self.transaction():
+            self._expect_events(entity, work.expect_events)
+            self._close_tasks(work.close_task_ids)
             self._delete_keyed(
                 _T("work", "arrival_queue"),
                 ("entity", "source_system", "source_key", "event_id"),
@@ -1468,6 +1486,55 @@ class SqlStore(ABC):
             )
             self._write_tasks(work.tasks)
             self._write_pairs(entity, work.pairs)
+            self.put_labels(work.labels)
+            if work.requeue:
+                self.queue_put([(entity, s, ev, seq) for s, ev, seq in work.requeue])
+            for settlement in work.tray:
+                if not self.settle_tray(
+                    settlement.entry_id,
+                    settlement.status,
+                    change_set_id=settlement.change_set_id,
+                    outcome=settlement.outcome,
+                    at=self.clock(),
+                ):
+                    raise Conflict([_key_token(settlement.entry_id)], code="tray_entry_settled")
+
+    def _expect_events(self, entity: str, expected: Sequence[tuple[SourceKey, str]]) -> None:
+        """Each record still at its expected event; a no-op update holds the rows until the transaction ends
+        (Postgres row locks; DuckDB serialises on the store lock), so arrival cannot move them meanwhile."""
+        if not expected:
+            return
+        wanted = sorted({(s, ev) for s, ev in expected})
+        if len({s for s, _ in wanted}) != len(wanted):  # one record expected at two events: never both
+            raise Conflict(sorted({_key_token(s.text()) for s, _ in wanted}), code="record_changed")
+        table = _T("work", "source_state")
+        key = ("entity", "source_system", "source_key", "event_id")
+        sql = (
+            f"/*mdm:keyed*/ UPDATE {self._q(table)} AS t SET event_id = t.event_id FROM {self._row_source()} "
+            f"WHERE {self._key_join(table, key)}"
+        )
+        held = self._execute(
+            sql, [self._key_doc(table, key, [(entity, s.system, s.key, ev) for s, ev in wanted])]
+        )
+        if held != len(wanted):
+            raise Conflict(sorted({_key_token(s.text()) for s, _ in wanted}), code="record_changed")
+
+    def _close_tasks(self, task_ids: Sequence[str]) -> None:
+        """Each task closed by its ID while it is still open, else `Conflict(task_closed)`."""
+        ids = sorted(set(task_ids))
+        if not ids:
+            return
+        now = self.clock()
+        closed = self._update_keyed(
+            _T("work", "task"),
+            ("status", "updated_at", "decided_at"),
+            ("task_id",),
+            [(i, "closed", now, now) for i in ids],
+            where="t.status = 'open'",
+        )
+        if closed != len(ids):
+            raise Conflict([_key_token(i) for i in ids], code="task_closed")
+        self._delete_keyed(_T("work", "open_task"), ("task_id",), [(i,) for i in ids])
 
     def _task_row(self, task: Task) -> dict[str, Any]:
         return {
@@ -1486,7 +1553,37 @@ class SqlStore(ABC):
             "event_id": task.event_id,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
+            "due_at": task.due_at,
+            "claimed_by": task.claimed_by,
+            "claimed_at": task.claimed_at,
+            "snoozed_until": task.snoozed_until,
+            "snoozed_by": task.snoozed_by,
+            "escalated_at": task.escalated_at,
+            "escalated_by": task.escalated_by,
+            "escalation": task.escalation,
+            "decided_at": None,
         }
+
+    #: what a task opened again under its old ID takes from the new row: it starts afresh (a new due time,
+    #: no claim, snooze, escalation or decision time); `created_at` stays the first opening's
+    _TASK_REOPENED = (
+        "status",
+        "reason",
+        "master_ids",
+        "suggestion",
+        "evidence",
+        "event_id",
+        "updated_at",
+        "due_at",
+        "claimed_by",
+        "claimed_at",
+        "snoozed_until",
+        "snoozed_by",
+        "escalated_at",
+        "escalated_by",
+        "escalation",
+        "decided_at",
+    )
 
     def _write_tasks(self, tasks: Sequence[Task]) -> None:
         if not tasks:
@@ -1527,12 +1624,7 @@ class SqlStore(ABC):
             else:
                 closes.append((existing or task.task_id, task.status, task.updated_at, task.updated_at))
         if inserts:
-            self._upsert(
-                task_table,
-                inserts,
-                conflict=("task_id",),
-                update=("status", "reason", "master_ids", "suggestion", "evidence", "event_id", "updated_at"),
-            )
+            self._upsert(task_table, inserts, conflict=("task_id",), update=self._TASK_REOPENED)
             self._upsert(
                 open_table,
                 [{"task_key": r["task_key"], "task_id": r["task_id"]} for r in inserts],
@@ -1647,6 +1739,14 @@ class SqlStore(ABC):
         "event_id",
         "created_at",
         "updated_at",
+        "due_at",
+        "claimed_by",
+        "claimed_at",
+        "snoozed_until",
+        "snoozed_by",
+        "escalated_at",
+        "escalated_by",
+        "escalation",
     )
 
     def _task_of(self, row: Sequence[Any]) -> Task:
@@ -1665,6 +1765,14 @@ class SqlStore(ABC):
             event_id=d["event_id"],
             created_at=d["created_at"],
             updated_at=d["updated_at"],
+            due_at=d["due_at"],
+            claimed_by=d["claimed_by"],
+            claimed_at=d["claimed_at"],
+            snoozed_until=d["snoozed_until"],
+            snoozed_by=d["snoozed_by"],
+            escalated_at=d["escalated_at"],
+            escalated_by=d["escalated_by"],
+            escalation=d["escalation"],
         )
 
     def tasks(
@@ -1708,6 +1816,478 @@ class SqlStore(ABC):
             [status],
         )
         return {(e, k): int(n) for e, k, n in rows}
+
+    # ------------------------------------------------------------------ work group: the workbench (initiative 3)
+
+    def _task_filter(self, query: TaskQuery) -> tuple[str, list[Any]]:
+        """The inbox's filters over open tasks, as SQL over the task table and its parameters."""
+        sql = "status = 'open'"
+        params: list[Any] = []
+        if query.entity is not None:
+            sql += " AND entity = ?"
+            params.append(query.entity)
+        if query.kind is not None:
+            sql += " AND kind = ?"
+            params.append(query.kind)
+        if query.mine is not None:
+            sql += " AND (claimed_by IS NULL OR claimed_by = ? OR claimed_at < ?)"
+            params.extend([query.mine, query.lapsed_before or query.now])
+        if query.snoozed is False:
+            sql += " AND (snoozed_until IS NULL OR snoozed_until <= ?)"
+            params.append(query.now)
+        elif query.snoozed is True:
+            sql += " AND snoozed_until > ?"
+            params.append(query.now)
+        if query.breaching:
+            sql += " AND due_at < ?"
+            params.append(query.now)
+        if query.claimed_by is not None:
+            sql += " AND claimed_by = ? AND claimed_at >= ?"
+            params.extend([query.claimed_by, query.lapsed_before or query.now])
+        if query.escalated is True:
+            sql += " AND escalated_at IS NOT NULL"
+        elif query.escalated is False:
+            sql += " AND escalated_at IS NULL"
+        return sql, params
+
+    def task_page(self, query: TaskQuery, after: tuple[datetime, str] | None, limit: int) -> list[Task]:
+        """Open tasks of the query by (due time, task ID) after the cursor `after`, at most `limit`: keyed by
+        the (status, due_at, task_id) index, never an offset. Every open task has a due time (the commit path
+        stamps it; `set_due_times` gives one to an older row)."""
+        where, params = self._task_filter(query)
+        sql = f"/*mdm:paged*/ SELECT {', '.join(self._TASK_COLUMNS)} FROM {self.t('work', 'task')} WHERE {where}"
+        if after is not None:
+            sql += " AND (due_at, task_id) > (?, ?)"
+            params.extend([after[0], after[1]])
+        rows = self._fetch_all(sql + " ORDER BY due_at, task_id LIMIT ?", [*params, int(limit)])
+        return [self._task_of(r) for r in rows]
+
+    def task_count(self, query: TaskQuery, cap: int) -> int:
+        """Open tasks of the query, counted up to `cap`: reads at most `cap` index entries, never the table."""
+        where, params = self._task_filter(query)
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'task')} WHERE {where} LIMIT ?) "
+            "AS capped",
+            [*params, int(cap)],
+        )
+        return int(rows[0][0])
+
+    def open_tasks_without_due(self, after: str | None, limit: int) -> list[Task]:
+        """Open tasks with no due time (written before initiative 3), by task ID after `after`."""
+        sql = (
+            f"/*mdm:paged*/ SELECT {', '.join(self._TASK_COLUMNS)} FROM {self.t('work', 'task')} "
+            "WHERE status = 'open' AND due_at IS NULL"
+        )
+        params: list[Any] = []
+        if after is not None:
+            sql += " AND task_id > ?"
+            params.append(after)
+        rows = self._fetch_all(sql + " ORDER BY task_id LIMIT ?", [*params, int(limit)])
+        return [self._task_of(r) for r in rows]
+
+    def set_due_times(self, rows: Sequence[tuple[str, datetime]]) -> int:
+        """(task ID, due time) for tasks that have none yet; returns the tasks given one."""
+        return self._update_keyed(
+            _T("work", "task"),
+            ("due_at",),
+            ("task_id",),
+            [(task_id, due) for task_id, due in dict(rows).items()],
+            where="t.due_at IS NULL",
+        )
+
+    def tasks_by_id(self, task_ids: Sequence[str]) -> dict[str, Task]:
+        """Tasks by ID, in any status."""
+        rows = self._select_keyed(
+            _T("work", "task"),
+            self._TASK_COLUMNS,
+            ("task_id",),
+            [(t,) for t in task_ids],
+            order_by=("task_id",),
+        )
+        return {r[0]: self._task_of(r) for r in rows}
+
+    def tasks_for_sources(self, entity: str, sources: Sequence[SourceKey]) -> list[Task]:
+        """The open tasks of these source records, by task ID."""
+        rows = self._select_keyed(
+            _T("work", "task"),
+            self._TASK_COLUMNS,
+            ("source_system", "source_key"),
+            [(s.system, s.key) for s in sources],
+            order_by=("task_id",),
+            where="t.status = 'open' AND t.entity = ?",
+            params=[entity],
+        )
+        return sorted((self._task_of(r) for r in rows), key=lambda t: t.task_id)
+
+    def _not_staged(self) -> str:
+        """The condition that no staged decision holds the task's tray lock: one parameter, `task:<task ID>`
+        (a keyed read of the lock table)."""
+        return f" AND NOT EXISTS (SELECT 1 FROM {self.t('work', 'tray_lock')} AS l WHERE l.subject = ?)"
+
+    def claim_task(
+        self, task_id: str, actor: str, at: datetime, lapsed_before: datetime, *, staging: bool = False
+    ) -> bool:
+        """Claims an open task for `actor` unless another actor's claim runs (taken at or after
+        `lapsed_before`) or, unless `staging` (the tray claims just before it takes the lock), a staged
+        decision holds it; a claim wakes a snoozed task. True when claimed (or claimed again)."""
+        sql = (
+            f"/*mdm:keyed*/ UPDATE {self.t('work', 'task')} SET claimed_by = ?, claimed_at = ?, "
+            "snoozed_until = NULL, snoozed_by = NULL WHERE task_id = ? AND status = 'open' "
+            "AND (claimed_by IS NULL OR claimed_by = ? OR claimed_at < ?)"
+        )
+        params: list[Any] = [actor, at, task_id, actor, lapsed_before]
+        if not staging:
+            sql += self._not_staged()
+            params.append(f"task:{task_id}")
+        return self._execute(sql, params) == 1
+
+    def release_task(self, task_id: str, actor: str) -> bool:
+        """Releases `actor`'s own claim; False when the actor holds none."""
+        return (
+            self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'task')} SET claimed_by = NULL, claimed_at = NULL "
+                "WHERE task_id = ? AND claimed_by = ?",
+                [task_id, actor],
+            )
+            == 1
+        )
+
+    def snooze_task(
+        self, task_id: str, actor: str, until: datetime, lapsed_before: datetime | None = None
+    ) -> bool:
+        """Snoozes an open task until `until` and releases its claim, unless a staged decision holds it; with
+        `lapsed_before`, only while no other actor's claim runs. True when snoozed."""
+        sql = (
+            f"/*mdm:keyed*/ UPDATE {self.t('work', 'task')} SET snoozed_until = ?, snoozed_by = ?, "
+            "claimed_by = NULL, claimed_at = NULL WHERE task_id = ? AND status = 'open'" + self._not_staged()
+        )
+        params: list[Any] = [until, actor, task_id, f"task:{task_id}"]
+        if lapsed_before is not None:
+            sql += " AND (claimed_by IS NULL OR claimed_by = ? OR claimed_at < ?)"
+            params.extend([actor, lapsed_before])
+        return self._execute(sql, params) == 1
+
+    def escalate_task(
+        self, task_id: str, actor: str, code: str, at: datetime, lapsed_before: datetime | None = None
+    ) -> bool:
+        """Marks an open task escalated with a reason code and releases its claim, unless a staged decision
+        holds it; with `lapsed_before`, only while no other actor's claim runs. True when escalated."""
+        sql = (
+            f"/*mdm:keyed*/ UPDATE {self.t('work', 'task')} SET escalated_at = ?, escalated_by = ?, "
+            "escalation = ?, claimed_by = NULL, claimed_at = NULL WHERE task_id = ? AND status = 'open'"
+            + self._not_staged()
+        )
+        params: list[Any] = [at, actor, safe(code), task_id, f"task:{task_id}"]
+        if lapsed_before is not None:
+            sql += " AND (claimed_by IS NULL OR claimed_by = ? OR claimed_at < ?)"
+            params.extend([actor, lapsed_before])
+        return self._execute(sql, params) == 1
+
+    # the undo tray
+
+    _TRAY_COLUMNS = (
+        "entry_id",
+        "task_id",
+        "entity",
+        "decision",
+        "target",
+        "subject",
+        "signature",
+        "actor",
+        "actor_role",
+        "persona",
+        "event_id",
+        "planning_version",
+        "staged_at",
+        "deadline",
+        "status",
+        "attempts",
+        "settled_at",
+        "change_set_id",
+        "outcome",
+    )
+
+    def _tray_of(self, row: Sequence[Any]) -> TrayEntry:
+        """A tray row (its columns, then the commit version joined from the audit, or None)."""
+        table = _T("work", "tray_entry")
+        d = self._decode_row(table, self._TRAY_COLUMNS, row[: len(self._TRAY_COLUMNS)])
+        version = row[len(self._TRAY_COLUMNS)] if len(row) > len(self._TRAY_COLUMNS) else None
+        return TrayEntry(
+            entry_id=d["entry_id"],
+            task_id=d["task_id"],
+            entity=d["entity"],
+            decision=d["decision"],
+            target=d["target"],
+            subject=d["subject"] or {},
+            signature=d["signature"],
+            actor=d["actor"],
+            actor_role=d["actor_role"],
+            persona=bool(d["persona"]),
+            event_id=d["event_id"],
+            planning_version=int(d["planning_version"]),
+            staged_at=d["staged_at"],
+            deadline=d["deadline"],
+            status=d["status"],
+            attempts=int(d["attempts"]),
+            settled_at=d["settled_at"],
+            change_set_id=d["change_set_id"],
+            commit_version=int(version) if version is not None else None,
+            outcome=d["outcome"],
+        )
+
+    def _tray_select(self) -> str:
+        """The tray's columns and the commit version its change set got (the audit, keyed by change set ID)."""
+        return (
+            f"SELECT {', '.join('t.' + c for c in self._TRAY_COLUMNS)}, c.commit_version "
+            f"FROM {self.t('work', 'tray_entry')} AS t"
+        )
+
+    def _tray_audit_join(self) -> str:
+        return f" LEFT JOIN {self.t('audit', 'change_set')} AS c ON c.change_set_id = t.change_set_id"
+
+    def stage_tray(self, entry: TrayEntry, locks: Sequence[str]) -> None:
+        """One transaction: every lock, then the entry. A lock another staged entry holds refuses the whole
+        stage with `Conflict(already_staged, mine=…)` (whether that entry is the same actor's), writing
+        nothing."""
+        subjects = sorted(set(locks))
+        with self.transaction():
+            taken = self._insert(
+                _T("work", "tray_lock"),
+                [{"subject": s, "entry_id": entry.entry_id} for s in subjects],
+                on_conflict_nothing=("subject",),
+            )
+            if taken != len(subjects):
+                holders = self.staged_by_locks(subjects)
+                mine = any(h.actor == entry.actor for h in holders.values() if h.entry_id != entry.entry_id)
+                raise Conflict([_key_token(entry.task_id)], code="already_staged", mine=mine)
+            self._insert(
+                _T("work", "tray_entry"),
+                [
+                    {
+                        "entry_id": entry.entry_id,
+                        "task_id": entry.task_id,
+                        "entity": entry.entity,
+                        "decision": entry.decision,
+                        "target": entry.target,
+                        "subject": safe(dict(entry.subject)),
+                        "signature": safe_signature(entry.signature),
+                        "actor": entry.actor,
+                        "actor_role": entry.actor_role,
+                        "persona": entry.persona,
+                        "event_id": entry.event_id,
+                        "planning_version": entry.planning_version,
+                        "staged_at": entry.staged_at,
+                        "deadline": entry.deadline,
+                        "status": entry.status,
+                        "attempts": entry.attempts,
+                        "settled_at": entry.settled_at,
+                        "change_set_id": entry.change_set_id,
+                        "outcome": entry.outcome,
+                    }
+                ],
+            )
+
+    def settle_tray(
+        self,
+        entry_id: str,
+        status: str,
+        *,
+        change_set_id: str | None,
+        outcome: str,
+        at: datetime,
+    ) -> bool:
+        """Settles a staged entry (`committed`, `undone` or `failed`, with an outcome code) and frees its locks;
+        False when it is no longer staged. Joins an open transaction."""
+        with self.transaction():
+            changed = self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'tray_entry')} SET status = ?, change_set_id = ?, "
+                "outcome = ?, settled_at = ? WHERE entry_id = ? AND status = 'staged'",
+                [status, change_set_id, safe(outcome), at, entry_id],
+            )
+            if changed != 1:
+                return False
+            self._execute(
+                f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'tray_lock')} WHERE entry_id = ?", [entry_id]
+            )
+        return True
+
+    def fail_tray(self, entry_id: str, outcome: str, at: datetime, task_id: str, actor: str) -> bool:
+        """One transaction: the entry settled `failed` with `outcome` and, when that changed it, the task's
+        claim released when `actor` (the entry's) still holds it; another's claim stays. False when the entry
+        was no longer staged (nothing written)."""
+        with self.transaction():
+            if not self.settle_tray(entry_id, "failed", change_set_id=None, outcome=outcome, at=at):
+                return False
+            self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'task')} SET claimed_by = NULL, claimed_at = NULL "
+                "WHERE task_id = ? AND claimed_by = ?",
+                [task_id, actor],
+            )
+        return True
+
+    def bump_tray_attempts(self, entry_id: str) -> int:
+        """One more attempt at a staged entry; returns the attempts now (0 when it is no longer staged)."""
+        rows = self._fetch_all(
+            f"/*mdm:keyed*/ UPDATE {self.t('work', 'tray_entry')} SET attempts = attempts + 1 "
+            "WHERE entry_id = ? AND status = 'staged' RETURNING attempts",
+            [entry_id],
+        )
+        return int(rows[0][0]) if rows else 0
+
+    def tray_entries(self, entry_ids: Sequence[str]) -> dict[str, TrayEntry]:
+        """Entries by ID, with the commit version their change set got."""
+        table = _T("work", "tray_entry")
+        unique = self._unique_keys([(i,) for i in entry_ids])
+        sql = (
+            f"/*mdm:keyed*/ {self._tray_select()} JOIN {self._row_source()} ON {self._key_join(table, ('entry_id',))}"
+            f"{self._tray_audit_join()} ORDER BY t.entry_id"
+        )
+        out: dict[str, TrayEntry] = {}
+        for chunk in capacity.chunks(unique, capacity.KEY_CHUNK):
+            for row in self._fetch_all(sql, [self._key_doc(table, ("entry_id",), chunk)]):
+                entry = self._tray_of(row)
+                out[entry.entry_id] = entry
+        return out
+
+    def due_tray(self, now: datetime, limit: int) -> list[TrayEntry]:
+        """Staged entries whose deadline has passed, by (deadline, entry ID), at most `limit`."""
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ {self._tray_select()}{self._tray_audit_join()} "
+            "WHERE t.status = 'staged' AND t.deadline <= ? ORDER BY t.deadline, t.entry_id LIMIT ?",
+            [now, int(limit)],
+        )
+        return [self._tray_of(r) for r in rows]
+
+    def tray_of_actor(
+        self, actor: str, since: datetime, limit: int, *, staged_since: datetime | None = None
+    ) -> list[TrayEntry]:
+        """The actor's entries still staged or settled since `since`, newest first, at most `limit`; only
+        those staged since `staged_since` (default: a day before `since`, longer than any undo window and
+        flush delay), so the walk of the (actor, staged_at) index stops there."""
+        floor = staged_since if staged_since is not None else since - timedelta(days=1)
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ {self._tray_select()}{self._tray_audit_join()} "
+            "WHERE t.actor = ? AND t.staged_at >= ? AND (t.status = 'staged' OR t.settled_at >= ?) "
+            "ORDER BY t.staged_at DESC, t.entry_id LIMIT ?",
+            [actor, floor, since, int(limit)],
+        )
+        return [self._tray_of(r) for r in rows]
+
+    def staged_by_locks(self, locks: Sequence[str]) -> dict[str, TrayEntry]:
+        """Lock subject -> the staged entry holding it, for the subjects held."""
+        table = _T("work", "tray_lock")
+        unique = self._unique_keys([(s,) for s in locks])
+        sql = (
+            f"/*mdm:keyed*/ SELECT l.subject, {', '.join('t.' + c for c in self._TRAY_COLUMNS)} "
+            f"FROM {self._q(table)} AS l JOIN {self._row_source()} ON {self._key_join(table, ('subject',), 'l')} "
+            f"JOIN {self.t('work', 'tray_entry')} AS t ON t.entry_id = l.entry_id "
+            "WHERE t.status = 'staged' ORDER BY l.subject"
+        )
+        out: dict[str, TrayEntry] = {}
+        for chunk in capacity.chunks(unique, capacity.KEY_CHUNK):
+            for row in self._fetch_all(sql, [self._key_doc(table, ("subject",), chunk)]):
+                out[row[0]] = self._tray_of(row[1:])
+        return out
+
+    def staged_count(self, cap: int) -> int:
+        """Staged entries, counted up to `cap`."""
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'tray_entry')} "
+            "WHERE status = 'staged' LIMIT ?) AS capped",
+            [int(cap)],
+        )
+        return int(rows[0][0])
+
+    # a steward's labels
+
+    _LABEL_COLUMNS = (
+        "entity",
+        "left_ref",
+        "right_ref",
+        "label",
+        "rule_version",
+        "score",
+        "band",
+        "signature",
+        "task_id",
+        "entry_id",
+        "decided_by",
+        "decided_role",
+        "decided_at",
+    )
+
+    def put_labels(self, labels: Sequence[MatchLabel]) -> int:
+        """Upserts each pair's latest label (a pair given twice keeps its last)."""
+        if not labels:
+            return 0
+        rows = [
+            {
+                "entity": lab.entity,
+                "left_ref": lab.left_ref,
+                "right_ref": lab.right_ref,
+                "label": lab.label,
+                "rule_version": lab.rule_version,
+                "score": lab.score,
+                "band": lab.band,
+                "signature": safe_signature(lab.signature),
+                "task_id": lab.task_id,
+                "entry_id": lab.entry_id,
+                "decided_by": lab.decided_by,
+                "decided_role": lab.decided_role,
+                "decided_at": lab.decided_at,
+            }
+            for lab in labels
+        ]
+        return self._upsert(
+            _T("work", "match_label"),
+            _dedupe_last(rows, key=lambda r: (r["entity"], r["left_ref"], r["right_ref"])),
+            conflict=("entity", "left_ref", "right_ref"),
+            update=[c for c in self._LABEL_COLUMNS if c not in ("entity", "left_ref", "right_ref")],
+        )
+
+    def labels_for(self, entity: str, left_refs: Sequence[str]) -> list[MatchLabel]:
+        """The labels whose left side is one of `left_refs`, by (left, right)."""
+        table = _T("work", "match_label")
+        rows = self._select_keyed(
+            table,
+            self._LABEL_COLUMNS,
+            ("entity", "left_ref"),
+            [(entity, r) for r in left_refs],
+            order_by=("left_ref", "right_ref"),
+        )
+        out = []
+        for row in rows:
+            d = self._decode_row(table, self._LABEL_COLUMNS, row)
+            out.append(
+                MatchLabel(
+                    entity=d["entity"],
+                    left_ref=d["left_ref"],
+                    right_ref=d["right_ref"],
+                    label=d["label"],
+                    rule_version=int(d["rule_version"]) if d["rule_version"] is not None else None,
+                    score=float(d["score"]) if d["score"] is not None else None,
+                    band=d["band"],
+                    signature=d["signature"],
+                    task_id=d["task_id"],
+                    entry_id=d["entry_id"],
+                    decided_by=d["decided_by"],
+                    decided_role=d["decided_role"],
+                    decided_at=d["decided_at"],
+                )
+            )
+        return out
+
+    def queue_rows(self, entity: str, sources: Sequence[SourceKey]) -> list[tuple[SourceKey, str, int]]:
+        """The arrival queue's rows of these records, in landing order."""
+        rows = self._select_keyed(
+            _T("work", "arrival_queue"),
+            ("source_system", "source_key", "event_id", "landing_seq"),
+            ("entity", "source_system", "source_key"),
+            [(entity, s.system, s.key) for s in sources],
+            order_by=("landing_seq", "source_system", "source_key"),
+        )
+        out = [(SourceKey(s, k), ev, int(seq)) for s, k, ev, seq in rows]
+        return sorted(out, key=lambda r: (r[2], r[0]))
 
     # ------------------------------------------------------------------ work group: rule results, references, jobs
 
@@ -2349,6 +2929,78 @@ class SqlStore(ABC):
             ChangeRow(int(cv), int(seq), e, m, kind, surv, tuple(self._decode_json(parts) or ()))
             for cv, seq, e, m, kind, surv, parts in rows
         ]
+
+    def changes_of_record(
+        self, entity: str, master_id: str, before: tuple[int, int] | None, limit: int
+    ) -> list[ChangeRow]:
+        """One golden record's change rows, newest first, before the cursor (commit version, change sequence)."""
+        sql = (
+            "/*mdm:paged*/ SELECT commit_version, change_seq, entity, master_id, change_kind, survivor_id, parts "
+            f"FROM {self.t('core', 'change')} WHERE master_id = ? AND entity = ?"
+        )
+        params: list[Any] = [master_id, entity]
+        if before is not None:
+            sql += " AND (commit_version < ? OR (commit_version = ? AND change_seq < ?))"
+            params.extend([int(before[0]), int(before[0]), int(before[1])])
+        rows = self._fetch_all(
+            sql + " ORDER BY commit_version DESC, change_seq DESC LIMIT ?", [*params, int(limit)]
+        )
+        return [
+            ChangeRow(int(cv), int(seq), e, m, kind, surv, tuple(self._decode_json(parts) or ()))
+            for cv, seq, e, m, kind, surv, parts in rows
+        ]
+
+    def change_log_rows(self, keys: Sequence[tuple[int, str]]) -> dict[tuple[int, str], list[dict[str, Any]]]:
+        """(commit version, row key) -> the audit rows written for that row by that commit, by change ID."""
+        table = _T("audit", "change_log")
+        rows = self._select_keyed(
+            table,
+            self._CHANGE_LOG_COLUMNS,
+            ("commit_version", "row_key"),
+            [(int(v), k) for v, k in keys],
+            order_by=("change_id",),
+        )
+        out: dict[tuple[int, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            d = self._decode_row(table, self._CHANGE_LOG_COLUMNS, row)
+            out.setdefault((int(d["commit_version"]), d["row_key"]), []).append(d)
+        return out
+
+    def decisions_of_record(
+        self,
+        master_id: str,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        limit: int,
+    ) -> list[tuple[str, datetime]]:
+        """(change set ID, when) of the steward decisions about `master_id` that published nothing (the
+        change log's `decision` rows, keyed by the record), at or after `since` and before `until`, newest
+        first, at most `limit`: a walk of the row_key index."""
+        sql = (
+            f"/*mdm:paged*/ SELECT change_set_id, changed_at FROM {self.t('audit', 'change_log')} "
+            "WHERE row_key = ? AND table_name = 'decision' AND commit_version IS NULL"
+        )
+        params: list[Any] = [master_id]
+        if since is not None:
+            sql += " AND changed_at >= ?"
+            params.append(since)
+        if until is not None:
+            sql += " AND changed_at < ?"
+            params.append(until)
+        rows = self._fetch_all(sql + " ORDER BY changed_at DESC, change_id LIMIT ?", [*params, int(limit)])
+        return [(str(cs), _utc(at)) for cs, at in rows]
+
+    def change_set_evidence(self, change_set_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Change set ID -> its evidence document (codes and IDs only)."""
+        rows = self._select_keyed(
+            _T("audit", "change_set"),
+            ("change_set_id", "evidence"),
+            ("change_set_id",),
+            [(i,) for i in change_set_ids],
+            order_by=("change_set_id",),
+        )
+        return {cs: self._decode_json(evidence) or {} for cs, evidence in rows}
 
     def current_rows(self, entity: str, master_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         """The published rows of `master_ids` as column -> value, for the feed read."""

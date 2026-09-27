@@ -13,7 +13,9 @@ Per column attribute (references are relationships and never survived):
 - repeating groups: `whole_group` takes the winner's list; `keyed_union`
   unions entries by `key`, each key resolved by the same strategies.
 Provenance per attribute: `{"winner": {"source", "value"}, "runners_up": [...5],
-"strategy": [...], "rule_version": n}`. A held member contributes its approved
+"strategy": [...], "decided_by": code, "rule_version": n}`, where `decided_by` names what set the
+winner apart when the value was committed: `pin`, `only` (one candidate held a value), `keyed_union`,
+the first strategy whose key separates the winner from the runner-up, or `tie_break`. A held member contributes its approved
 values; registry style: no values (provenance empty). Pure.
 
 Successive filters followed by the tie-break choose the same winner as one sort
@@ -110,20 +112,40 @@ def _trust(model: EntityModel, system: str, attribute: str) -> int:
         return _UNKNOWN_TRUST
 
 
-def _ranked(candidates: Sequence[_Candidate], strategies: Sequence[str]) -> list[_Candidate]:
-    """Candidates best first: the strategies' keys in order, then (system, key)."""
+def _strategy_keys(
+    candidates: Sequence[_Candidate], strategies: Sequence[str]
+) -> list[tuple[str, Callable[[_Candidate], Any]]]:
+    """(strategy, its sort key) for each strategy survivorship knows, in order."""
     frequency = Counter(_folded(c.value) for c in candidates) if "frequency" in strategies else Counter()
-    keys: list[Callable[[_Candidate], Any]] = []
+    keys: list[tuple[str, Callable[[_Candidate], Any]]] = []
     for strategy in strategies:
         if strategy == "source_trust":
-            keys.append(lambda c: c.trust)
+            keys.append((strategy, lambda c: c.trust))
         elif strategy == "recency":
-            keys.append(lambda c: (-c.when.timestamp(), -c.seq))
+            keys.append((strategy, lambda c: (-c.when.timestamp(), -c.seq)))
         elif strategy == "completeness":
-            keys.append(lambda c: -_filled(c.value))
+            keys.append((strategy, lambda c: -_filled(c.value)))
         elif strategy == "frequency":
-            keys.append(lambda c: -frequency[_folded(c.value)])
+            keys.append((strategy, lambda c: -frequency[_folded(c.value)]))
+    return keys
+
+
+def _ranked(candidates: Sequence[_Candidate], strategies: Sequence[str]) -> list[_Candidate]:
+    """Candidates best first: the strategies' keys in order, then (system, key)."""
+    keys = [key for _, key in _strategy_keys(candidates, strategies)]
     return sorted(candidates, key=lambda c: (*(key(c) for key in keys), c.source.system, c.source.key))
+
+
+def _decided_by(ranked: Sequence[_Candidate], strategies: Sequence[str]) -> str:
+    """The strategy that set the winner apart: `only` when one candidate holds a value, else the first
+    strategy whose key separates the winner from the runner-up, else `tie_break` (the source key order)."""
+    if len(ranked) < 2:
+        return "only"
+    first, second = ranked[0], ranked[1]
+    for strategy, key in _strategy_keys(ranked, strategies):
+        if key(first) != key(second):
+            return strategy
+    return "tie_break"
 
 
 def _provenance_entry(source: SourceKey, value: Any) -> dict[str, Any]:
@@ -218,6 +240,7 @@ def survive(
                 "winner": _provenance_entry(SourceKey(STEWARD, name), held.value),
                 "runners_up": [_provenance_entry(c.source, c.value) for c in ranked[:RUNNERS_UP]],
                 "strategy": ["pin"],
+                "decided_by": "pin",
                 "rule_version": rule_version,
             }
             continue
@@ -237,6 +260,7 @@ def survive(
                     "strategy": list(strategies),
                     "group": "keyed_union",
                     "entries": sources,
+                    "decided_by": "keyed_union",
                     "rule_version": rule_version,
                 }
                 continue
@@ -246,6 +270,7 @@ def survive(
             "winner": _provenance_entry(winner.source, winner.value),
             "runners_up": [_provenance_entry(c.source, c.value) for c in ranked[1 : 1 + RUNNERS_UP]],
             "strategy": list(strategies),
+            "decided_by": _decided_by(ranked, strategies),
             "rule_version": rule_version,
         }
     return values, provenance

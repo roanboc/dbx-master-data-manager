@@ -8,7 +8,10 @@ cross-references, merges and relationships, provenance, the work writes
 (settle, approve, hold, release, tasks, pairs), change rows, the commit-log row
 (a role or automated actor, never a person), the audit change set (the person)
 and the change log; COMMIT. A change set that publishes nothing uses no
-version but still applies its work writes.
+version but still applies its work writes, and a steward's decision
+(`audit_always`) still writes its audit change set, with no commit version, in
+the same transaction. Every open task the work writes gets a due time from the
+service level of its kind; every tray settlement names this change set.
 
 `apply_chunked` splits items so no transaction writes more than `max_rows`
 published rows, never splitting a create from its links or a merge from its
@@ -35,6 +38,7 @@ from typing import Any
 
 import mdm.capacity as capacity
 from mdm.backend.store import SqlStore
+from mdm.config import DEFAULT_SLA_HOURS
 from mdm.models.authority import Authority
 from mdm.models.canonical import iso, utcnow
 from mdm.models.changes import (
@@ -62,6 +66,7 @@ from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Conflict, Forbidden, NotFound
 from mdm.models.records import GoldenRow, RelationshipRow, RetiredRow, SourceKey, XrefRow
 from mdm.models.tasks import Task, task_id, task_key
+from mdm.models.workbench import ServiceLevels
 from mdm.services.authority import CLAUSES_MARK, AuthorityService
 from mdm.services.privacy import Vault, is_vault_ref, master_subject, source_subject, vault_ref
 from mdm.services.registry import ModelRegistry
@@ -257,14 +262,19 @@ class CommitService:
         clock: Callable[[], datetime] = utcnow,
         *,
         fault: Callable[[str], None] | None = None,
+        service_levels: ServiceLevels | None = None,
     ) -> None:
-        """`fault(point)` is called at "in_commit", inside the transaction before COMMIT (tests raise there)."""
+        """`fault(point)` is called at "before_write", after the dry plan and before either transaction, and at
+        "in_commit", inside the transaction before COMMIT (tests raise there, or land a new event). Every open
+        task the work writes without a due time gets one from `service_levels` (default: the adopted hours
+        until initiative 4's governance policy)."""
         self.store = store
         self.registry = registry
         self.authority = authority
         self.vault = vault
         self.clock = clock
         self.fault = fault
+        self.service_levels = service_levels or ServiceLevels(DEFAULT_SLA_HOURS)
 
     # ------------------------------------------------------------------ public
 
@@ -275,21 +285,31 @@ class CommitService:
         *,
         created: Mapping[str, str] | None = None,
         fault: Callable[[str], None] | None = None,
+        audit_always: bool = False,
     ) -> CommitResult:
-        """One change set in one transaction. `created` maps refs created by earlier chunks to master IDs."""
+        """One change set in one transaction. `created` maps refs created by earlier chunks to master IDs.
+
+        `audit_always` (a steward's decision in the workbench): when nothing publishes, the audit change set
+        is still written, with no commit version, in the same transaction as the work writes.
+        """
         work = work if work is not None else WorkWrites(cs.entity)
         known = dict(created or {})
+        fault = fault or self.fault
         # step 0: authority, a dry plan from keyed reads, personal values into the vault before the lock
         self.authority.check(cs)
         model = self.registry.published(cs.entity)
         vaulted = self._vault_provenance(cs, model)
         dry = self._plan(cs, model, vaulted, 0, {**known, **{r: r for r in self._refs(cs)}})
+        if fault is not None:
+            fault("before_write")
         if not dry.publishes():
-            if not work.empty():
+            if not work.empty() or audit_always:
                 with self.store.transaction():
                     self.store.apply_work(self._map_work(work, known, cs))
+                    if audit_always:
+                        self.store.append_change_set(self._audited(cs), None, len(cs.items))
+                        self.store.append_change_log(self._decision_log(cs))
             return CommitResult(cs.change_set_id, None, {}, {})
-        fault = fault or self.fault
         with self.store.commit_scope():
             # step 2: authority again, under the lock
             self.authority.check(cs, in_transaction=True)
@@ -1020,7 +1040,33 @@ class CommitService:
         return rows
 
     def _map_work(self, work: WorkWrites, mapping: Mapping[str, str], cs: ChangeSet) -> WorkWrites:
-        """Tasks naming CreateGolden refs name the master IDs instead; a task without a source is re-keyed."""
+        """Tasks naming CreateGolden refs name the master IDs instead; a task without a source is re-keyed.
+        Every open task without a due time gets one from the service level of its kind; every tray settlement
+        without a change set names this one."""
+        work = self._remap_tasks(work, mapping, cs)
+        levels = self.service_levels
+        if any(t.status == "open" and t.due_at is None for t in work.tasks):
+            work = replace(
+                work,
+                tasks=tuple(
+                    replace(t, due_at=levels.due(t.kind, t.created_at))
+                    if t.status == "open" and t.due_at is None
+                    else t
+                    for t in work.tasks
+                ),
+            )
+        if any(s.change_set_id is None for s in work.tray):
+            work = replace(
+                work,
+                tray=tuple(
+                    replace(s, change_set_id=cs.change_set_id) if s.change_set_id is None else s
+                    for s in work.tray
+                ),
+            )
+        return work
+
+    @staticmethod
+    def _remap_tasks(work: WorkWrites, mapping: Mapping[str, str], cs: ChangeSet) -> WorkWrites:
         if not work.tasks or not any(is_ref(m) for t in work.tasks for m in t.master_ids):
             return work
         tasks: list[Task] = []
@@ -1052,6 +1098,29 @@ class CommitService:
         """The change set with the count of items per clause in its evidence."""
         clauses = Counter(item_clause(i) for i in cs.items if item_clause(i))
         return replace(cs, evidence={**dict(cs.evidence), "clauses": dict(sorted(clauses.items()))})
+
+    @staticmethod
+    def _decision_log(cs: ChangeSet) -> list[tuple]:
+        """A decision that published nothing, keyed in the change log by each golden record its evidence
+        names (`master_ids`), with no commit version, so the record's timeline can show it."""
+        named = cs.evidence.get("master_ids") if isinstance(cs.evidence, Mapping) else None
+        masters = [m for m in dict.fromkeys(named or []) if isinstance(m, str)]
+        decision = cs.evidence.get("decision") if isinstance(cs.evidence, Mapping) else None
+        after = {"action": cs.action, "decision": decision if isinstance(decision, str) else None}
+        return [
+            (
+                f"{cs.change_set_id}:{n}",
+                None,
+                cs.change_set_id,
+                "decision",
+                master,
+                "summary",
+                None,
+                None,
+                after,
+            )
+            for n, master in enumerate(masters, start=1)
+        ]
 
     def _golden_doc(
         self, model: EntityModel, row: GoldenRow | None, provenance: Mapping[str, Any] | None

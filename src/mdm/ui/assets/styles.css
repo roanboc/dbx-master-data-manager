@@ -1,0 +1,1049 @@
+/* The workbench's tokens and styles, light and dark: band colours, agreement marks, provenance chips,
+   the staged outline, the waterfall, focus rings, the skip link and AG Grid variables.
+
+   Every text colour meets 4.5:1 and every non-text mark 3:1 in both schemes, measured against the
+   surface it sits on (light: white and its tints; dark: Mantine's dark body #242424 and its tints);
+   targets are at least 24 x 24 px. Colour is never the only cue: a band chip carries its word, an
+   agreement cell its symbol (= ≈ ≠ ∅), a staged row its dashed outline and the word "In the tray".
+
+   The scheme follows Mantine's data-mantine-color-scheme attribute, which the header's switch sets.
+   Owner: SHELL (plan B.8.5). */
+
+/* ------------------------------------------------------------------ tokens, light */
+:root {
+  --mdm-ink: #172026;
+  --mdm-surface: #ffffff;
+  --mdm-sunk: #f1f3f5;
+  --mdm-muted: #495057;          /* 8.2:1 on white */
+  --mdm-rule: #d5dcdf;
+  --mdm-rule-strong: #868f95;    /* 3.3:1 on white: borders that carry meaning */
+  --mdm-focus: #3b5bdb;          /* 5.7:1 on white */
+  --mdm-link: #3b5bdb;
+
+  --mdm-auto: #1d7447;           /* 5.0:1 on its tint */
+  --mdm-auto-tint: #e2f2e8;
+  --mdm-review: #8a4b00;         /* 6.0:1 on its tint */
+  --mdm-review-tint: #fcefd9;
+  --mdm-review-line: #a55f00;    /* the staged outline: 5.0:1 on white */
+  --mdm-distinct: #56636b;       /* 5.4:1 on its tint */
+  --mdm-distinct-tint: #eceff1;
+  --mdm-neg: #b3372b;            /* 5.1:1 on its tint */
+  --mdm-neg-tint: #fbe8e5;
+  --mdm-teal: #0d6b68;           /* 5.4:1 on its tint: deterministic marks, provenance */
+  --mdm-teal-tint: #e1f1ef;
+  --mdm-gold: #85560a;           /* 5.6:1 on its tint: a steward's pin, the assistant */
+  --mdm-gold-tint: #fbf1de;
+
+  /* Mantine's own text colours, darkened where the stock shade misses 4.5:1 on its tint. The component
+     library injects its variables after this file, so these are marked important. */
+  --mantine-color-dimmed: #495057 !important;
+  --mantine-color-anchor: #3b5bdb !important;
+  --mantine-color-indigo-light-color: #2b3f9e !important;
+  --mantine-color-indigo-outline: #2b3f9e !important;
+  --mantine-color-gray-light-color: #3f464d !important;
+  --mantine-color-gray-outline: #3f464d !important;
+  --mantine-color-red-light-color: #8f1f1f !important;
+  --mantine-color-red-outline: #8f1f1f !important;
+  --mantine-color-yellow-light-color: #6b4700 !important;
+  --mantine-color-yellow-outline: #6b4700 !important;
+  --mantine-color-orange-light-color: #8a3800 !important;
+  --mantine-color-teal-light-color: #05614a !important;
+  --mantine-color-teal-outline: #05614a !important;
+  --mantine-color-green-light-color: #1b5e2a !important;
+  --mantine-color-blue-light-color: #14507f !important;
+  --mantine-color-yellow-filled: #7a5200 !important;
+  --mantine-color-teal-filled: #087f5b !important;
+  --mantine-color-green-filled: #237032 !important;
+  --mantine-color-red-filled: #c92a2a !important;
+  --mantine-color-gray-filled: #495057 !important;
+}
+
+/* ------------------------------------------------------------------ tokens, dark */
+[data-mantine-color-scheme="dark"] {
+  --mdm-ink: #e3e9eb;
+  --mdm-surface: #242424;
+  --mdm-sunk: #2e2e2e;
+  --mdm-muted: #a6a7ab;          /* 6.5:1 on #242424 */
+  --mdm-rule: #3b3b3b;
+  --mdm-rule-strong: #7d8589;    /* 4.1:1 on #242424 */
+  --mdm-focus: #91a7ff;          /* 6.8:1 on #242424 */
+  --mdm-link: #91a7ff;
+
+  --mdm-auto: #63c98f;
+  --mdm-auto-tint: #12321f;
+  --mdm-review: #f0b35a;
+  --mdm-review-tint: #3a2a12;
+  --mdm-review-line: #f0b35a;
+  --mdm-distinct: #aeb8bd;
+  --mdm-distinct-tint: #243035;
+  --mdm-neg: #f08a7c;
+  --mdm-neg-tint: #3a1b17;
+  --mdm-teal: #5cc6bf;
+  --mdm-teal-tint: #113330;
+  --mdm-gold: #e2b259;
+  --mdm-gold-tint: #3a2b12;
+
+  --mantine-color-dimmed: #a6a7ab !important;
+  --mantine-color-anchor: #91a7ff !important;
+  --mantine-color-indigo-light-color: #a5b8ff !important;
+  --mantine-color-indigo-outline: #a5b8ff !important;
+  --mantine-color-gray-light-color: #ced4da !important;
+  --mantine-color-gray-outline: #ced4da !important;
+  --mantine-color-red-light-color: #ffa8a8 !important;
+  --mantine-color-yellow-light-color: #ffd43b !important;
+  --mantine-color-teal-light-color: #63e6be !important;
+  --mantine-color-green-light-color: #8ce99a !important;
+}
+
+/* ------------------------------------------------------------------ the page */
+.mdm-sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.mdm-hidden {
+  display: none !important;
+}
+.mdm-skip {
+  position: absolute;
+  left: -10000px;
+  top: 8px;
+  z-index: 1000;
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: var(--mdm-surface);
+  color: var(--mdm-link);
+  font-weight: 600;
+  text-decoration: underline;
+}
+.mdm-skip:focus {
+  left: 16px;
+}
+.mdm-main:focus {
+  outline: none;
+}
+.mdm-page-title {
+  font-size: 1.35rem;
+  line-height: 1.25;
+  margin: 0 0 12px;
+}
+
+/* focus: 2 px, at least 3:1 against both schemes, on every focusable element */
+[data-mantine-color-scheme] :focus-visible {
+  outline: 2px solid var(--mdm-focus) !important;
+  outline-offset: 2px;
+}
+.mdm-main:focus-visible {
+  outline: none !important;
+}
+
+/* ------------------------------------------------------------------ header and navigation */
+.mdm-header {
+  background: var(--mdm-surface);
+}
+.mdm-brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: inherit !important;
+  white-space: nowrap;
+}
+.mdm-breaches {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  color: var(--mdm-neg) !important;
+  font-weight: 600;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.mdm-role-badge,
+.mdm-engine-badge {
+  text-transform: none;
+  font-weight: 600;
+}
+.mdm-help-open {
+  font-weight: 700;
+}
+.mdm-nav-heading,
+.mdm-nav-subheading {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mdm-muted);
+  margin: 4px 12px 6px;
+}
+.mdm-nav-subheading {
+  margin-top: 14px;
+}
+.mdm-nav-note {
+  font-size: 0.9rem;
+  color: var(--mdm-muted);
+  margin: 8px 12px;
+}
+.mdm-nav-none .mdm-nav-work,
+.mdm-nav-reader .mdm-nav-note {
+  display: none;
+}
+.mdm-rail-link {
+  min-height: 32px;
+}
+.mdm-count {
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ small parts */
+.mdm-icon {
+  display: inline-block;
+  flex: none;
+  background-color: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  vertical-align: -0.125em;
+}
+.mdm-kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 0 0.4em;
+  border: 1px solid var(--mdm-rule-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--mdm-surface);
+  color: var(--mdm-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  text-align: center;
+}
+.mdm-empty {
+  color: var(--mdm-muted);
+  margin: 8px 0;
+}
+.mdm-notice {
+  border-left: 4px solid var(--mdm-teal);
+  background: var(--mdm-teal-tint);
+  color: var(--mdm-ink);
+  border-radius: 0 6px 6px 0;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+}
+.mdm-notice-success {
+  border-left-color: var(--mdm-auto);
+  background: var(--mdm-auto-tint);
+}
+.mdm-notice-warning {
+  border-left-color: var(--mdm-review-line);
+  background: var(--mdm-review-tint);
+}
+.mdm-notice-error {
+  border-left-color: var(--mdm-neg);
+  background: var(--mdm-neg-tint);
+}
+.mdm-modal-text {
+  margin: 0 0 12px;
+}
+.mdm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.mdm-table th,
+.mdm-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--mdm-rule);
+}
+.mdm-table th {
+  font-weight: 650;
+  color: var(--mdm-muted);
+}
+
+/* ------------------------------------------------------------------ bands, agreement, provenance */
+.mdm-band {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.mdm-band-auto {
+  background: var(--mdm-auto-tint);
+  color: var(--mdm-auto);
+}
+.mdm-band-review {
+  background: var(--mdm-review-tint);
+  color: var(--mdm-review);
+}
+.mdm-band-distinct {
+  background: var(--mdm-distinct-tint);
+  color: var(--mdm-distinct);
+}
+
+.mdm-agree {
+  background: var(--mdm-auto-tint);
+  color: var(--mdm-ink);
+}
+.mdm-partial {
+  background: var(--mdm-review-tint);
+  color: var(--mdm-ink);
+}
+.mdm-disagree {
+  background: var(--mdm-neg-tint);
+  color: var(--mdm-ink);
+}
+.mdm-missing {
+  color: var(--mdm-muted);
+  font-style: italic;
+}
+.mdm-symbol {
+  display: inline-block;
+  min-width: 1.1em;
+  margin-right: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+}
+.mdm-agree .mdm-symbol {
+  color: var(--mdm-auto);
+}
+.mdm-partial .mdm-symbol {
+  color: var(--mdm-review);
+}
+.mdm-disagree .mdm-symbol {
+  color: var(--mdm-neg);
+}
+.mdm-masked {
+  font-style: italic;
+  color: var(--mdm-muted);
+}
+
+.mdm-prov {
+  display: inline-block;
+  min-height: 24px;
+  padding: 1px 6px;
+  border: 1px solid var(--mdm-teal);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mdm-teal);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mdm-prov-pin {
+  border-color: var(--mdm-gold);
+  color: var(--mdm-gold);
+}
+.mdm-gold {
+  color: var(--mdm-gold);
+}
+.mdm-automated {
+  color: var(--mdm-teal);
+}
+
+/* ------------------------------------------------------------------ the record */
+.mdm-record-facts {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+}
+.mdm-golden-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.mdm-why-row > td {
+  padding: 0 8px 10px !important;
+  border-bottom: 1px solid var(--mdm-rule);
+}
+.mdm-why-box {
+  border: 1px solid var(--mdm-review-line);
+  background: var(--mdm-review-tint);
+  color: var(--mdm-ink);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.mdm-why-title {
+  font-size: 0.95rem;
+  margin: 0 0 4px;
+}
+.mdm-why-sentence {
+  margin: 0 0 6px;
+}
+.mdm-why-box .mdm-table th,
+.mdm-why-box .mdm-table td {
+  border-bottom-color: var(--mdm-review-line);
+  padding: 3px 8px;
+}
+.mdm-why-note {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+}
+
+/* ------------------------------------------------------------------ staged decisions and the tray */
+.mdm-staged {
+  outline: 2px dashed var(--mdm-review-line);
+  outline-offset: -2px;
+}
+.mdm-tray-button.mdm-staged {
+  outline: none;
+  border: 2px dashed var(--mdm-review-line) !important;
+  color: var(--mdm-review) !important;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.mdm-popover-title {
+  font-size: 1rem;
+  margin: 0 0 4px;
+}
+.mdm-popover-text {
+  color: var(--mdm-muted);
+  font-size: 0.85rem;
+  margin: 0 0 8px;
+}
+.mdm-tray-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.mdm-tray-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--mdm-rule);
+}
+.mdm-tray-label {
+  flex: 1 1 60%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mdm-tray-staged .mdm-tray-label {
+  font-weight: 600;
+}
+.mdm-countdown {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--mdm-review);
+  font-weight: 700;
+}
+.mdm-tray-outcome {
+  flex: 1 1 100%;
+  color: var(--mdm-muted);
+  font-size: 0.85rem;
+}
+.mdm-tray-failed .mdm-tray-outcome {
+  color: var(--mdm-neg);
+}
+.mdm-tray-heading {
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin: 8px 0 2px;
+}
+.mdm-tray-none {
+  color: var(--mdm-muted);
+  font-size: 0.85rem;
+  margin: 4px 0;
+}
+
+/* ------------------------------------------------------------------ the inbox's grid (AG Grid) */
+.mdm-grid,
+#inbox-grid {
+  --ag-font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ag-font-size: 13px;
+  --ag-cell-horizontal-padding: 10px;
+  --ag-foreground-color: #172026;
+  --ag-background-color: #ffffff;
+  --ag-header-background-color: #f1f3f5;
+  --ag-header-foreground-color: #3f464d;
+  --ag-odd-row-background-color: #fbfbfc;
+  --ag-row-hover-color: #eef2ff;
+  --ag-selected-row-background-color: #dfe6ff;
+  --ag-border-color: #d5dcdf;
+  --ag-secondary-foreground-color: #495057;
+}
+[data-mantine-color-scheme="dark"] .mdm-grid,
+[data-mantine-color-scheme="dark"] #inbox-grid {
+  --ag-foreground-color: #e3e9eb;
+  --ag-background-color: #242424;
+  --ag-header-background-color: #2e2e2e;
+  --ag-header-foreground-color: #ced4da;
+  --ag-odd-row-background-color: #272a2d;
+  --ag-row-hover-color: #2f3548;
+  --ag-selected-row-background-color: #33406b;
+  --ag-border-color: #3b3b3b;
+  --ag-secondary-foreground-color: #a6a7ab;
+}
+.ag-row.mdm-staged {
+  outline: 2px dashed var(--mdm-review-line);
+  outline-offset: -3px;
+}
+.ag-row.mdm-breaching {
+  box-shadow: inset 4px 0 0 var(--mdm-neg);
+}
+.ag-row.mdm-claimed-other {
+  color: var(--mdm-muted);
+}
+/* the grid keeps no cursor of its own: the selection is the one cursor, and focus sits on a row's button */
+#inbox-grid .ag-row-focus,
+#inbox-grid .ag-cell-focus,
+#inbox-grid .ag-cell:focus-within {
+  border-color: transparent !important;
+  outline: none !important;
+}
+#inbox-grid .ag-row-focus::before,
+#inbox-grid .ag-row-focus::after {
+  display: none !important;
+}
+#inbox-grid .ag-cell {
+  line-height: 1.35;
+}
+.mdm-task-cell,
+.mdm-due {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  min-width: 0;
+  gap: 2px;
+}
+.mdm-task-first {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mdm-task-second {
+  color: var(--mdm-muted);
+  font-size: 0.8rem;
+  white-space: normal;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mdm-task-second .mdm-band {
+  font-size: 0.72rem;
+  padding: 0 5px;
+}
+.mdm-kind {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--mdm-rule-strong);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.mdm-row-open {
+  all: unset;
+  cursor: pointer;
+  font-weight: 650;
+  color: var(--mdm-ink);
+  border-radius: 3px;
+}
+.mdm-row-open:hover {
+  text-decoration: underline;
+}
+.mdm-row-open:focus-visible {
+  outline: 2px solid var(--mdm-focus) !important;
+  outline-offset: 1px;
+}
+.mdm-due-cell {
+  text-align: right;
+}
+.mdm-due {
+  align-items: flex-end;
+  text-align: right;
+}
+.mdm-due-first {
+  white-space: nowrap;
+}
+.mdm-due-second {
+  color: var(--mdm-muted);
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+/* ------------------------------------------------------------------ the decide pane */
+.mdm-decide-full .mdm-inbox-queue,
+.mdm-decide-full .mdm-queue {
+  display: none !important;
+}
+.mdm-decide-full .mdm-inbox-decide,
+.mdm-decide-full .mdm-decide {
+  grid-column: 1 / -1 !important;
+  flex-basis: 100% !important;
+  max-width: 100% !important;
+}
+.mdm-pane-full {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 3;
+}
+.mdm-decide-scroll {
+  max-height: calc(100vh - 88px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.mdm-decide {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.mdm-decide-body {
+  flex: 1 0 auto;
+}
+.mdm-decide-empty {
+  padding-right: 44px;
+}
+.mdm-decide-header {
+  padding-right: 44px; /* room for the full-width toggle */
+}
+.mdm-decide-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.mdm-decide-title {
+  font-size: 1.08rem;
+  line-height: 1.3;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.mdm-decide-meta {
+  color: var(--mdm-muted);
+  font-size: 0.85rem;
+}
+.mdm-decide-meta .mdm-icon {
+  vertical-align: -0.15em;
+}
+.mdm-decide-reason {
+  margin: 4px 0 8px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.mdm-decide .mdm-notice {
+  padding: 6px 10px;
+  margin: 0 0 8px;
+}
+.mdm-close-call p {
+  margin: 0 0 2px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.mdm-close-call .mdm-candidate-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 12px;
+}
+.mdm-close-call .mdm-candidate-choice > div {
+  margin-top: 0 !important;
+}
+/* once a candidate is chosen (in the browser), the call to choose goes */
+.mdm-decide:not([data-needs-choice]) .mdm-close-lead {
+  display: none;
+}
+/* the lead above names the choice; the group keeps its label for screen readers only */
+.mdm-close-call .mdm-candidate-choice .mantine-RadioGroup-label {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.mdm-decide-subheading {
+  font-size: 0.9rem;
+  font-weight: 650;
+  margin: 10px 0 4px;
+}
+.mdm-candidate-head {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
+.mdm-candidate-head .mdm-decide-subheading {
+  margin: 6px 0 0;
+  flex: none;
+  white-space: nowrap;
+}
+.mdm-candidate-meta {
+  color: var(--mdm-muted);
+  font-size: 0.82rem;
+  /* one line: the name and the best match are in the table above, so a long one is cut short */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mdm-why-summary,
+.mdm-compare-summary,
+.mdm-preview-summary {
+  cursor: pointer;
+  font-weight: 650;
+  font-size: 0.85rem;
+  margin: 2px 0;
+  min-height: 24px;
+}
+.mdm-compare-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+}
+.mdm-compare-bar .mdm-decide-subheading {
+  margin: 2px 0;
+}
+.mdm-compare-legend {
+  color: var(--mdm-muted);
+  font-size: 0.78rem;
+  margin: 0;
+}
+.mdm-compare-note,
+.mdm-preview-rest {
+  color: var(--mdm-muted);
+  font-size: 0.8rem;
+  margin: 4px 0;
+}
+.mdm-compare-tag {
+  color: var(--mdm-muted);
+  font-weight: 500;
+  font-size: 0.78rem;
+}
+.mdm-compare-scroll {
+  overflow-x: auto;
+}
+.mdm-decide .mdm-table {
+  font-size: 0.84rem;
+}
+.mdm-decide .mdm-table th,
+.mdm-decide .mdm-table td {
+  padding: 2px 6px;
+  line-height: 1.35;
+}
+.mdm-compare th[scope="row"] {
+  white-space: nowrap;
+}
+.mdm-compare thead th {
+  font-size: 0.8rem;
+}
+.mdm-compare-rest .mdm-table {
+  margin-bottom: 4px;
+}
+
+/* the footer: the impact line and the actions stay on screen beside the evidence */
+.mdm-decide-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--mdm-surface);
+  border-top: 1px solid var(--mdm-rule);
+  padding: 6px 0 4px;
+  margin-top: 8px;
+}
+.mdm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.mdm-moving {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.mdm-action .mantine-Button-label,
+.mdm-menu-target .mantine-Button-label {
+  white-space: normal;
+  text-align: left;
+  line-height: 1.2;
+}
+.mdm-action.mantine-Button-root,
+.mdm-menu-target.mantine-Button-root {
+  height: auto;
+  min-height: 30px;
+  padding: 3px 8px;
+}
+.mdm-action .mantine-Button-section[data-position="right"],
+.mdm-menu-target .mantine-Button-section[data-position="right"] {
+  margin-inline-start: 6px;
+}
+.mdm-decide-actions .mdm-kbd {
+  min-width: 1.4em;
+  padding: 0 0.3em;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+.mdm-action-reasons p {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  color: var(--mdm-muted);
+}
+.mdm-impact {
+  border: 1px solid var(--mdm-rule);
+  background: var(--mdm-sunk);
+  color: var(--mdm-ink);
+  padding: 4px 10px;
+  border-radius: 6px;
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+}
+.mdm-changed {
+  font-weight: 700;
+}
+
+/* the waterfall: tracks with the band regions shaded, a zero line, bars up (green) and down (red) */
+.mdm-wf {
+  --mdm-wf-up: var(--mdm-auto);
+  --mdm-wf-down: var(--mdm-neg);
+  font-size: 0.8rem;
+}
+.mdm-wf-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.mdm-wf-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mdm-wf-weight {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mdm-wf-weight-ghost {
+  color: var(--mdm-muted);
+}
+.mdm-wf-track {
+  position: relative;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--mdm-distinct-tint);
+}
+.mdm-wf-region {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.mdm-wf-region-distinct {
+  background: var(--mdm-distinct-tint);
+}
+.mdm-wf-region-review {
+  background: var(--mdm-review-tint);
+}
+.mdm-wf-region-auto {
+  background: var(--mdm-auto-tint);
+}
+.mdm-wf-zero-line {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 0;
+  border-left: 1px solid var(--mdm-rule-strong);
+}
+.mdm-wf-bar {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 2px;
+}
+.mdm-wf-up {
+  background: var(--mdm-wf-up);
+}
+.mdm-wf-down {
+  background: var(--mdm-wf-down);
+}
+.mdm-wf-ghost {
+  background: transparent;
+  border: 1.5px dashed var(--mdm-auto);
+}
+.mdm-wf-empty {
+  position: absolute;
+  top: -3px;
+  transform: translateX(-50%);
+  color: var(--mdm-muted);
+  font-size: 0.75rem;
+  line-height: 1;
+}
+.mdm-wf-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--mdm-ink);
+}
+.mdm-wf-axis {
+  position: relative;
+  height: 14px;
+}
+.mdm-wf-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  color: var(--mdm-muted);
+  font-size: 0.72rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.mdm-wf-tick-score {
+  color: var(--mdm-ink);
+  font-weight: 650;
+}
+.mdm-wf-tick-low {
+  transform: none;
+}
+.mdm-wf-tick-high {
+  transform: translateX(-100%);
+}
+.mdm-wf-axis-label {
+  color: var(--mdm-muted);
+  font-size: 0.72rem;
+}
+.mdm-flip {
+  border-left: 3px solid var(--mdm-teal);
+  background: var(--mdm-teal-tint);
+  color: var(--mdm-ink);
+  padding: 3px 10px;
+  border-radius: 0 6px 6px 0;
+  margin-top: 4px;
+  font-size: 0.84rem;
+}
+.mdm-flip-heading {
+  font-size: 0.84rem;
+  font-weight: 650;
+  margin: 0 0 2px;
+}
+.mdm-flip-list {
+  margin: 0;
+  padding-left: 18px;
+}
+.mdm-flip-rule,
+.mdm-flip-none {
+  margin: 2px 0 0;
+}
+
+/* below the small breakpoint the compare table becomes one card per attribute */
+@media (max-width: 47.99em) {
+  .mdm-compare thead {
+    display: none;
+  }
+  .mdm-compare,
+  .mdm-compare tbody,
+  .mdm-compare tr,
+  .mdm-compare th,
+  .mdm-compare td {
+    display: block;
+    width: 100%;
+  }
+  .mdm-compare tr {
+    border: 1px solid var(--mdm-rule);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    padding: 4px 0;
+  }
+  .mdm-compare td[data-column]::before {
+    content: attr(data-column) ": ";
+    display: block;
+    color: var(--mdm-muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .mdm-compare-scroll {
+    overflow-x: visible;
+  }
+  .mdm-pane-full {
+    display: none;
+  }
+  .mdm-decide-header,
+  .mdm-decide-empty {
+    padding-right: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ the header on a narrow screen */
+.mdm-act-as {
+  color: var(--mdm-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding-left: 6px;
+}
+.mdm-nav-role {
+  margin: 4px 12px 8px;
+  font-weight: 600;
+}
+.mdm-nav-small {
+  margin: 12px 8px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--mdm-rule);
+}
+@media (min-width: 48em) {
+  .mdm-nav-small {
+    display: none;
+  }
+}
+@media (max-width: 47.99em) {
+  .mdm-scheme-wrap,
+  .mdm-header .mdm-breaches {
+    display: none !important;
+  }
+  .mdm-brand {
+    font-size: 0.95rem;
+  }
+}
+
+/* ------------------------------------------------------------------ notifications */
+/* Mantine's description colour misses 4.5:1 on the notification's surface in both schemes */
+.mantine-Notification-description {
+  color: var(--mdm-ink) !important;
+}
+.mantine-Notification-title {
+  color: var(--mdm-ink) !important;
+  font-weight: 650;
+}
+
+/* ------------------------------------------------------------------ motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
