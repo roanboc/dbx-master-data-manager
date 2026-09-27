@@ -3,7 +3,7 @@
 _[← Scope index](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Implementation & Migration.
-**Delivered as:** branch `claude/master-data-management-app-mhba1t`; pull request to be opened.
+**Delivered as:** branch `claude/master-data-management-app-mhba1t`, [pull request #2](https://github.com/roanboc/dbx-master-data-manager/pull/2).
 
 Initiative 1, strategy discovery, merged on 27 September 2026 as
 [pull request #1](https://github.com/roanboc/dbx-master-data-manager/pull/1).
