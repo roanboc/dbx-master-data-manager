@@ -73,4 +73,5 @@ rewritten**.
 
 | #   | Scope document | Delivered as | Summary |
 | --- | --------------- | ------------ | ------- |
-| 1 | [Strategy discovery](./1_strategy-discovery.md) | Branch `claude/master-data-management-app-mhba1t`; pull request to be opened | Establishes the project, then writes the strategy layer and the key business elements; documents only |
+| 1 | [Strategy discovery](./1_strategy-discovery.md) | [Pull request #1](https://github.com/roanboc/dbx-master-data-manager/pull/1), merged 2026-09-27 | Establishes the project, then writes the strategy layer and the key business elements; documents only |
+| 2 | [Foundations](./2_foundations.md) | Branch `claude/master-data-management-app-mhba1t`; pull request to be opened | The information, application and technology layers, the roadmap, and the first code: the store on both engines, the matching engine, arrival, the commit path and change feed, and the command line |

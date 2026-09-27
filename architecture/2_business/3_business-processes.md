@@ -1,0 +1,70 @@
+# Business processes
+
+_[← Business layer](./README.md) · [Model home](../README.md)_
+
+**ArchiMate viewpoint:** Business layer: Business Process, with the actor and roles assigned to it, the business services and value stream stages it realizes, and the business objects it handles.
+
+**Status:** ◐ Draft catalogue — written for initiative 2, Foundations; not yet validated.
+
+## Business processes
+
+```mermaid
+flowchart LR
+  act6(["⚇ Automated matcher (AI) [ACT6]"]):::actorAI
+  role4["⚉ Technical steward [ROLE4]"]:::role
+  role1["⚉ Data owner [ROLE1]"]:::role
+  bproc1{{"⚙ Resolve an arrival [BPROC1]"}}:::process
+  bproc2{{"⚙ Commit a change set [BPROC2]"}}:::process
+  bsvc2("⬭ Arrival resolution [BSVC2]"):::service
+  bsvc7("⬭ Published golden records and change feed [BSVC7]"):::service
+  vs1_2[["⇉ Arrive [VS1.2]"]]:::stage
+  vs1_3[["⇉ Resolve [VS1.3]"]]:::stage
+  vs1_4[["⇉ Commit [VS1.4]"]]:::stage
+
+  act6 -->|assigned to| bproc1
+  role4 -->|accountable for| bproc1
+  role1 -->|accountable for| bproc2
+  bproc1 -->|triggers| bproc2
+  bproc1 -->|realizes| bsvc2
+  bproc2 -->|realizes| bsvc7
+  bproc1 -->|realizes| vs1_2
+  bproc1 -->|realizes| vs1_3
+  bproc2 -->|realizes| vs1_4
+
+  classDef actorAI fill:#c2f0ff,stroke:#0288d1,color:#333
+  classDef role fill:#f7f099,stroke:#a89400,color:#333
+  classDef process fill:#e5d95f,stroke:#8a7a00,color:#333
+  classDef service fill:#efe57d,stroke:#9c8a00,color:#333
+  classDef stage fill:#eed4a0,stroke:#b08a3a,color:#333
+```
+
+Cyan marks the automated matcher, never a person, and the tan stages visit from the value stream. `BPROC1` realizes only the part of [value stream stage [`VS1.3`] Resolve](../1_strategy/3_value-stream.md#value-stream) that the published rules settle. The stewards' own decisions reach `BPROC2` through the steward workbench, which is **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence)).
+
+| ID | Business process | Trigger | Supplier | Input | Output | Customer | Owner role | Realized by | Source | Notes |
+| -- | ---------------- | ------- | -------- | ----- | ------ | -------- | ---------- | ----------- | ------ | ----- |
+| `BPROC1` | **Resolve an arrival** — turns a source change the integration platform landed into a kept source version, then settles it under the published rules and the source's policy, or hands it to a steward | The arrival job runs: `mdm arrive` for new landing rows, `mdm load` for a source's history in bulk. It runs on demand in the local mode, and on a schedule once the hub is deployed in [initiative 4](../6_transition/2_sequence.md#sequence) | The integration platform (External), through the landing tables | A landing row | A kept source version, its standardised state, scored candidate pairs and quality results; then an automatic change set, or a steward task | `BPROC2`, for automatic change sets<br>[role [`ROLE2`] Data steward](./1_business-actors-and-roles.md#roles), for tasks | [role [`ROLE4`] Technical steward](./1_business-actors-and-roles.md#roles) | `src/mdm/services/arrival.py`, performed by [actor [`ACT6`] Automated matcher](./1_business-actors-and-roles.md#actors) | [Blueprint](../reference/README.md#founding-material) §3 flow (a); [Answer 5](../reference/2026-09-26-request-and-answers.md#answers); adopted — arrival and bulk loading are one process in two batch sizes | The landing interface still needs the integration team's agreement, sought before go-live |
+| `BPROC2` | **Commit a change set** — turns an approved change set into published rows under one commit version, with its change-feed rows, commit-log row and audit records | A change set reaches the commit path: an automatic one from `BPROC1`, or a record action such as a detach or a merge | `BPROC1`; stewards, through the record actions as service functions, and through the workbench from [initiative 3](../6_transition/2_sequence.md#sequence) | A change set with its authority | Golden records, cross-references, relationships and change-feed rows under one commit version; an audit record | Listening systems (External), through the change notifier and the integration platform<br>[role [`ROLE5`] Consumer](./1_business-actors-and-roles.md#roles) | [role [`ROLE1`] Data owner](./1_business-actors-and-roles.md#roles) | `src/mdm/services/commit.py` | Blueprint §5.4, §5.5; [Answer 5](../reference/2026-09-26-request-and-answers.md#answers); adopted — the commit path writes the change feed in its own transaction ([decision 8](../decisions/8_commit-order-lock-and-change-feed.md)) | The undo window a steward's decision waits out arrives with the workbench |
+
+### What the processes handle
+
+```mermaid
+flowchart LR
+  bproc1{{"⚙ Resolve an arrival [BPROC1]"}}:::process
+  bproc2{{"⚙ Commit a change set [BPROC2]"}}:::process
+  bobj2[["▧ Source record [BOBJ2]"]]:::object
+  bobj8[["▧ Steward task [BOBJ8]"]]:::object
+  bobj9[["▧ Change set [BOBJ9]"]]:::object
+  bobj3[["▧ Golden record [BOBJ3]"]]:::object
+  bobj10[["▧ Audit record [BOBJ10]"]]:::object
+
+  bproc1 -->|accesses| bobj2
+  bproc1 -->|accesses| bobj8
+  bproc2 -->|accesses| bobj9
+  bproc2 -->|accesses| bobj3
+  bproc2 -->|accesses| bobj10
+
+  classDef process fill:#e5d95f,stroke:#8a7a00,color:#333
+  classDef object fill:#fffbb5,stroke:#b8a200,color:#333
+```
+
+`BPROC1` keeps every version of a [business object [`BOBJ2`] Source record](./4_business-objects.md#business-objects) and writes the tasks the rules cannot settle. `BPROC2` alone changes a golden record, and records each change it makes in the same transaction.

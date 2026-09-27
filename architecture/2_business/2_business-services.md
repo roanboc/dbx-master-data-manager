@@ -32,19 +32,19 @@ flowchart LR
 
   bsvc1 -.->|serves| role2
   bsvc1 -.->|serves| role5
-  bsvc2 -.->|serves| role2
-  bsvc2 -.->|governed by| ctr1
+  bsvc2 -->|serves| role2
+  bsvc2 -->|governed by| ctr1
   bsvc3 -.->|serves| role2
   bsvc3 -.->|serves| role3
   bsvc4 -.->|serves| role1
   bsvc4 -.->|serves| role2
   bsvc4 -.->|serves| role3
-  bsvc5 -.->|serves| role1
-  bsvc5 -.->|serves| role4
+  bsvc5 -->|serves| role1
+  bsvc5 -->|serves| role4
   bsvc6 -.->|serves| role1
   bsvc6 -.->|serves| role3
-  bsvc7 -.->|serves| role5
-  bsvc7 -.->|governed by| ctr2
+  bsvc7 -->|serves| role5
+  bsvc7 -->|governed by| ctr2
   bsvc8 -.->|serves| role1
   bsvc8 -.->|serves| role6
   bsvc9 -.->|serves| role2
@@ -55,19 +55,19 @@ flowchart LR
   classDef contract fill:#d9cc4a,stroke:#7a6c00,color:#333
 ```
 
-Every edge is dashed, because no service is built yet.
+Solid edges are true: arrivals are resolved, governance runs through the command line and the published tables are written. Dashed edges wait for the steward workbench, the platform deployment and the language model. Both contracts still need the teams' agreement before go-live.
 
 | ID | Business service | Realized by | Source | Notes |
 | -- | ---------------- | ----------- | ------ | ----- |
 | `BSVC1` | **Record lookup and history** — search golden records, held arrivals and tasks, and open a record with its sources, relationships, quality, consumers and timeline, as of any date, masked by role | **Pending — future initiative** (initiative 3) | [Blueprint](../reference/README.md#founding-material) §3 | |
-| `BSVC2` | **Arrival resolution** — every source change read from the landing tables is checked, standardised and scored, then settled under the published rules by the automated matcher or sent to a steward's inbox | **Pending — future initiative** (initiative 2) | Blueprint §3 flow (a); [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
-| `BSVC3` | **Stewardship work** — one inbox of ranked tasks, decided one at a time or by pattern after a sample, with the record actions and a live duplicate check when a record is created or edited | **Pending — future initiative** (initiative 3) | Blueprint §3 | |
-| `BSVC4` | **Change approval** — change sets approved under the approval matrix by a maker and, where required, a checker, with undo before commit and compensation after | **Pending — future initiative** (initiatives 2 and 3) | Blueprint §5.5 | |
-| `BSVC5` | **Model, source and rule governance** — entity models, sources and rules defined, profiled, tuned, dry-run, published and rolled back, and source history loaded in bulk | **Pending — future initiative** (initiatives 2 and 4) | Blueprint §3 flow (b) | |
+| `BSVC2` | **Arrival resolution** — every source change read from the landing tables is checked, standardised and scored, then settled under the published rules by the automated matcher or sent to a steward's inbox | [application service [`ASVC1`] Arrival resolution](../4_application/1_application-services.md#application-services) | Blueprint §3 flow (a); [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
+| `BSVC3` | **Stewardship work** — one inbox of ranked tasks, decided one at a time or by pattern after a sample, with the record actions and a live duplicate check when a record is created or edited | **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence)); the record actions exist as [application service [`ASVC5`] Record lifecycle](../4_application/1_application-services.md#application-services) | Blueprint §3 | |
+| `BSVC4` | **Change approval** — change sets approved under the approval matrix by a maker and, where required, a checker, with undo before commit and compensation after | **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence)); the authority check at commit is in [application service [`ASVC4`] Golden record commit](../4_application/1_application-services.md#application-services) | Blueprint §5.5 | |
+| `BSVC5` | **Model, source and rule governance** — entity models, sources and rules defined, profiled, tuned, dry-run, published and rolled back, and source history loaded in bulk | [application service [`ASVC3`] Model and rule configuration](../4_application/1_application-services.md#application-services)<br>[application service [`ASVC2`] Explainable matching](../4_application/1_application-services.md#application-services)<br>application service [`ASVC1`] Arrival resolution, for bulk loading; dry runs and screens **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §3 flow (b) | |
 | `BSVC6` | **Quality and operations insight** — scorecards, issues, consumer contracts and the operations board, every figure opening its rows | **Pending — future initiative** (initiative 4) | Blueprint §2, §3 | |
-| `BSVC7` | **Published golden records and change feed** — every approved change set is written in order to the published tables, with the map from retired to surviving identifiers (IDs) and an initial-load flag | **Pending — future initiative** (initiative 2) | Blueprint §5.4; [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
-| `BSVC8` | **Access and privacy administration** — group-to-role mapping, masked read views, logged reveals, erasure reports and the consumer registry | **Pending — future initiative** (initiatives 2 and 4) | Blueprint §2, §5.6 | |
-| `BSVC9` | **Assisted stewardship and configuration** — case narratives, questions answered with cited records, assisted onboarding and later rule drafting; suggestions only, each with a stub | **Pending — future initiative** (Release 2, initiative 5); the plumbing and a complete stub in initiative 2 | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers) | |
+| `BSVC7` | **Published golden records and change feed** — every approved change set is written in order to the published tables, with the map from retired to surviving identifiers (IDs) and an initial-load flag | application service [`ASVC4`] Golden record commit | Blueprint §5.4; [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
+| `BSVC8` | **Access and privacy administration** — group-to-role mapping, masked read views, logged reveals, erasure reports and the consumer registry | [application service [`ASVC6`] Privacy protection](../4_application/1_application-services.md#application-services); group-to-role mapping, erasure reports and the consumer registry **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §2, §5.6 | |
+| `BSVC9` | **Assisted stewardship and configuration** — case narratives, questions answered with cited records, assisted onboarding and later rule drafting; suggestions only, each with a stub | **Pending — future initiative** (Release 2, [initiative 5](../6_transition/2_sequence.md#sequence)); the plumbing and the stub are [application service [`ASVC7`] Assistance plumbing](../4_application/1_application-services.md#application-services) | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers) | |
 
 ### Services and the capabilities they realize
 
@@ -119,21 +119,21 @@ flowchart LR
   end
 
   bsvc1 -.->|realizes| cap7_1
-  bsvc2 -.->|realizes| cap2_1
-  bsvc2 -.->|realizes| cap3_1
-  bsvc2 -.->|realizes| cap4_1
+  bsvc2 -->|realizes| cap2_1
+  bsvc2 -->|realizes| cap3_1
+  bsvc2 -->|realizes| cap4_1
   bsvc3 -.->|realizes| cap4_2
   bsvc3 -.->|realizes| cap5_1
   bsvc3 -.->|realizes| cap5_3
   bsvc4 -.->|realizes| cap5_2
-  bsvc5 -.->|realizes| cap1_1
-  bsvc5 -.->|realizes| cap1_2
-  bsvc5 -.->|realizes| cap2_2
-  bsvc5 -.->|realizes| cap3_2
+  bsvc5 -->|realizes| cap1_1
+  bsvc5 -->|realizes| cap1_2
+  bsvc5 -->|realizes| cap2_2
+  bsvc5 -->|realizes| cap3_2
   bsvc6 -.->|realizes| cap6_1
   bsvc6 -.->|realizes| cap6_2
-  bsvc7 -.->|realizes| cap7_2
-  bsvc8 -.->|realizes| cap7_3
+  bsvc7 -->|realizes| cap7_2
+  bsvc8 -->|realizes| cap7_3
   bsvc9 -.->|realizes| cap8_1
   bsvc9 -.->|realizes| cap8_2
 
@@ -149,4 +149,4 @@ flowchart LR
   style cap8 fill:#fbf4e2,stroke:#c8a24a,color:#333
 ```
 
-Dashed edges are not true yet. The tan capabilities belong to the strategy layer, grouped by area. [Capability [`CAP2.3`] Migration from the incumbent hub](../1_strategy/2_capabilities-and-resources.md#capabilities), planned for initiative 6, has no service yet.
+Dashed edges wait for the steward workbench, quality insight and the language model. The tan capabilities belong to the strategy layer, grouped by area. [Capability [`CAP2.3`] Migration from the incumbent hub](../1_strategy/2_capabilities-and-resources.md#capabilities), planned for initiative 6, has no service yet.

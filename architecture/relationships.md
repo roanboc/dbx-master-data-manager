@@ -49,13 +49,13 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ASM1` | `G1` | influences | |
 | `ASM2` | `P4` | influences | |
 | `ASM3` | `G1` | influences | |
-| `OUT1` | `G1` | realizes | Pending — future initiative (initiatives 2 and 4) |
+| `OUT1` | `G1` | realizes | Pending — future initiative (initiative 4) |
 | `OUT2` | `G2` | realizes | Pending — future initiative (initiative 4) |
 | `OUT3` | `G3` | realizes | Pending — future initiative (initiative 4) |
 | `OUT4` | `G4` | realizes | Pending — future initiative (initiative 4) |
 | `OUT5` | `G5` | realizes | Pending — future initiative (initiative 5) |
 | `OUT6` | `G6` | realizes | Pending — future initiative (initiatives 3 and 4) |
-| `OUT7` | `G7` | realizes | Pending — future initiative (initiatives 2 and 4) |
+| `OUT7` | `G7` | realizes | Pending — future initiative (initiative 4) |
 | `P1` | `G2` | realizes | |
 | `P2` | `G2` | realizes | |
 | `P3` | `G1` | realizes | |
@@ -70,26 +70,26 @@ under the source's document. Nothing above the first `##` names an identifier.
 
 | From | To | Relationship | Notes |
 | ---- | -- | ------------ | ----- |
-| `CAP1` | `VS1.6` | serves | Pending — future initiative (initiative 2) |
-| `CAP2` | `VS1.2` | serves | Pending — future initiative (initiative 2) |
-| `CAP3` | `VS1.2` | serves | Pending — future initiative (initiative 2) |
-| `CAP3` | `VS1.3` | serves | Pending — future initiative (initiative 2) |
+| `CAP1` | `VS1.6` | serves | Pending — future initiative (initiative 4) |
+| `CAP2` | `VS1.2` | serves | |
+| `CAP3` | `VS1.2` | serves | |
+| `CAP3` | `VS1.3` | serves | |
 | `CAP3` | `VS1.6` | serves | Pending — future initiative (initiative 4) |
-| `CAP4` | `VS1.4` | serves | Pending — future initiative (initiative 2) |
+| `CAP4` | `VS1.4` | serves | |
 | `CAP5` | `VS1.3` | serves | Pending — future initiative (initiative 3) |
-| `CAP5` | `VS1.4` | serves | Pending — future initiative (initiative 2) |
-| `CAP6` | `VS1.2` | serves | Pending — future initiative (initiative 2) |
+| `CAP5` | `VS1.4` | serves | Pending — future initiative (initiative 3) |
+| `CAP6` | `VS1.2` | serves | |
 | `CAP6` | `VS1.6` | serves | Pending — future initiative (initiative 4) |
 | `CAP7` | `VS1.3` | serves | Pending — future initiative (initiative 3) |
-| `CAP7` | `VS1.4` | serves | Pending — future initiative (initiative 2) |
+| `CAP7` | `VS1.4` | serves | |
 | `CAP8` | `VS1.3` | serves | Pending — future initiative (initiative 5) |
 | `CAP8` | `VS1.6` | serves | Pending — future initiative (initiative 5) |
-| `RES1` | `CAP2` | assigned to | Pending — future initiative (initiative 2) |
-| `RES2` | `CAP3` | assigned to | Pending — future initiative (initiative 2) |
-| `RES2` | `CAP7` | assigned to | Pending — future initiative (initiative 2) |
+| `RES1` | `CAP2` | assigned to | |
+| `RES2` | `CAP3` | assigned to | Pending — future initiative (initiative 4) |
+| `RES2` | `CAP7` | assigned to | Pending — future initiative (initiative 4) |
 | `RES3` | `CAP5` | assigned to | Pending — future initiative (initiative 3) |
-| `RES4` | `CAP2` | assigned to | Pending — future initiative (initiative 2) |
-| `RES4` | `CAP6` | assigned to | Pending — future initiative (initiative 2) |
+| `RES4` | `CAP2` | assigned to | Pending — future initiative (initiative 4) |
+| `RES4` | `CAP6` | assigned to | Pending — future initiative (initiative 4) |
 | `RES5` | `CAP3` | assigned to | Pending — future initiative (initiative 3) |
 | `RES6` | `CAP8` | assigned to | Pending — future initiative (initiative 5) |
 
@@ -97,15 +97,15 @@ under the source's document. Nothing above the first `##` names an identifier.
 
 | From | To | Relationship | Notes |
 | ---- | -- | ------------ | ----- |
-| `VS1` | `G1` | realizes | Pending — future initiative (initiatives 2 to 4) |
-| `VS1` | `G2` | realizes | Pending — future initiative (initiatives 2 to 4) |
-| `VS1` | `G3` | realizes | Pending — future initiative (initiatives 2 to 4) |
-| `VS1.1` | `VS1.2` | flows to | Pending — future initiative (initiative 2) |
-| `VS1.2` | `VS1.3` | flows to | Pending — future initiative (initiative 2) |
-| `VS1.3` | `VS1.4` | flows to | Pending — future initiative (initiatives 2 and 3) |
-| `VS1.4` | `VS1.5` | flows to | Pending — future initiative (initiative 2) |
-| `VS1.4` | `VS1.6` | flows to | Pending — future initiative (initiative 2); decisions and labels feed rule tuning |
-| `VS1.6` | `VS1.2` | triggers | Pending — future initiative (initiatives 2 and 4); a published rule or model re-evaluates records |
+| `VS1` | `G1` | realizes | Pending — future initiative (initiatives 3 and 4) |
+| `VS1` | `G2` | realizes | Pending — future initiative (initiatives 3 and 4) |
+| `VS1` | `G3` | realizes | Pending — future initiative (initiatives 3 and 4) |
+| `VS1.1` | `VS1.2` | flows to | Pending — future initiative (initiative 4); the integration platform writes to the agreed landing interface |
+| `VS1.2` | `VS1.3` | flows to | |
+| `VS1.3` | `VS1.4` | flows to | |
+| `VS1.4` | `VS1.5` | flows to | Pending — future initiative (initiative 4); the change notifier reads the change feed |
+| `VS1.4` | `VS1.6` | flows to | Pending — future initiative (initiatives 3 and 4); decisions and labels feed rule tuning |
+| `VS1.6` | `VS1.2` | triggers | Pending — future initiative (initiative 4); a published rule or model re-evaluates records |
 
 ## Layer 2 — Business
 
@@ -124,9 +124,10 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACT4` | `ROLE6` | assigned to | Pending — future initiative (initiative 4) |
 | `ACT5` | `ROLE5` | assigned to | |
 | `ACT5` | `STK4` | associated with | Among the consumers of master data |
-| `ACT6` | `ROLE2` | assigned to | Pending — future initiative (initiative 2) |
-| `ACT6` | `ROLE2` | escalates to | Pending — future initiative (initiative 2) |
-| `ACT6` | `ROLE1` | escalates to | Pending — future initiative (initiative 2) |
+| `ACT6` | `ROLE2` | assigned to | |
+| `ACT6` | `ROLE2` | escalates to | |
+| `ACT6` | `ROLE1` | escalates to | Pending — future initiative (initiative 4) |
+| `ACT6` | `BPROC1` | assigned to | It performs the process |
 | `ACT7` | `ROLE3` | assigned to | Pending — future initiative (initiative 3) |
 | `ACT7` | `ROLE3` | escalates to | Pending — future initiative (initiative 3) |
 | `ACT8` | `ROLE3` | assigned to | Pending — future initiative (initiative 3) |
@@ -135,6 +136,8 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACT9` | `ROLE4` | serves | Pending — future initiative (initiative 5) |
 | `ACT9` | `ROLE2` | escalates to | Pending — future initiative (initiative 5) |
 | `ACT9` | `ROLE4` | escalates to | Pending — future initiative (initiative 5) |
+| `ROLE1` | `BPROC2` | accountable for | |
+| `ROLE4` | `BPROC1` | accountable for | |
 
 ### [Business services](./2_business/2_business-services.md)
 
@@ -143,72 +146,360 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `BSVC1` | `ROLE2` | serves | Pending — future initiative (initiative 3) |
 | `BSVC1` | `ROLE5` | serves | Pending — future initiative (initiative 3) |
 | `BSVC1` | `CAP7.1` | realizes | Pending — future initiative (initiative 3) |
-| `BSVC2` | `ROLE2` | serves | Pending — future initiative (initiative 2) |
-| `BSVC2` | `CTR1` | governed by | Pending — future initiative (initiative 2) |
-| `BSVC2` | `CAP2.1` | realizes | Pending — future initiative (initiative 2) |
-| `BSVC2` | `CAP3.1` | realizes | Pending — future initiative (initiative 2) |
-| `BSVC2` | `CAP4.1` | realizes | Pending — future initiative (initiative 2) |
+| `BSVC2` | `ROLE2` | serves | |
+| `BSVC2` | `CTR1` | governed by | The teams' agreement is sought before go-live |
+| `BSVC2` | `CAP2.1` | realizes | |
+| `BSVC2` | `CAP3.1` | realizes | |
+| `BSVC2` | `CAP4.1` | realizes | |
 | `BSVC3` | `ROLE2` | serves | Pending — future initiative (initiative 3) |
 | `BSVC3` | `ROLE3` | serves | Pending — future initiative (initiative 3) |
 | `BSVC3` | `CAP4.2` | realizes | Pending — future initiative (initiative 3) |
 | `BSVC3` | `CAP5.1` | realizes | Pending — future initiative (initiative 3) |
 | `BSVC3` | `CAP5.3` | realizes | Pending — future initiative (initiative 3) |
-| `BSVC4` | `ROLE1` | serves | Pending — future initiative (initiative 2) |
-| `BSVC4` | `ROLE2` | serves | Pending — future initiative (initiative 2) |
-| `BSVC4` | `ROLE3` | serves | Pending — future initiative (initiative 2) |
-| `BSVC4` | `CAP5.2` | realizes | Pending — future initiative (initiative 2) |
-| `BSVC5` | `ROLE1` | serves | Pending — future initiative (initiative 2) |
-| `BSVC5` | `ROLE4` | serves | Pending — future initiative (initiative 2) |
-| `BSVC5` | `CAP1.1` | realizes | Pending — future initiative (initiative 2) |
-| `BSVC5` | `CAP1.2` | realizes | Pending — future initiative (initiative 2) |
-| `BSVC5` | `CAP2.2` | realizes | Pending — future initiative (initiative 2) |
-| `BSVC5` | `CAP3.2` | realizes | Pending — future initiative (initiative 2) |
+| `BSVC4` | `ROLE1` | serves | Pending — future initiative (initiative 3) |
+| `BSVC4` | `ROLE2` | serves | Pending — future initiative (initiative 3) |
+| `BSVC4` | `ROLE3` | serves | Pending — future initiative (initiative 3) |
+| `BSVC4` | `CAP5.2` | realizes | Pending — future initiative (initiative 3) |
+| `BSVC5` | `ROLE1` | serves | |
+| `BSVC5` | `ROLE4` | serves | |
+| `BSVC5` | `CAP1.1` | realizes | |
+| `BSVC5` | `CAP1.2` | realizes | |
+| `BSVC5` | `CAP2.2` | realizes | |
+| `BSVC5` | `CAP3.2` | realizes | |
+| `BSVC5` | `VS1.6` | realizes | Pending — future initiative (initiative 4): the exact dry run and re-evaluation; it defines models, sources and rules already |
 | `BSVC6` | `ROLE1` | serves | Pending — future initiative (initiative 4) |
 | `BSVC6` | `ROLE3` | serves | Pending — future initiative (initiative 4) |
 | `BSVC6` | `CAP6.1` | realizes | Pending — future initiative (initiative 4) |
 | `BSVC6` | `CAP6.2` | realizes | Pending — future initiative (initiative 4) |
-| `BSVC7` | `ROLE5` | serves | Pending — future initiative (initiative 2) |
-| `BSVC7` | `CTR2` | governed by | Pending — future initiative (initiative 2) |
-| `BSVC7` | `CAP7.2` | realizes | Pending — future initiative (initiative 2) |
-| `BSVC8` | `ROLE1` | serves | Pending — future initiative (initiative 2) |
-| `BSVC8` | `ROLE6` | serves | Pending — future initiative (initiative 2) |
-| `BSVC8` | `CAP7.3` | realizes | Pending — future initiative (initiative 2) |
+| `BSVC7` | `ROLE5` | serves | |
+| `BSVC7` | `CTR2` | governed by | The teams' agreement is sought before go-live |
+| `BSVC7` | `CAP7.2` | realizes | |
+| `BSVC8` | `ROLE1` | serves | Pending — future initiative (initiative 4) |
+| `BSVC8` | `ROLE6` | serves | Pending — future initiative (initiative 4) |
+| `BSVC8` | `CAP7.3` | realizes | |
 | `BSVC9` | `ROLE2` | serves | Pending — future initiative (initiative 5) |
 | `BSVC9` | `ROLE4` | serves | Pending — future initiative (initiative 5) |
 | `BSVC9` | `CAP8.1` | realizes | Pending — future initiative (initiative 5) |
 | `BSVC9` | `CAP8.2` | realizes | Pending — future initiative (initiative 5) |
 
+### [Business processes](./2_business/3_business-processes.md)
+
+| From | To | Relationship | Notes |
+| ---- | -- | ------------ | ----- |
+| `BPROC1` | `BPROC2` | triggers | An automatic change set |
+| `BPROC1` | `BSVC2` | realizes | |
+| `BPROC1` | `VS1.2` | realizes | |
+| `BPROC1` | `VS1.3` | realizes | What the published rules settle; stewards decide the rest |
+| `BPROC1` | `BOBJ2` | accesses | |
+| `BPROC1` | `BOBJ8` | accesses | Writes the tasks the rules cannot settle |
+| `BPROC2` | `BSVC7` | realizes | |
+| `BPROC2` | `VS1.4` | realizes | |
+| `BPROC2` | `BOBJ3` | accesses | |
+| `BPROC2` | `BOBJ9` | accesses | |
+| `BPROC2` | `BOBJ10` | accesses | |
+
 ### [Business objects](./2_business/4_business-objects.md)
 
 | From | To | Relationship | Notes |
 | ---- | -- | ------------ | ----- |
-| `BOBJ2` | `BOBJ1` | conforms to | Pending — future initiative (initiative 2) |
-| `BOBJ3` | `BOBJ1` | typed by | Pending — future initiative (initiative 2) |
-| `BOBJ3` | `BOBJ4` | aggregates | Pending — future initiative (initiative 2) |
-| `BOBJ4` | `BOBJ2` | refers to | Pending — future initiative (initiative 2) |
-| `BOBJ5` | `BOBJ3` | links | Pending — future initiative (initiative 2) |
-| `BOBJ6` | `BOBJ1` | applies to | Pending — future initiative (initiative 2) |
-| `BOBJ7` | `BOBJ9` | authorises | Pending — future initiative (initiative 2) |
+| `BOBJ2` | `BOBJ1` | conforms to | |
+| `BOBJ3` | `BOBJ1` | typed by | |
+| `BOBJ3` | `BOBJ4` | aggregates | |
+| `BOBJ4` | `BOBJ2` | refers to | |
+| `BOBJ5` | `BOBJ3` | links | |
+| `BOBJ6` | `BOBJ1` | applies to | |
+| `BOBJ7` | `BOBJ9` | authorises | |
 | `BOBJ8` | `BOBJ9` | decided in | Pending — future initiative (initiative 3) |
-| `BOBJ9` | `BOBJ3` | changes | Pending — future initiative (initiative 2) |
-| `BOBJ10` | `BOBJ9` | records | Pending — future initiative (initiative 2) |
+| `BOBJ9` | `BOBJ3` | changes | |
+| `BOBJ10` | `BOBJ9` | records | |
 | `BOBJ11` | `BOBJ2` | raised on | Pending — future initiative (initiative 4) |
 
 ### [Domain context and rules](./2_business/5_domain-context-and-rules.md)
 
 | From | To | Relationship | Notes |
 | ---- | -- | ------------ | ----- |
-| `RULE1` | `BOBJ2` | constrains | Pending — future initiative (initiative 2) |
+| `RULE1` | `BOBJ2` | constrains | |
 | `RULE2` | `BOBJ9` | constrains | Pending — future initiative (initiative 3) |
-| `RULE3` | `BOBJ9` | constrains | Pending — future initiative (initiative 3) |
+| `RULE3` | `BOBJ9` | constrains | Merge, unmerge and retirement need a checker at commit; the other cases follow with the workbench |
 | `RULE4` | `BOBJ1` | constrains | Pending — future initiative (initiative 4) |
 | `RULE4` | `BOBJ6` | constrains | Pending — future initiative (initiative 4) |
 | `RULE4` | `BOBJ7` | constrains | Pending — future initiative (initiative 4) |
 | `RULE5` | `BOBJ3` | constrains | Pending — future initiative (initiative 4) |
-| `RULE6` | `BOBJ9` | constrains | Pending — future initiative (initiative 2) |
+| `RULE6` | `BOBJ9` | constrains | |
 | `RULE7` | `BOBJ8` | constrains | Pending — future initiative (initiative 3) |
-| `RULE8` | `BOBJ3` | constrains | Pending — future initiative (initiative 2) |
-| `RULE8` | `BOBJ4` | constrains | Pending — future initiative (initiative 2) |
-| `RULE9` | `BOBJ2` | constrains | Pending — future initiative (initiative 2) |
-| `RULE10` | `BOBJ10` | constrains | Pending — future initiative (initiatives 2 and 4) |
-| `RULE11` | `BOBJ3` | constrains | Pending — future initiative (initiative 2) |
+| `RULE8` | `BOBJ3` | constrains | |
+| `RULE8` | `BOBJ4` | constrains | |
+| `RULE9` | `BOBJ2` | constrains | |
+| `RULE10` | `BOBJ10` | constrains | |
+| `RULE11` | `BOBJ3` | constrains | |
+
+## Layer 3 — Information
+
+### [Data domains](./3_information/1_data-domains.md)
+
+| From | To | Relationship | Notes |
+| ---- | -- | ------------ | ----- |
+| `DOBJ1` | `ROLE1` | associated with | Owner |
+| `DOBJ2` | `ROLE4` | associated with | Owner |
+| `DOBJ3` | `ROLE2` | associated with | Owner |
+| `DOBJ4` | `ROLE1` | associated with | Owner |
+| `DOBJ5` | `ROLE1` | associated with | Owner |
+
+### [Data objects](./3_information/2_data-objects.md)
+
+| From | To | Relationship | Notes |
+| ---- | -- | ------------ | ----- |
+| `DOBJ1.1` | `BOBJ1` | realizes | |
+| `DOBJ1.1` | `BOBJ7` | realizes | Source policies; the approval matrix and the other policies follow in initiative 4 |
+| `DOBJ1.2` | `BOBJ6` | realizes | |
+| `DOBJ1.2` | `DOBJ3.1` | flows to | Weights, bands and blocking passes |
+| `DOBJ1.3` | `RES4` | associated with | A versioned copy |
+| `DOBJ1.3` | `DOBJ3.3` | flows to | Code-list membership |
+| `DOBJ2.1` | `BOBJ2` | realizes | As the integration platform delivered it |
+| `DOBJ2.1` | `DOBJ2.2` | flows to | Every version, read above the high-water mark and from the gaps |
+| `DOBJ2.1` | `DOBJ5.3` | flows to | Personal values, vaulted at intake |
+| `DOBJ2.2` | `BOBJ2` | realizes | |
+| `DOBJ2.2` | `DOBJ2.3` | flows to | Standardised and keyed |
+| `DOBJ2.3` | `BOBJ2` | realizes | |
+| `DOBJ2.3` | `DOBJ3.1` | flows to | Blocking and scoring |
+| `DOBJ2.3` | `DOBJ3.3` | flows to | Validation rules |
+| `DOBJ2.3` | `DOBJ3.4` | flows to | Records to settle, queued with the state |
+| `DOBJ3.1` | `DOBJ3.2` | flows to | Review band, holds, possible duplicates |
+| `DOBJ3.1` | `DOBJ5.1` | flows to | Automatic change sets |
+| `DOBJ3.2` | `BOBJ8` | realizes | The tasks arrival writes; service levels, claims and ranks follow in initiative 3 |
+| `DOBJ4.1` | `BOBJ3` | realizes | |
+| `DOBJ4.1` | `DOBJ5.2` | flows to | Before and after, in the commit transaction |
+| `DOBJ4.2` | `BOBJ4` | realizes | |
+| `DOBJ4.3` | `BOBJ3` | realizes | |
+| `DOBJ4.4` | `BOBJ5` | realizes | |
+| `DOBJ4.5` | `BOBJ9` | realizes | The committed change set, as listening systems read it |
+| `DOBJ4.6` | `BOBJ3` | realizes | |
+| `DOBJ4.7` | `BOBJ3` | realizes | |
+| `DOBJ5.1` | `BOBJ9` | realizes | |
+| `DOBJ5.1` | `DOBJ4.1` | flows to | The commit path |
+| `DOBJ5.1` | `DOBJ4.2` | flows to | The commit path |
+| `DOBJ5.1` | `DOBJ4.3` | flows to | The commit path |
+| `DOBJ5.1` | `DOBJ4.4` | flows to | The commit path |
+| `DOBJ5.1` | `DOBJ4.5` | flows to | The commit path |
+| `DOBJ5.1` | `DOBJ4.6` | flows to | The commit path |
+| `DOBJ5.2` | `BOBJ10` | realizes | |
+| `DOBJ5.3` | `BOBJ10` | realizes | |
+| `DOBJ5.4` | `BOBJ10` | realizes | |
+
+## Layer 4 — Application
+
+### [Application services](./4_application/1_application-services.md)
+
+| From | To | Relationship | Notes |
+| ---- | -- | ------------ | ----- |
+| `ASVC1` | `BSVC2` | realizes | |
+| `ASVC1` | `BSVC5` | realizes | Bulk loading of source history |
+| `ASVC1` | `CAP6.1` | realizes | Quality rules on arrival |
+| `ASVC1` | `DOBJ2.1` | accesses | Reads, never writes |
+| `ASVC2` | `ASVC1` | serves | |
+| `ASVC2` | `BSVC5` | realizes | The match test |
+| `ASVC3` | `BSVC5` | realizes | |
+| `ASVC4` | `ASVC1` | serves | |
+| `ASVC4` | `ASVC5` | serves | |
+| `ASVC4` | `BSVC4` | realizes | Pending — future initiative (initiative 3): makers, checkers and the undo tray |
+| `ASVC4` | `BSVC7` | realizes | |
+| `ASVC4` | `CAP5.2` | realizes | The commit path and its authority check |
+| `ASVC4` | `CAP7.1` | realizes | The audit log |
+| `ASVC4` | `DOBJ4.5` | accesses | The only writer |
+| `ASVC5` | `BSVC3` | realizes | Pending — future initiative (initiative 3): the record actions on screen |
+| `ASVC5` | `CAP4.2` | realizes | As service functions |
+| `ASVC6` | `BSVC8` | realizes | |
+| `ASVC7` | `BSVC9` | realizes | Pending — future initiative (initiative 5) |
+| `ASVC7` | `CAP8.1` | realizes | Pending — future initiative (initiative 5): the plumbing and the stub exist, the capability arrives with the language model |
+
+### [Application components](./4_application/2_application-components.md)
+
+| From | To | Relationship | Notes |
+| ---- | -- | ------------ | ----- |
+| `ACMP2` | `ACMP3` | serves | |
+| `ACMP2` | `ACMP4` | serves | |
+| `ACMP3` | `ACMP1` | serves | `mdm ddl` prints the DDL and the grants; every command opens the store |
+| `ACMP3` | `ACMP5` | serves | |
+| `ACMP3` | `ACMP6` | serves | |
+| `ACMP3` | `ACMP7` | serves | |
+| `ACMP3` | `ACMP8` | serves | |
+| `ACMP3` | `ACMP9` | serves | |
+| `ACMP3` | `ACMP10` | serves | The access log of every assistant call |
+| `ACMP3` | `ACMP11` | serves | The simulator writes landing rows through the store |
+| `ACMP3` | `ACMP14` | serves | Column types and the stored form of a value |
+| `ACMP4` | `ACMP5` | serves | |
+| `ACMP4` | `ACMP7` | serves | |
+| `ACMP4` | `ACMP8` | serves | Survivorship recomputed after a lifecycle action |
+| `ACMP4` | `ACMP11` | serves | Check digits for invented registered IDs |
+| `ACMP4` | `ASVC2` | realizes | |
+| `ACMP5` | `ACMP1` | serves | |
+| `ACMP5` | `ASVC1` | realizes | |
+| `ACMP5` | `ASVC2` | realizes | |
+| `ACMP6` | `ACMP1` | serves | |
+| `ACMP6` | `ACMP5` | serves | |
+| `ACMP6` | `ACMP8` | serves | |
+| `ACMP6` | `ASVC4` | realizes | |
+| `ACMP7` | `ACMP1` | serves | |
+| `ACMP7` | `ACMP5` | serves | Published models and rule sets |
+| `ACMP7` | `ACMP6` | serves | The rule versions an automated authority names |
+| `ACMP7` | `ACMP8` | serves | Survivorship rules |
+| `ACMP7` | `ACMP9` | serves | The published model an authority check reads |
+| `ACMP7` | `ASVC3` | realizes | |
+| `ACMP8` | `ACMP1` | serves | |
+| `ACMP8` | `ASVC5` | realizes | |
+| `ACMP9` | `ACMP1` | serves | |
+| `ACMP9` | `ACMP5` | serves | The vault for arriving personal values |
+| `ACMP9` | `ACMP6` | serves | The authority check at commit |
+| `ACMP9` | `ACMP7` | serves | The role check and the bootstrap authority of every load and publish |
+| `ACMP9` | `ACMP8` | serves | The role check and the role authority of every record action |
+| `ACMP9` | `ACMP10` | serves | Masking before every prompt |
+| `ACMP9` | `ASVC6` | realizes | |
+| `ACMP10` | `ACMP1` | serves | |
+| `ACMP10` | `ASVC7` | realizes | |
+| `ACMP11` | `ACMP1` | serves | |
+| `ACMP11` | `DOBJ2.1` | accesses | Writes landing rows as the integration platform would, in the local mode only |
+| `ACMP12` | `ASVC5` | realizes | Pending — future initiative (initiative 3) |
+| `ACMP13` | `ACMP1` | serves | Pending — future initiative (initiative 4): scheduled jobs run the command line |
+| `ACMP14` | `ACMP5` | serves | |
+| `ACMP14` | `ACMP6` | serves | |
+| `ACMP14` | `ACMP7` | serves | |
+| `ACMP14` | `ACMP8` | serves | |
+| `ACMP14` | `ACMP9` | serves | |
+
+## Layer 5 — Technology
+
+### [Technology services](./5_technology/1_technology-services.md)
+
+| From | To | Relationship | Notes |
+| ---- | -- | ------------ | ----- |
+| `TSVC2` | `ACMP3` | serves | |
+| `TSVC3` | `ACMP3` | serves | |
+| `TSVC4` | `ACMP1` | serves | Pending — future initiative (initiative 4) |
+| `TSVC6` | `DOBJ4.5` | accesses | Pending — future initiative (initiative 4): External; the change notifier will read the commit log and announce new versions |
+| `NODE1` | `TSVC1` | realizes | |
+| `NODE1` | `TSVC2` | realizes | |
+| `NODE1` | `TSVC3` | realizes | A throwaway Postgres 16 server the tests start, where one is installed |
+| `NODE1` | `ART1` | hosts | |
+| `NODE1` | `ART3` | hosts | The local store file |
+| `NODE1` | `ART5` | hosts | |
+| `NODE1` | `ART6` | hosts | |
+| `NODE1` | `ART7` | hosts | |
+| `NODE2` | `TSVC1` | realizes | |
+| `NODE2` | `TSVC3` | realizes | A `postgres:17` service container |
+| `NODE2` | `TSVC5` | realizes | |
+| `NODE2` | `ART1` | hosts | Installed from the lockfile for the lint and the tests |
+| `NODE2` | `ART4` | hosts | |
+| `NODE2` | `ART6` | hosts | |
+| `NODE3` | `TSVC4` | realizes | Pending — future initiative (initiative 4) |
+| `NODE3` | `ART1` | hosts | Pending — future initiative (initiative 4) |
+| `NODE4` | `TSVC3` | realizes | Pending — future initiative (initiative 4) |
+| `NODE4` | `ART3` | hosts | Pending — future initiative (initiative 4) |
+
+### [Deployment](./5_technology/2_deployment.md)
+
+| From | To | Relationship | Notes |
+| ---- | -- | ------------ | ----- |
+| `ART1` | `ACMP1` | realizes | |
+| `ART1` | `ACMP2` | realizes | |
+| `ART1` | `ACMP3` | realizes | |
+| `ART1` | `ACMP4` | realizes | |
+| `ART1` | `ACMP5` | realizes | |
+| `ART1` | `ACMP6` | realizes | |
+| `ART1` | `ACMP7` | realizes | |
+| `ART1` | `ACMP8` | realizes | |
+| `ART1` | `ACMP9` | realizes | |
+| `ART1` | `ACMP10` | realizes | |
+| `ART1` | `ACMP11` | realizes | |
+| `ART1` | `ACMP14` | realizes | |
+| `ART2` | `DOBJ1.1` | realizes | Loaded as entity model versions |
+| `ART3` | `DOBJ1` | realizes | |
+| `ART3` | `DOBJ2` | realizes | |
+| `ART3` | `DOBJ3` | realizes | |
+| `ART3` | `DOBJ4` | realizes | |
+| `ART3` | `DOBJ5` | realizes | |
+
+## Transition
+
+### [Target state](./6_transition/1_target-state.md)
+
+| From | To | Relationship | Notes |
+| ---- | -- | ------------ | ----- |
+| `PLAT1` | `PLAT2` | must be true before | |
+| `PLAT1` | `GAP1` | differs by | |
+| `PLAT1` | `GAP2` | differs by | |
+| `PLAT1` | `GAP3` | differs by | |
+| `PLAT1` | `GAP4` | differs by | |
+| `PLAT1` | `GAP5` | differs by | |
+| `PLAT1` | `GAP6` | differs by | |
+| `PLAT1` | `GAP7` | differs by | |
+| `PLAT1` | `GAP8` | differs by | |
+| `PLAT1` | `GAP9` | differs by | |
+| `PLAT1` | `GAP10` | differs by | |
+| `PLAT1` | `GAP11` | differs by | |
+| `PLAT1` | `GAP12` | differs by | |
+| `PLAT1` | `GAP13` | differs by | |
+| `PLAT2` | `PLAT3` | must be true before | |
+| `PLAT2` | `G1` | serves | |
+| `PLAT2` | `G2` | serves | |
+| `PLAT2` | `G3` | serves | |
+| `PLAT2` | `G4` | serves | |
+| `PLAT2` | `G6` | serves | |
+| `PLAT2` | `G7` | serves | |
+| `PLAT3` | `PLAT4` | must be true before | |
+| `PLAT3` | `G1` | serves | |
+| `PLAT3` | `G4` | serves | |
+| `PLAT3` | `G5` | serves | |
+| `PLAT4` | `G5` | serves | |
+| `GAP1` | `PLAT2` | closed, reaches | |
+| `GAP1` | `BSVC2` | associated with | |
+| `GAP1` | `BSVC7` | associated with | |
+| `GAP1` | `ACT6` | associated with | |
+| `GAP2` | `PLAT2` | closed, reaches | |
+| `GAP2` | `CTR1` | associated with | |
+| `GAP2` | `CTR2` | associated with | |
+| `GAP3` | `PLAT2` | closed, reaches | |
+| `GAP3` | `BSVC1` | associated with | |
+| `GAP3` | `BSVC3` | associated with | |
+| `GAP3` | `BSVC4` | associated with | |
+| `GAP3` | `ACT7` | associated with | |
+| `GAP3` | `ACT8` | associated with | |
+| `GAP3` | `ACMP12` | associated with | |
+| `GAP4` | `PLAT2` | closed, reaches | |
+| `GAP4` | `CAP3.2` | associated with | |
+| `GAP4` | `RULE4` | associated with | |
+| `GAP4` | `VS1.6` | associated with | |
+| `GAP5` | `PLAT2` | closed, reaches | |
+| `GAP5` | `BSVC6` | associated with | |
+| `GAP5` | `CAP6.2` | associated with | |
+| `GAP5` | `BOBJ11` | associated with | |
+| `GAP6` | `PLAT2` | closed, reaches | |
+| `GAP6` | `RES2` | associated with | |
+| `GAP6` | `ACT4` | associated with | |
+| `GAP6` | `TSVC4` | associated with | |
+| `GAP6` | `NODE3` | associated with | |
+| `GAP6` | `NODE4` | associated with | |
+| `GAP6` | `ACMP13` | associated with | |
+| `GAP6` | `BSVC8` | associated with | Mapping workspace groups to roles |
+| `GAP7` | `PLAT2` | closed, reaches | |
+| `GAP7` | `RULE5` | associated with | |
+| `GAP7` | `OUT7` | associated with | |
+| `GAP8` | `PLAT2` | closed, reaches | |
+| `GAP8` | `OUT1` | associated with | |
+| `GAP8` | `ASM3` | associated with | |
+| `GAP9` | `PLAT2` | closed, reaches | |
+| `GAP9` | `RES4` | associated with | |
+| `GAP9` | `DOBJ1.3` | associated with | |
+| `GAP10` | `PLAT3` | closed, reaches | |
+| `GAP10` | `BSVC9` | associated with | |
+| `GAP10` | `ACT9` | associated with | |
+| `GAP10` | `RES6` | associated with | |
+| `GAP10` | `OUT5` | associated with | |
+| `GAP11` | `PLAT3` | closed, reaches | |
+| `GAP11` | `CAP4.2` | associated with | |
+| `GAP11` | `CAP6.1` | associated with | |
+| `GAP11` | `CAP3.2` | associated with | |
+| `GAP12` | `PLAT3` | closed, reaches | |
+| `GAP12` | `CAP2.3` | associated with | |
+| `GAP13` | `PLAT4` | closed, reaches | |
+| `GAP13` | `CAP8.2` | associated with | |
+| `GAP13` | `CAP3.1` | associated with | |

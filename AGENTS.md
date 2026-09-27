@@ -142,14 +142,90 @@ The catalogue lives with the skills, in the plugin, and is not restated here.
 - `architecture/reference/` — what the model was built from, and what was
   derived from each source.
 - [`scripts/`](./scripts/README.md) — the three validators, the parse behind
-  `check_model.py`, and `scan_public_safe.py`, all run before every push.
-  Everything else the method can do runs from the plugin rather than from a
-  copy in here.
+  `check_model.py`, and `scan_public_safe.py`, all run before every push;
+  `scripts/hooks/pre-push` runs them, the scan and ruff's lint and format
+  checks, once `make hooks` has pointed git at it. Everything else the method can do runs from the
+  plugin rather than from a copy in here.
+- `src/mdm/` — the hub: one Python package, run through the `mdm` command
+  line. Its layers and invariants are in § Code below.
+- `models/` — the starter entity models, `person.yaml` and
+  `organisation.yaml`, and `codelists/`, the code-list copies they validate
+  against. All invented. An entity is added here, never in code.
+- `tests/` — pytest. Every store test runs on DuckDB and on Postgres: a
+  throwaway Postgres the run starts for itself (`tests/postgres_server.py`,
+  which needs `initdb` and `pg_ctl`), or the one `MDM_TEST_POSTGRES` names.
+  `tests/conftest.py` holds the fixtures, and `tests/helpers.py` the invented
+  mini world and the landing and read-back helpers the service tests share.
+- `tools/spike_throughput.py` — the throughput spike; its results live in
+  `architecture/5_technology/3_capacity-and-throughput.md`.
+- `pyproject.toml`, `uv.lock`, `Makefile` — the package, its locked
+  dependencies (uv), and the targets below.
 - `.github/` — the checks workflow and the pull-request template.
 - [`LICENSE`](./LICENSE), [`NOTICE`](./NOTICE) — Apache-2.0, with the MIT
   notice for the files copied from the method's scaffold.
 
-There is no code yet; the application arrives with initiative 2.
+## Code
+
+The package is layered, and a module imports only from layers to its left:
+`models` → `config`, `capacity` → `backend` | `engine` → `services` → `cli`.
+The assistant and the simulator sit beside the services: of the services,
+`agent` uses only `services.privacy`, and `demo` uses none. Tests in
+`tests/test_services_capacity.py` check the import rule and that no SQL is
+written outside `src/mdm/backend/`.
+
+| Layer | Module | Role |
+| ----- | ------ | ---- |
+| Domain model | `src/mdm/models/` | Frozen dataclasses, the errors (`errors.py`), `canonical_json`, and the safety helpers (`safety.py`). No SQL, no input or output |
+| Settings and capacity | `src/mdm/config.py`, `src/mdm/capacity.py` | `Settings.from_env` reads `MDM_*` variables; the declared figures, and the paging helpers `pages`, `chunks` and `require_limit` |
+| Store | `src/mdm/backend/` | Every SQL statement, once, in `store.py`, over two engines, `duckdb_engine.py` and `postgres_engine.py`; the DDL (`ddl.py`); the write guard (`guard.py`); Lakebase credentials (`lakebase_auth.py`); `factory.open_store(settings)` |
+| Matching engine | `src/mdm/engine/` | Standardise, key, compare, score and explain, estimate, cluster, survive, check quality. Pure and deterministic |
+| Services | `src/mdm/services/` | The landing reader, arrival, the commit path and the feed reader, lifecycle, the registry, authority and privacy; `Hub.open` in `context.py` wires them |
+| Assistant | `src/mdm/agent/` | Provider choice, masked prompts, the stub and the case narrative |
+| Simulator | `src/mdm/demo/` | Invented source changes, landed as the integration platform would |
+| Entry points | `src/mdm/cli.py` | The Typer app `mdm` |
+
+### Invariants (do not violate)
+
+1. **No SQL outside `src/mdm/backend/`.** Services, the engine and the
+   command line call `SqlStore` methods.
+2. **`backend` and `engine` never import each other.** The engine is pure
+   Python with no input or output; the store knows nothing of matching.
+3. **Only `src/mdm/services/commit.py` writes `mdm_core`, inside the
+   commit-order lock** (`store.commit_scope()`). The store's guard refuses
+   any other write, and the change feed is written in the same transaction
+   (decision 8).
+4. **The hub never writes the landing tables**, except the local simulator,
+   `src/mdm/demo/`, inside `guard.simulating_integration_platform`.
+5. **No personal value in a detail, reason, suggestion, evidence, message or
+   log line** — attribute names, codes, IDs, source keys and counts only.
+   Build every one through `src/mdm/models/safety.py`; the store checks each
+   again where it writes a task, a reject, a change set or an access row, and
+   `tests/test_services_personal_data.py` is the backstop.
+6. **Personas, the simulator and `mdm demo reset` run only on a local
+   store**: DuckDB, or a test Postgres on this machine marked
+   `MDM_ALLOW_PERSONAS=1` (the store refuses to open that setting on any other
+   server).
+   `Settings.local_mode` is the one test, and a Lakebase endpoint or a
+   Databricks App or runtime variable always makes the store shared
+   (decision 13).
+
+### Established idioms (copy these; do not invent new ones)
+
+- **A new setting** goes in `Settings` and `Settings.from_env`
+  (`src/mdm/config.py`), with the prefix `MDM_`. No `.env` file is read.
+- **An error** is an `MdmError` subclass from `src/mdm/models/errors.py`,
+  raised with a code and safe fields; the command line prints one sentence
+  built from them, never a value.
+- **A read of a large table** is keyed or paged with `capacity.pages()`,
+  never with an offset. `tests/test_services_capacity.py` fails an unbounded
+  read.
+- **A write of many rows** binds one JSON row document per chunk, the same
+  statement on both engines (decision 6). Stored JSON is `canonical_json`.
+- **A store contract change** updates `store.py`, both engine hooks where
+  they differ, and a test that runs on both engines.
+- **Demo data is invented**: names from `src/mdm/demo/names.py`, e-mail
+  addresses at `example.org`, sources named `hr`, `student_records`, `crm`
+  and `finance`. Never a real organisation or person.
 
 ## Commands
 
@@ -160,9 +236,28 @@ python3 scripts/check_prose.py    # every model page speaks about its subject
 python3 scripts/scan_public_safe.py --root . --terms .public-safe-terms.txt   # nothing unsafe to publish
 ```
 
-All four must be green before pushing. They need nothing but Python — no
-network, no plugin installed — so this project can check itself. Without the
-terms file the scan applies its built-in patterns only, as CI does.
+They need nothing but Python — no network, no plugin installed — so this
+project can check itself. Without the terms file the scan applies its
+built-in patterns only, as CI does.
+
+The code runs through uv and the `Makefile`:
+
+```bash
+make install     # uv sync: the runtime and development dependencies, from uv.lock
+make hooks       # point git at scripts/hooks, so the checks run before every push
+make lint        # ruff check and ruff format --check, as CI runs them
+make test        # pytest across the cores, on DuckDB and on Postgres (a throwaway server per worker, or MDM_TEST_POSTGRES)
+make test-fast   # DuckDB only, without the slow and live tests, while iterating
+make demo        # a fresh local store: land invented changes, arrive, commit, read the feed
+make spike       # the throughput spike at 100,000 records on DuckDB
+make check       # the four checks above, the lint and the tests
+uv run mdm --help
+```
+
+All of them — the four checks, the lint and the tests — must be green before
+pushing. CI sets `MDM_REQUIRE_POSTGRES=1`, so a missing Postgres fails the
+run rather than skipping it. The DuckDB file is single-writer: stop other
+processes on `.mdm/mdm.duckdb`, or point `MDM_DUCKDB_PATH` elsewhere.
 
 Everything else the method can do runs from the plugin against this project,
 so there is one copy of each tool rather than one per project:
@@ -202,6 +297,9 @@ Delete it and nothing is lost.
   sequence.
 - Diagram shapes follow the method's defaults, except that an outcome is an
   inverted trapezoid, and in the business layer a service is a rounded box, a
-  business object a subroutine box and a business rule a trapezoid, so no two
-  types share a shape.
+  business object a subroutine box, a business rule a trapezoid and a business
+  process a hexagon, so no two types share a shape. An External party, such as
+  the integration platform, is a grey dashed box with no ID. An element of
+  this model that another team runs, such as the landing row or the change
+  notifier, keeps its ID and is drawn grey dashed too.
 - `scripts/prose-denylist.json` is the scaffold's list, untuned.
