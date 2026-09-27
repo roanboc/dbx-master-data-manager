@@ -4,7 +4,7 @@ _[← Technology layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Technology layer: Artifact, Node. Where the hub lives, what runs on every change, and how a built artifact reaches the place it runs.
 
-**Status:** ◐ Draft catalogue — written for initiative 2, Foundations; not yet validated.
+**Status:** ● Validated, 2026-09-27.
 
 ## Where this project lives
 
@@ -74,12 +74,12 @@ The package realizes all twelve existing [application components](../4_applicati
 | ID | Artifact | Path | Deployed on | Source | Notes |
 | -- | -------- | ---- | ----------- | ------ | ----- |
 | `ART1` | **Python package** | `src/mdm/`, built from `pyproject.toml` and `uv.lock`, with the `mdm` command line as its entry point | [Node [`NODE1`] Workstation](./1_technology-services.md#nodes)<br>node [`NODE2`] CI runner<br>node [`NODE3`] Databricks workspace, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | [Decision 5](../decisions/5_python-dash-and-typer.md) | |
-| `ART2` | **Starter entity models** | `models/person.yaml`<br>`models/organisation.yaml`<br>`models/codelists/`<br>the invented starter Person and Organisation models, and the country code list | Loaded into the store by `mdm init --models models` | [Answer 1](../reference/2026-09-26-request-and-answers.md#answers); [decision 15](../decisions/15_code-list-snapshots.md) | Their weights, priors and bands are starting values; estimation drafts better ones from the data |
+| `ART2` | **Starter entity models** | `models/person.yaml`<br>`models/organisation.yaml`<br>`models/codelists/`<br>the invented starter Person and Organisation models, and the country code list | Loaded into the store by `mdm init --models models` | [Answer 1](../reference/2026-09-26-request-and-answers.md#answers); [decision 15](../decisions/15_code-list-snapshots.md) | |
 | `ART3` | **Store schemas** | The eight schema groups that `src/mdm/backend/ddl.py` creates: one file, `.mdm/mdm.duckdb`, locally, and schemas in the operational database on the platform | Node [`NODE1`] Workstation<br>node [`NODE4`] Lakebase project, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | [Decision 7](../decisions/7_schema-groups-and-one-published-schema.md) | |
 | `ART4` | **Checks workflow** | `.github/workflows/checks.yml` | Node [`NODE2`] CI runner | Blueprint §7 | |
 | `ART5` | **Developer tooling** | `Makefile`<br>`scripts/hooks/pre-push` | Node [`NODE1`] Workstation | Blueprint §7 | |
 | `ART6` | **Test suite** | `tests/`, which runs every store test on both engines | Node [`NODE1`] Workstation<br>node [`NODE2`] CI runner | [Decision 6](../decisions/6_one-sql-store-two-engines.md) | |
-| `ART7` | **Throughput spike** | `tools/spike_throughput.py` | Node [`NODE1`] Workstation | [Decision 14](../decisions/14_declared-capacity.md) | Its results are in [measured throughput](./3_capacity-and-throughput.md#measured-throughput) |
+| `ART7` | **Throughput spike** | `tools/spike_throughput.py` | Node [`NODE1`] Workstation | [Decision 14](../decisions/14_declared-capacity.md) | |
 
 ## What is deployed by hand
 

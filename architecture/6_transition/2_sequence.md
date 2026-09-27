@@ -4,7 +4,7 @@ _[← Roadmap](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Implementation & Migration: the order of the initiatives that close the gaps.
 
-**Status:** ◐ Draft catalogue — written for initiative 2, Foundations; not yet validated.
+**Status:** ● Validated, 2026-09-27.
 
 ## Sequence
 

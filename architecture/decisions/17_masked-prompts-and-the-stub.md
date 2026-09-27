@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Touches:** [application service [`ASVC7`] Assistance plumbing](../4_application/1_application-services.md#application-services)
 

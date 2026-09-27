@@ -4,7 +4,7 @@ _[← Information layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Information: Data Object and the flows between data objects, with the parties outside the hub that write and read them, and Representation.
 
-**Status:** ◐ Draft catalogue — written for initiative 2, Foundations; not yet validated.
+**Status:** ● Validated, 2026-09-27.
 
 A flow between two data objects runs inside the hub. A flow to or from a party outside the hub crosses the landing interface, the listener interface or an optional copy for analytics.
 

@@ -4,7 +4,7 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Application layer: Application Interface, with the contract each interface realizes.
 
-**Status:** ◐ Draft catalogue — written for initiative 2, Foundations; not yet validated.
+**Status:** ● Validated, 2026-09-27.
 
 Two interfaces connect the hub to the teams around it. The integration platform writes source changes into the landing interface, and reads committed changes back through the listener interface. Both state the hub's side and its proposal. The agreement of the integration team and the data platform team is **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)).
 

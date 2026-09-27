@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Touches:** [declared capacity](../5_technology/3_capacity-and-throughput.md#declared-capacity)
 
