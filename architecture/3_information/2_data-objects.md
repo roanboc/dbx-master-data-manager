@@ -4,7 +4,7 @@ _[← Information layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Information: Data Object at level 2, grouped by data domain, with the Business Object each one realizes.
 
-**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-28.
 
 The persons and organisations the hub masters are rows of `DOBJ4.1`, not data objects of their own. Each object belongs to one of the [data domains](./1_data-domains.md).
 

@@ -4,7 +4,7 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Application layer: Application Component.
 
-**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-28.
 
 ## Application components
 

@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Touches:** [data object [`DOBJ3.5`] Staged decision](../3_information/2_data-objects.md#resolution-work)
 

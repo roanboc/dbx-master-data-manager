@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Touches:** [actor [`ACT6`] Automated matcher](../2_business/1_business-actors-and-roles.md#automated-matcher)
 
