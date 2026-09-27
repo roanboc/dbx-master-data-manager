@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "archreator": {
+      "source": {
+        "source": "github",
+        "repo": "roanboc/archreator"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "archreator@archreator": true
+  }
+}

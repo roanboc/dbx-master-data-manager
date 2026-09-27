@@ -1,0 +1,34 @@
+# The three validators and the public-safety scan, on every change. Activated
+# by `establish-project` for any project hosted on GitHub — public or private —
+# because no validator needs a repository setting enabled, a dependency
+# installed, or a secret.
+
+name: Model checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # All three validators are Python standard library, so there is nothing
+      # to install and no lockfile to keep current.
+      - name: Check relative Markdown and HTML links
+        run: python3 scripts/check_links.py
+      - name: Check element-ID references
+        run: python3 scripts/check_model.py
+      - name: Check that every model page speaks about its subject
+        run: python3 scripts/check_prose.py
+
+  public-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Built-in patterns only: the denylist that names the organisation is
+      # kept outside the repository, so it is absent here and the scan skips it.
+      - name: Scan for content that must not be published
+        run: python3 scripts/scan_public_safe.py --root .

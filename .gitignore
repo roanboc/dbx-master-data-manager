@@ -1,0 +1,28 @@
+# Python bytecode from running the checks in scripts/.
+__pycache__/
+*.pyc
+
+# Agent-local material, one directory per host the method might run on:
+# installed and vendored skills, worktrees, machine-local settings. Never
+# shared. Project-scoped settings that ARE meant to be committed live in the
+# host's own settings file, not in these.
+.claude/settings.local.json
+.agents/
+.gemini/
+.codex/
+.copilot/
+
+# Everything the method generates: briefs, the portal it writes a config for,
+# and any scope brief still being worked on. All of it is rebuilt from the
+# Markdown under architecture/ on demand, so a copy in the history is a copy
+# that can go stale — and a generated document that gets committed is the
+# second model everyone edits instead.
+.archreator/
+
+# The JSON export, for a consumer that cannot read Markdown. Nothing in the
+# method reads it back; delete it and nothing is lost.
+.model/
+
+# The private denylist for the public-safety scan. It names the organisation, so
+# it never enters the history; CI runs the scan with its built-in patterns only.
+.public-safe-terms.txt

@@ -1,0 +1,3 @@
+# Literals the public-safety scan may ignore (see scripts/scan_public_safe.py).
+# One per line; matched case-insensitively as a substring. Placeholders and
+# public references only; never a real host, address or name.

@@ -1,0 +1,50 @@
+Master Data Manager — a Databricks App, with a local mode on DuckDB, for governed master data.
+
+Copyright 2026 the Master Data Manager contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this project except in compliance with the License. You may obtain a copy
+of the License at http://www.apache.org/licenses/LICENSE-2.0.
+
+Third-party content
+-------------------
+ArchiMate is a registered trademark of The Open Group; the model's notation
+names its element types for interoperability only. DAMA-DMBOK is cited by
+chapter and reproduced nowhere. ISO standards are cited by number only.
+Gartner and Magic Quadrant are registered trademarks of Gartner, Inc.; the
+model cites the 2026 market definition and names no vendor from it.
+
+scripts/scan_public_safe.py comes from the Reference Data Manager, under the
+Apache License, Version 2.0.
+
+archreator
+----------
+The validators under scripts/ (check_links.py, check_model.py, check_prose.py,
+model_graph.py, element-prefixes.json and prose-denylist.json) are copies of
+the archreator 0.6.0 scaffold, and AGENTS.md, README.md, scripts/README.md,
+architecture/README.md, the READMEs and relationships.md under architecture/,
+.gitignore and the files under .github/ are adapted from its scaffold and assets
+(https://github.com/roanboc/archreator). The method itself is loaded as a
+plugin (.claude/settings.json). These files are used under the MIT License:
+
+MIT License
+
+Copyright (c) 2026 roanboc
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
