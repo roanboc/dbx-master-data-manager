@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from mdm.engine.identifiers import luhn_digit, mod97_digits
 from mdm.engine.standardise import standardise_record
-from mdm.models.entity_model import EntityModel
+from mdm.models.entity_model import EntityModel, MatchRules
 from mdm.models.records import SourceChange, SourceKey, SourceState, StdRecord
 
 ENGINE_DIR = Path(__file__).resolve().parents[1] / "src" / "mdm" / "engine"
@@ -94,6 +95,29 @@ def state(
 
 def key(text: str) -> SourceKey:
     return SourceKey.from_text(text)
+
+
+# A population whose names and birth dates rarely agree by chance: the first starter weights, before the
+# calibration on the Zipf-named demo world. A test of scoring or estimation mechanics that needs a fixed
+# arithmetic uses them, so it does not change each time the committed model is recalibrated.
+RARE_NAME_WEIGHTS = {
+    "given_name": ((0.80, 0.08, 0.07, 0.05), (0.005, 0.010, 0.040, 0.945)),
+    "family_name": ((0.85, 0.07, 0.05, 0.03), (0.002, 0.005, 0.020, 0.973)),
+    "birth_date": ((0.85, 0.08, 0.04, 0.03), (0.0003, 0.002, 0.020, 0.9777)),
+}
+
+
+def rare_name_rules(rules: MatchRules) -> MatchRules:
+    """The person rules with the rare-name m and u in place of the committed ones."""
+    return replace(
+        rules,
+        comparisons=tuple(
+            replace(spec, m=RARE_NAME_WEIGHTS[spec.name][0], u=RARE_NAME_WEIGHTS[spec.name][1])
+            if spec.name in RARE_NAME_WEIGHTS
+            else spec
+            for spec in rules.comparisons
+        ),
+    )
 
 
 # ----------------------------------------------------------------------------------------- the import rule

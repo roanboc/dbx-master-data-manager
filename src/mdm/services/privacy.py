@@ -10,8 +10,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from mdm.backend import guard
 from mdm.backend.ddl import attribute_type
-from mdm.backend.store import SqlStore
+from mdm.backend.store import SqlStore, new_redaction_id
 from mdm.models.authority import Actor
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Forbidden, NotFound
@@ -121,8 +122,9 @@ class Vault:
             raise Forbidden("confirmation_mismatch", action="redact", expected=len(subject_keys))
         if not reason or not reason.strip():
             raise Forbidden("reason_required", action="redact")
-        with self.store.transaction():
-            value_ids = self.store.vault_redact(list(subject_keys))
+        redaction_id = new_redaction_id()
+        with guard.redact_scope(), self.store.transaction():
+            value_ids = self.store.vault_redact(list(subject_keys), redaction_id=redaction_id)
             self.store.append_redaction(
                 list(subject_keys),
                 value_ids,
@@ -130,6 +132,7 @@ class Vault:
                 administrator,
                 f"RULE5: {owner.role}; checker {administrator.role}",
                 reason,
+                redaction_id=redaction_id,
             )
         return value_ids
 

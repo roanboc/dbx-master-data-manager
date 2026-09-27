@@ -1,9 +1,9 @@
 """Rule RULE1, the source policies and the architecture styles, as pure decisions (owner: SERVICES, B.10).
 
-Clauses (decision 16): `<source>.<policy>=<value>` for the four policy fields
-(`new`, `update`, `critical_update`, `end_date`), and `rule1:<case>` for the
-cases RULE1 makes automatic whatever the policy (`auto_band`, `delete`,
-`retired_id`, and `master_id`: an arrival carrying an active master ID).
+Clauses (decision 16): `<source>.<policy>=<value>` for the five policy fields
+(`new`, `update`, `critical_update`, `end_date`, `master_id`), and
+`rule1:<case>` for the cases RULE1 makes automatic whatever the policy
+(`auto_band`, `delete`, `retired_id`).
 
 - A deletion marker detaches automatically (`rule1:delete`); an orphan becomes
   an `orphan` task.
@@ -14,8 +14,12 @@ cases RULE1 makes automatic whatever the policy (`auto_band`, `delete`,
   against another golden record, or (e) its valid strong ID conflicts with
   another active member's — each a task with `hold = true`, the
   cross-reference kept, the golden record not recomputed.
-- A `master_id` hint that is active links; a retired one routes to its
-  survivor (`rule1:retired_id`).
+- A `master_id` hint that is retired routes to its survivor
+  (`rule1:retired_id`). One that is active links only when the source's
+  `master_id` policy is `auto` (default `hold`: a `review` task) and no valid
+  strong ID of the record conflicts with the golden record's active members
+  (else an `exception` task); one the hub does not know is an `exception`
+  task (`<source>.master_id=<value>`).
 - One auto golden links (`link` mode) or consolidates (`consolidate` mode)
   (`rule1:auto_band`); two or more -> `possible_duplicate`; review band or a
   blocked auto candidate -> `review`.
@@ -35,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mdm.engine.cluster import Resolution
+from mdm.models.authority import RULE1_CASES
 from mdm.models.entity_model import EntityModel, SourceSpec
 from mdm.models.match import Band, Explanation
 from mdm.models.records import SourceKey, SourceState
@@ -42,8 +47,6 @@ from mdm.models.safety import safe_detail
 from mdm.services.support import changed_attributes, column_types, source_token, token
 
 PLAN_KINDS = ("link", "consolidate", "create", "update", "detach", "task", "noop", "identify")
-#: the cases rule RULE1 makes automatic whatever the source policy
-RULE1_CASES = ("auto_band", "delete", "retired_id", "master_id")
 #: plan kinds whose effect is a commit
 COMMITTING = frozenset({"link", "consolidate", "create", "update", "detach"})
 
@@ -179,11 +182,13 @@ def decide_new(
     *,
     record: SourceKey | None = None,
     hint_active: bool = False,
+    hint_blocked: str | None = None,
 ) -> Plan:
     """A record not linked yet, from its clustering resolution (never a cluster-pair resolution).
 
     `retired` maps retired master IDs to their survivors; `hint_active` says the hint names an active
-    golden record of this entity.
+    golden record of this entity, and `hint_blocked` names the cannot-link rule a valid strong ID of the
+    record breaks against that record's active members.
     """
     key = _key(source, record or (resolution.sources[0] if resolution.sources else None))
     mode = model.match.mode
@@ -203,18 +208,31 @@ def decide_new(
                 rule1_clause("retired_id"),
                 safe_detail(hint=token(hint), survivor=survivor),
             )
-        if hint_active:
+        clause = policy_clause(source, "master_id")
+        if not hint_active:
             return Plan(
-                "link", key, hint, None, "master_id", rule1_clause("master_id"), safe_detail(hint=token(hint))
+                "task", key, None, "exception", "unknown_master_id", clause, safe_detail(hint=token(hint))
             )
+        if hint_blocked:
+            return Plan(
+                "task",
+                key,
+                None,
+                "exception",
+                "master_id_conflict",
+                clause,
+                safe_detail(hint=token(hint), master_ids=[hint], rule=token(hint_blocked)),
+            )
+        if source.policy.master_id == "auto":
+            return Plan("link", key, hint, None, "master_id", clause, safe_detail(hint=token(hint)))
         return Plan(
             "task",
             key,
             None,
-            "exception",
-            "unknown_master_id",
-            rule1_clause("master_id"),
-            safe_detail(hint=token(hint)),
+            "review",
+            "master_id_held",
+            clause,
+            safe_detail(hint=token(hint), master_ids=[hint]),
         )
     evidence = _explained(resolution)
     if resolution.kind == "link":

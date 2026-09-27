@@ -70,9 +70,9 @@ ARRIVAL_READER = "arrival"
 #: at most this many tasks, candidates or feed rows in one answer
 MAX_TASKS = capacity.READ_PAGE
 MAX_CANDIDATES_SHOWN = 50
-_MASTER_ID = re.compile(r"^[A-Z][A-Z0-9]{0,9}-[0-9]{1,12}$")
+_MASTER_ID = re.compile(r"^[A-Z][A-Z0-9]{0,9}-[0-9]{1,12}\Z")
 _NAME = re.compile(NAME_RE)
-_CURSOR = re.compile(r"^([0-9]+):([0-9]+)$")
+_CURSOR = re.compile(r"^([0-9]+):([0-9]+)\Z")
 #: fixed columns of an entity table, shown apart from the attributes
 _FIXED = ("master_id", "status", "survivor_id")
 
@@ -756,7 +756,7 @@ def match(
     top: Annotated[int, typer.Option("--top")] = 5,
     narrative: Annotated[bool, typer.Option("--narrative")] = False,
 ) -> None:
-    """Match test: score one record against the golden records, masked; writes nothing."""
+    """Match test: score one record against the golden records, masked; writes one access-log row."""
     state = _state(ctx)
     stored = source is not None or key is not None
     if (record_file is None) == (not stored) or (stored and (source is None or key is None)):
@@ -769,7 +769,7 @@ def match(
     the_source = SourceKey(source, key) if stored and source and key else None
     with _hub(ctx) as hub:
         candidates = hub.matching.match_test(
-            entity, payload=payload, source=the_source, rules_version=rules_version, top=top
+            entity, actor=hub.actor, payload=payload, source=the_source, rules_version=rules_version, top=top
         )
         masked = hub.store.masked_rows(entity, [c.master_id for c in candidates]) if candidates else {}
         story = (

@@ -20,7 +20,8 @@ from mdm.models.errors import Conflict, Forbidden
 from mdm.models.records import SourceKey
 from mdm.models.tasks import Task, task_id, task_key
 from mdm.services.commit import RateLimiter
-from tests.test_services_fixtures import (
+from tests.conftest import join_all
+from tests.helpers import (
     T0,
     all_changes,
     arrive,
@@ -267,7 +268,7 @@ def test_chunking_keeps_a_create_with_its_links(hub) -> None:
 
 
 def _members(hub):
-    from tests.test_services_fixtures import partition
+    from tests.helpers import partition
 
     return partition(hub, "person")
 
@@ -312,10 +313,11 @@ def test_concurrent_commits_get_gap_free_versions_and_readers_see_a_prefix(hub) 
     workers = [threading.Thread(target=writer, args=(n,)) for n in range(threads)]
     for worker in workers:
         worker.start()
-    for worker in workers:
-        worker.join()
-    done.set()
-    watcher.join()
+    try:
+        join_all(workers)
+    finally:
+        done.set()
+    join_all([watcher])
     assert not errors, errors[:3]
     total = threads * per_thread
     assert hub.store.last_commit_version() == total

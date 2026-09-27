@@ -26,7 +26,7 @@ from mdm.engine.score import (
 from mdm.models.entity_model import Bands, ComparisonSpec, EntityModel, HardRule
 from mdm.models.match import LEVEL_NULL, Band, Explanation
 from mdm.models.records import RegisteredId
-from tests.test_engine_support import person_ref, std
+from tests.test_engine_support import person_ref, rare_name_rules, std
 
 REF_A = person_ref("11223344")
 REF_B = person_ref("55667788")
@@ -286,7 +286,7 @@ def test_counterfactuals_match_an_exhaustive_search(org_model: EntityModel) -> N
 
 
 def test_a_review_pair_shows_both_directions(person_model: EntityModel) -> None:
-    c = compile_rules(person_model.match, person_model)
+    c = compile_rules(rare_name_rules(person_model.match), person_model)
     levels = _levels_for(c, given_name=0, family_name=0, birth_date=3)
     x = explain(c, levels, _weight_of(c, levels), None)
     assert x.band is Band.REVIEW

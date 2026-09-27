@@ -88,7 +88,12 @@ class _Components:
 
     def __init__(self, members: Sequence[ClusterInput]) -> None:
         self.parent = {m.source: m.source for m in members}
-        self.ids = {m.source: {scheme: {value} for scheme, value in m.strong_ids} for m in members}
+        self.ids: dict[SourceKey, dict[str, set[str]]] = {}
+        for m in members:
+            held: dict[str, set[str]] = {}
+            for scheme, value in m.strong_ids:  # a record may hold two values of one scheme
+                held.setdefault(scheme, set()).add(value)
+            self.ids[m.source] = held
         self.weakest: dict[SourceKey, float | None] = {m.source: None for m in members}
 
     def find(self, source: SourceKey) -> SourceKey:
@@ -100,8 +105,10 @@ class _Components:
         return root
 
     def conflict(self, a: SourceKey, b: SourceKey) -> bool:
+        """True when the two components hold a scheme with no value in common: the same test as the
+        cannot-link hard rule, so a pair the rules let score never splits here."""
         left, right = self.ids[a], self.ids[b]
-        return any(scheme in right and right[scheme] != values for scheme, values in left.items())
+        return any(scheme in right and right[scheme].isdisjoint(values) for scheme, values in left.items())
 
     def union(self, a: SourceKey, b: SourceKey, score: float) -> None:
         # the smaller root (by source key) stays the root, so the result never depends on dict order

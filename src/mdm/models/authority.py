@@ -60,6 +60,8 @@ ACTIONS: Mapping[str, frozenset[str]] = {
     "estimate": frozenset({"technical_steward", "data_owner"}),
     "publish_rules": frozenset({"data_owner"}),
     "profile": frozenset({"technical_steward", "data_owner", "data_steward"}),
+    # the per-comparison levels could tell a masked value: never a consumer, and every call is logged
+    "match_test": frozenset({"data_steward", "coordinating_steward", "technical_steward", "data_owner"}),
     "load_code_lists": frozenset({"technical_steward", "data_owner"}),
     "redact": frozenset({"data_owner"}),  # + an administrator as checker, and a typed confirmation (RULE5)
 }
@@ -78,5 +80,7 @@ NEVER_AUTOMATIC = frozenset(
     }
 )
 NEEDS_CHECKER = frozenset({"merge", "unmerge", "retire", "redact"})
+#: the cases rule RULE1 makes automatic whatever the source policy; a clause cites one as `rule1:<case>`
+RULE1_CASES = ("auto_band", "delete", "retired_id")
 #: item kinds an automated change set may carry
 AUTOMATIC_ITEMS = frozenset({"create", "update", "link", "detach", "relationship"})

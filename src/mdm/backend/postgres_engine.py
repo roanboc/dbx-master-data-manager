@@ -1,8 +1,9 @@
 """The Postgres engine: Lakebase on the platform, any Postgres in tests (owner: BACKEND, B.5.3).
 
 A `psycopg_pool.ConnectionPool(conninfo, kwargs=<callable>, min_size=1,
-max_size=pool_max, max_lifetime=connection_max_age, configure=<SET TIME ZONE
-'UTC'>)`; every connection is in autocommit, and a transaction binds one
+max_size=max(pool_max, 2), max_lifetime=connection_max_age, configure=<SET TIME
+ZONE 'UTC'>, check=<a round trip before a connection is handed out>)`; every
+connection is in autocommit, and a transaction binds one
 connection to the current context (`contextvars`). `?` markers become `%s`
 outside literals and `%` is doubled when parameters are bound (`to_pg`). The
 commit-order lock is `pg_advisory_xact_lock(advisory_key(prefix + ":commit"))`
@@ -29,10 +30,11 @@ import psycopg
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from mdm.backend.ddl import sql_type
-from mdm.backend.lakebase_auth import Credentials, connection_kwargs
+from mdm.backend.lakebase_auth import DEFAULT_DATABASE as LAKEBASE_DATABASE
+from mdm.backend.lakebase_auth import Credentials, connection_kwargs, tls_mode
 from mdm.backend.store import SqlStore
-from mdm.config import Settings
-from mdm.models.errors import MdmError
+from mdm.config import POOL_MIN, Settings
+from mdm.models.errors import MdmError, PlatformRefused
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +54,8 @@ _CONNECTION_GONE = (
 )
 #: seconds to wait for the pool's first connection when the store opens
 OPEN_TIMEOUT = 30.0
+#: the addresses of a server on this machine
+LOOPBACK = frozenset({"127.0.0.1", "::1"})
 
 
 def to_pg(sql: str, params: Sequence[Any] | None = None) -> str:
@@ -74,6 +78,13 @@ def connection_gone(exc: BaseException) -> bool:
     return any(word in text for word in _CONNECTION_GONE)
 
 
+def local_server(host: str, address: str, database: str) -> bool:
+    """A server on this machine (a unix socket, or a loopback address) whose database is not Lakebase's."""
+    if database == LAKEBASE_DATABASE:
+        return False
+    return host.startswith("/") or address in LOOPBACK
+
+
 def _configure(conn: psycopg.Connection[Any]) -> None:
     conn.execute("SET TIME ZONE 'UTC'")
 
@@ -94,14 +105,21 @@ class PostgresStore(SqlStore):
         super().__init__(settings)
         self.credentials = credentials
         conninfo = "" if credentials is not None else settings.postgres_dsn
+        if (
+            credentials is not None
+        ):  # a TLS mode that could send the token in clear fails here, not in the pool
+            tls_mode(settings, settings.pg_host or credentials.host())
         self._tx: ContextVar[_Binding | None] = ContextVar(f"mdm_pg_tx_{id(self)}", default=None)
         self._pool: ConnectionPool[Any] = ConnectionPool(
             conninfo,
             kwargs=connection_kwargs(settings, credentials),
             min_size=1,
-            max_size=max(settings.pool_max, 1),
+            max_size=max(settings.pool_max, POOL_MIN),
             max_lifetime=float(settings.connection_max_age),
             configure=_configure,
+            # a connection the server or the network dropped (idle timeout, scale to zero, failover) is
+            # replaced before it is handed out, so neither the lease nor a transaction starts on it
+            check=ConnectionPool.check_connection,
             open=False,
             name=f"mdm-{settings.schema_prefix}",
             num_workers=2,
@@ -111,6 +129,32 @@ class PostgresStore(SqlStore):
         except PoolTimeout:
             self._pool.close()
             raise MdmError("store_unreachable", engine="postgres") from None
+        if settings.allow_personas and not self._on_this_machine():
+            self._pool.close()
+            raise PlatformRefused("personas_need_a_local_postgres")
+
+    def _on_this_machine(self) -> bool:
+        """True for a server on a unix socket or a loopback address that is not Lakebase's database.
+
+        `MDM_ALLOW_PERSONAS=1` marks a test database; a DSN that reaches any other server (a laptop
+        pointed at the operational database with a token as its password) never takes personas.
+        """
+        if self.credentials is not None:
+            return False
+        with self._pool.connection() as conn:
+            host = conn.info.host or ""
+            try:
+                address = conn.info.hostaddr or ""
+            except psycopg.NotSupportedError:  # libpq before 12 names no address
+                address = ""
+            sql = "/*mdm:small*/ SELECT current_database()"
+            self._check(sql)
+            database = str(self._run_on(conn, sql, [], fetch=True)[0][0])
+        return local_server(host, address, database)
+
+    def server_version(self) -> str:
+        number = int(self._fetch_all("/*mdm:small*/ SELECT current_setting('server_version_num')")[0][0])
+        return f"Postgres {number // 10000}.{number % 10000}"
 
     # ------------------------------------------------------------------ statements
 

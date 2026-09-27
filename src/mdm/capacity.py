@@ -42,6 +42,11 @@ MIN_ID_PAIRS = 200
 FREQUENCY_SAMPLE_RECORDS = 100_000
 PROFILE_DISTINCT_CAP = 100_000
 FEED_PAGE_ROWS = 5_000
+#: the landing contract's size limits: a row over any of them is rejected `too_large` (comparing and
+#: standardising cost grows with a value's length, so one oversized row must not slow arrival)
+MAX_TEXT_CHARS = 4_000
+MAX_GROUP_ITEMS = 100
+MAX_PAYLOAD_BYTES = 64 * 1024
 
 #: tables no statement may read without a key document, a full key or a LIMIT; + every entity table
 LARGE_TABLES = (

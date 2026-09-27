@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -65,10 +66,14 @@ def pattern_of(text: str) -> str:
 
 
 class _Tally:
+    """Counts for one attribute. A personal value is counted by its digest, so the distinct count is true while
+    the tally holds no personal value; its top values are the masked forms."""
+
     def __init__(self) -> None:
         self.filled = 0
         self.empty = 0
         self.values: Counter[str] = Counter()
+        self.shown: Counter[str] = Counter()
         self.capped = False
         self.patterns: Counter[str] = Counter()
         self.min_length: int | None = None
@@ -80,11 +85,13 @@ class _Tally:
             return
         self.filled += 1
         text = value_text(value)
-        shown = (text[:1] + MASK if isinstance(value, str) else MASK) if personal else text
-        if shown in self.values or len(self.values) < capacity.PROFILE_DISTINCT_CAP:
-            self.values[shown] += 1
+        counted = hashlib.sha256(text.encode("utf-8")).hexdigest() if personal else text
+        if counted in self.values or len(self.values) < capacity.PROFILE_DISTINCT_CAP:
+            self.values[counted] += 1
         else:
             self.capped = True
+        if personal:
+            self.shown[text[:1] + MASK if isinstance(value, str) else MASK] += 1
         if len(self.patterns) < capacity.PROFILE_DISTINCT_CAP or pattern_of(text) in self.patterns:
             self.patterns[pattern_of(text)] += 1
         length = len(text)
@@ -96,6 +103,10 @@ def _top(counter: Counter[str]) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP_VALUES])
 
 
+def _top_values(tally: _Tally, personal: bool) -> tuple[tuple[str, int], ...]:
+    return _top(tally.shown if personal else tally.values)
+
+
 class ProfileService:
     def __init__(self, store: SqlStore, registry: ModelRegistry) -> None:
         self.store = store
@@ -103,7 +114,7 @@ class ProfileService:
 
     def profile(self, entity: str, source_system: str | None = None, *, actor: Actor) -> Profile:
         """Pages source_state; requires `profile`. Active records only; personal top values masked (the
-        distinct count of a personal attribute counts masked forms)."""
+        distinct count of a personal attribute counts its values, never shown)."""
         require(actor, "profile")
         model = self.registry.published(entity)
         if source_system is not None:
@@ -132,7 +143,7 @@ class ProfileService:
                     empty=tallies[a.name].empty,
                     distinct=len(tallies[a.name].values),
                     distinct_capped=tallies[a.name].capped,
-                    top=_top(tallies[a.name].values),
+                    top=_top_values(tallies[a.name], a.personal),
                     patterns=_top(tallies[a.name].patterns),
                     min_length=tallies[a.name].min_length,
                     max_length=tallies[a.name].max_length,

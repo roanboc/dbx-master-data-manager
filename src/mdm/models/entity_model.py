@@ -56,8 +56,11 @@ RULE_KINDS = ("required", "pattern", "range", "code_list", "checksum", "placehol
 DIMENSIONS = ("completeness", "validity", "consistency", "timeliness", "uniqueness", "accuracy")
 CHECKSUMS = ("luhn", "mod97", "mod11")
 SEVERITIES = ("warn", "hold")
-POLICY_FIELDS = ("new", "update", "critical_update", "end_date")
+POLICY_FIELDS = ("new", "update", "critical_update", "end_date", "master_id")
 POLICY_VALUES = ("auto", "hold")
+#: a field's value when the model leaves it out: "auto", except an arrival naming an active master ID, which
+#: rule RULE1 does not make automatic, so it is held for a steward unless the data owner says otherwise
+POLICY_DEFAULTS: Mapping[str, str] = {"master_id": "hold"}
 DATE_ORDERS = ("ymd", "dmy", "mdy")
 HARD_RULE_KINDS = ("must_link", "cannot_link")
 GROUP_MODES = ("whole_group", "keyed_union")
@@ -85,9 +88,9 @@ SQL_RESERVED_WORDS: frozenset[str] = frozenset(
         "window", "with",
     }
 )  # fmt: skip
-NAME_RE = r"^[a-z][a-z0-9_]{0,40}$"
-CODE_RE = r"^[A-Z][A-Z0-9]{1,7}$"  # the master-ID prefix: PER, ORG
-SCHEME_RE = r"^[A-Z][A-Z0-9_]{0,30}$"  # a registered-ID scheme: PERSON_REF, ORG_REG
+NAME_RE = r"^[a-z][a-z0-9_]{0,40}\Z"
+CODE_RE = r"^[A-Z][A-Z0-9]{1,7}\Z"  # the master-ID prefix: PER, ORG
+SCHEME_RE = r"^[A-Z][A-Z0-9_]{0,30}\Z"  # a registered-ID scheme: PERSON_REF, ORG_REG
 
 #: match forms per standardiser: "" is the attribute's own form `a`, others are `a.<suffix>` (B.9.1)
 MATCH_FORMS: Mapping[str, tuple[str, ...]] = {
@@ -157,10 +160,10 @@ _NAME = re.compile(NAME_RE)
 _CODE = re.compile(CODE_RE)
 _SCHEME = re.compile(SCHEME_RE)
 _KEY_EXPR = re.compile(
-    r"^\s*(?:(?P<fn>[a-z_]+)\(\s*(?P<arg>[a-z0-9_.]+)\s*(?:,\s*(?P<n>\d+)\s*)?\)|(?P<bare>[a-z0-9_.]+))\s*$"
+    r"^\s*(?:(?P<fn>[a-z_]+)\(\s*(?P<arg>[a-z0-9_.]+)\s*(?:,\s*(?P<n>\d+)\s*)?\)|(?P<bare>[a-z0-9_.]+))\s*\Z"
 )
 _TOKEN_UNSAFE = re.compile(r"[^A-Za-z0-9_.:=/+\-]")
-_PLACEHOLDER_PATTERN = re.compile(r"^(\*|\d{4})-(\*|\d{2})-(\*|\d{2})$")
+_PLACEHOLDER_PATTERN = re.compile(r"^(\*|\d{4})-(\*|\d{2})-(\*|\d{2})\Z")
 _DISPLAY_FIELD = re.compile(r"\{([^{}]*)\}")
 
 
@@ -227,6 +230,9 @@ class SourcePolicy:
     update: str = "auto"
     critical_update: str = "auto"
     end_date: str = "auto"  # auto | hold
+    master_id: str = (
+        "hold"  # auto | hold: an arrival naming an active master ID links, or waits for a steward
+    )
 
     def clause(self, system: str, field: str) -> str:
         """The clause an automated item cites: `crm.update=auto` (decision 16)."""
@@ -391,7 +397,9 @@ class EntityModel:
 
 
 def check_compatible(old: EntityModel, new: EntityModel) -> list[str]:
-    """Problems that stop `new` replacing `old`: attributes are only ever added, and types never change."""
+    """Problems that stop `new` replacing `old`: attributes are only ever added, types never change, and a
+    personal attribute stays personal (unmasking it would open `<p>_read`, stop vaulting it and put its
+    values into prompts; no model version may do that on its own)."""
     problems: list[str] = []
     if old.entity != new.entity:
         problems.append(f"entity_changed:{_token(new.entity)}")
@@ -408,6 +416,8 @@ def check_compatible(old: EntityModel, new: EntityModel) -> list[str]:
             problems.append(f"type_changed:{where}")
         if after.repeating != before.repeating:
             problems.append(f"repeating_changed:{where}")
+        if before.personal and not after.personal:
+            problems.append(f"masking_relaxed:{where}")
     return problems
 
 
@@ -701,7 +711,12 @@ class _Parser:
             policy_values = {}
             for policy_field in POLICY_FIELDS:
                 policy_values[policy_field] = self.choice(
-                    policy_doc, policy_field, POLICY_VALUES, "auto", *path, "policy"
+                    policy_doc,
+                    policy_field,
+                    POLICY_VALUES,
+                    POLICY_DEFAULTS.get(policy_field, "auto"),
+                    *path,
+                    "policy",
                 )
             date_order = self.choice(doc, "date_order", DATE_ORDERS, "ymd", *path)
             versioned = self.flag(doc, "versioned", *path)

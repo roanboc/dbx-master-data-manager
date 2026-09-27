@@ -21,6 +21,7 @@ from mdm.models.changes import CommitLogRow
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import MdmError
 from mdm.models.records import Reject
+from tests.conftest import THREAD_TIMEOUT, join_all
 
 T0 = datetime(2026, 1, 5, 9, 0, tzinfo=UTC)
 REPEATABLE_READ = "-c default_transaction_isolation=repeatable\\ read"
@@ -37,7 +38,7 @@ def commit_many(store: SqlStore, threads: int, each: int) -> tuple[list[int], li
     versions: list[int] = []
     errors: list[BaseException] = []
     lock = threading.Lock()
-    start = threading.Barrier(threads)
+    start = threading.Barrier(threads, timeout=THREAD_TIMEOUT)
 
     def work() -> None:
         start.wait()
@@ -56,8 +57,7 @@ def commit_many(store: SqlStore, threads: int, each: int) -> tuple[list[int], li
     workers = [threading.Thread(target=work) for _ in range(threads)]
     for worker in workers:
         worker.start()
-    for worker in workers:
-        worker.join()
+    join_all(workers)
     return versions, errors
 
 
@@ -118,10 +118,6 @@ def test_commit_versions_are_gap_free_under_threads(store: SqlStore) -> None:
 def test_repeatable_read_by_default_still_gives_gap_free_versions(
     make_store: Callable[..., SqlStore], request: pytest.FixtureRequest
 ) -> None:
-    from tests.conftest import ENGINES
-
-    if "postgres" not in ENGINES:
-        pytest.skip("the run leaves Postgres out")
     import psycopg.conninfo
 
     dsn = psycopg.conninfo.make_conninfo(request.getfixturevalue("postgres_dsn"), options=REPEATABLE_READ)
@@ -178,8 +174,7 @@ def test_a_statement_never_runs_inside_another_threads_transaction(store: SqlSto
     b = threading.Thread(target=outside)
     a.start()
     b.start()
-    a.join()
-    b.join()
+    join_all([a, b])
     assert errors == []
     assert [r.event_id for r in store.rejects(10)] == ["ev-b"]
 

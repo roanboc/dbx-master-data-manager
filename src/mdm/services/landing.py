@@ -12,14 +12,19 @@ the landing retention has passed).
   numbers split the ranges they fall in.
 - `record(batch)`: inside the intake transaction, `H` moves and the gaps are
   written, so the position moves only with the effect it stands for.
-- `tick()`: open gaps older than the timeout become lost (logged at warning
-  with the range and count); `L` = lowest open gap's `lo - 1`, else `H`.
-- `reconcile()`: probe the lost ranges; drop those older than the retention.
+- `tick()`: open gaps older than the timeout that a probe since the last tick
+  read to the end and found empty become lost (logged at warning with the
+  range and count), so a gap is always probed at least once after its timeout
+  before it is given up; `L` = lowest open gap's `lo - 1`, else `H`.
+- `reconcile()`: probe the lost ranges; drop those older than the retention
+  whose probe read to the end and found nothing.
 
 Why nothing stalls: new rows are always read above `H`, never above `L`, so a
 permanent gap costs one range row. Why nothing is lost: a row committed late
 has a number inside a gap range, and open ranges are re-probed on every batch,
-lost ones daily, until the integration platform may delete the row.
+lost ones daily, until the integration platform may delete the row; and a gap
+is declared lost, or a lost one dropped, only after a probe that read it to
+the end found nothing.
 """
 
 from __future__ import annotations
@@ -74,6 +79,12 @@ def missing_ranges(after: int, numbers: Sequence[int]) -> list[tuple[int, int]]:
     return out
 
 
+def complete_through(rows: Sequence[SourceChange], limit: int) -> int | None:
+    """How far a probe of ranges returning `rows` (ascending) under `limit` read: None when it read every
+    range to its end, else the last number returned (the LIMIT cut the ranges above it off)."""
+    return rows[-1].landing_seq if rows and len(rows) >= limit else None
+
+
 def split_gap(gap: Gap, found: Iterable[int]) -> list[Gap]:
     """The pieces of `gap` left when the numbers `found` inside it are taken out (same state and times)."""
     pieces: list[Gap] = []
@@ -106,6 +117,8 @@ class LandingReader:
         self.clock = clock
         #: the gaps the last next_batch or reconcile probed, by lo: record() splits them
         self._probed: dict[int, Gap] = {}
+        #: the ranges probed to the end since the last tick: only these may be declared lost
+        self._checked: list[tuple[int, int]] = []
 
     # ------------------------------------------------------------------ gaps
 
@@ -122,7 +135,13 @@ class LandingReader:
             return []
         for gap in gaps:
             self._probed[gap.lo] = gap
-        return self.store.landing_in_ranges([(g.lo, g.hi) for g in gaps], limit)
+        rows = self.store.landing_in_ranges([(g.lo, g.hi) for g in gaps], limit)
+        edge = complete_through(rows, limit)
+        self._checked.extend((g.lo, g.hi) for g in gaps if edge is None or g.hi <= edge)
+        return rows
+
+    def _was_checked(self, gap: Gap) -> bool:
+        return any(lo <= gap.lo and gap.hi <= hi for lo, hi in self._checked)
 
     # ------------------------------------------------------------------ batches
 
@@ -187,7 +206,11 @@ class LandingReader:
     # ------------------------------------------------------------------ the tick and reconciliation
 
     def tick(self) -> TickReport:
-        """Every run, even an empty one; its own transaction."""
+        """At the end of every run, even an empty one; its own transaction.
+
+        An open gap past the timeout is declared lost only when a probe since the last tick read it to
+        the end and found nothing, so a run that starts long after the last one probes it first.
+        """
         now = self.clock()
         timeout = timedelta(seconds=self.gap_timeout)
         with self.store.transaction():
@@ -196,7 +219,7 @@ class LandingReader:
             lowest_open: int | None = None
             for page in self._gaps("open"):
                 for gap in page:
-                    if now - gap.first_seen_at >= timeout:
+                    if now - gap.first_seen_at >= timeout and self._was_checked(gap):
                         lost.append(Gap(gap.lo, gap.hi, "lost", gap.first_seen_at, now))
                     elif lowest_open is None:
                         lowest_open = gap.lo
@@ -212,6 +235,7 @@ class LandingReader:
                 )
             low = lowest_open - 1 if lowest_open is not None else state.high_water
             self.store.save_reader(self.reader, state.high_water, low, upsert=lost)
+        self._checked = []
         counts = {kind: sum(len(page) for page in self._gaps(kind)) for kind in ("open", "lost")}
         return TickReport(
             high_water=state.high_water,
@@ -249,7 +273,11 @@ class LandingReader:
             expired.extend(g for g in page if g.lost_at is not None and now - g.lost_at >= self.retention)
         rows.sort(key=lambda c: c.landing_seq)
         found = [c.landing_seq for c in rows]
-        dropped = [g for g in expired if not any(g.lo <= n <= g.hi for n in found)]
+        # a range the probe did not read to the end may still hold rows: it is dropped on a later round
+        edge = complete_through(rows, limit)
+        dropped = [
+            g for g in expired if (edge is None or g.hi <= edge) and not any(g.lo <= n <= g.hi for n in found)
+        ]
         for gap in dropped:
             log.warning(
                 safe_message(

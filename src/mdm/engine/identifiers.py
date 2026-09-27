@@ -18,7 +18,7 @@ from typing import Any
 from mdm.models.records import RegisteredId
 
 _STRIP = re.compile(r"[\s.\-]+")
-_ALNUM = re.compile(r"^[0-9A-Z]+$")
+_ALNUM = re.compile(r"^[0-9A-Z]+\Z")
 
 
 def _digits_only(text: str) -> bool:

@@ -15,7 +15,6 @@ from mdm.config import Settings
 from mdm.models.entity_model import SQL_RESERVED_WORDS, EntityModel
 from mdm.models.errors import ModelError, PlatformRefused
 from mdm.models.records import GoldenRow
-from tests.conftest import ENGINES
 
 PORTABLE = {
     "duckdb": {
@@ -127,6 +126,18 @@ def test_a_reserved_word_is_refused_as_a_name(person_model: EntityModel, word: s
         EntityModel.from_dict(doc)
     doc = person_model.to_dict()
     doc["entity"] = word
+    with pytest.raises(ModelError):
+        EntityModel.from_dict(doc)
+
+
+@pytest.mark.parametrize("name", ["change\n", "person\n", "family_name\n"])
+def test_a_name_with_a_trailing_newline_is_refused(person_model: EntityModel, name: str) -> None:
+    doc = person_model.to_dict()
+    doc["entity"] = name
+    with pytest.raises(ModelError):
+        EntityModel.from_dict(doc)
+    doc = person_model.to_dict()
+    doc["attributes"] = [*doc["attributes"], {"name": name, "type": "text"}]
     with pytest.raises(ModelError):
         EntityModel.from_dict(doc)
 
@@ -263,8 +274,6 @@ def test_landing_is_created_only_in_the_local_mode(engine_settings: Settings, en
 
 @pytest.mark.postgres
 def test_a_plain_postgres_is_not_local(request: pytest.FixtureRequest) -> None:
-    if "postgres" not in ENGINES:
-        pytest.skip("the run leaves Postgres out")
     dsn = request.getfixturevalue("postgres_dsn")
     settings = Settings(backend="postgres", postgres_dsn=dsn, schema_prefix="tplain01")
     assert not settings.local_mode
@@ -317,7 +326,12 @@ def test_grants_for_the_listener_interface() -> None:
         people_roles=["stewards"],
     )
     assert 'GRANT USAGE ON SCHEMA mdm_core TO "listener"' in statements
-    assert 'GRANT SELECT ON ALL TABLES IN SCHEMA mdm_core TO "notifier"' in statements
+    assert 'GRANT SELECT ON ALL TABLES IN SCHEMA mdm_core TO "listener"' in statements
+    # the change notifier reads the commit log and nothing else: no record, no default privileges
+    assert [s for s in statements if '"notifier"' in s] == [
+        'GRANT USAGE ON SCHEMA mdm_core TO "notifier"',
+        'GRANT SELECT ON mdm_core.commit_log TO "notifier"',
+    ]
     assert (
         'ALTER DEFAULT PRIVILEGES FOR ROLE "hub-app" IN SCHEMA mdm_core GRANT SELECT ON TABLES TO "listener"'
         in statements
@@ -326,6 +340,15 @@ def test_grants_for_the_listener_interface() -> None:
     assert 'GRANT SELECT ON ALL TABLES IN SCHEMA mdm_read TO "stewards"' in statements
     assert not any("mdm_read" in s and '"listener"' in s for s in statements)
     assert ddl.quote_role('odd"name') == '"odd""name"'
+
+
+def test_a_name_a_statement_is_built_from_is_a_plain_identifier() -> None:
+    assert ddl.ident("person") == "person"
+    for bad in ("change\n", "Person", "a-b", "x;drop", "", "a" * 64, "1st"):
+        with pytest.raises(ValueError):
+            ddl.ident(bad)
+    with pytest.raises(ValueError):
+        ddl.schema_name("mdm\n", "core")
 
 
 def test_types_per_engine() -> None:

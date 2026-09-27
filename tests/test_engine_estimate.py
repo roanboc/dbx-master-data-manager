@@ -27,7 +27,7 @@ from mdm.engine.score import DEFAULT_M, compile_rules, weights
 from mdm.models.entity_model import EntityModel, MatchRules
 from mdm.models.match import LEVEL_NULL
 from mdm.models.records import SourceKey
-from tests.test_engine_support import state, std
+from tests.test_engine_support import rare_name_rules, state, std
 
 TOLERANCE = 0.03
 
@@ -210,9 +210,10 @@ def test_em_per_pass_does_not_inflate_the_key_comparison(person_model: EntityMod
     """★ In a family-name block every pair agrees on the family name, matches or not.
 
     Read as evidence, that agreement makes every pair look like a match: λ runs to 1 and the other m collapse
-    towards u. Fixed, as the pass's own key, it is neither read nor updated, and the rest is recovered.
+    towards u. Fixed, as the pass's own key, it is neither read nor updated, and the rest is recovered. The
+    inflation shows where family names rarely agree by chance, so the test fixes those weights.
     """
-    rules = person_model.match
+    rules = rare_name_rules(person_model.match)
     m, u = _truth(rules)
     pairs = _synthetic(rules, m, u, lam=0.05, n=30_000, seed=3, constant={"family_name": 0})
     fixed = fixed_comparisons(rules)["family_birth_year"] - {"birth_date"}
@@ -229,6 +230,26 @@ def test_em_per_pass_does_not_inflate_the_key_comparison(person_model: EntityMod
             continue
         for got, want in zip(per_pass.m[spec.name], m[spec.name], strict=True):
             assert got == pytest.approx(want, abs=TOLERANCE), spec.name
+
+
+def test_em_for_the_identifier_reads_the_known_m_and_converges(person_model: EntityModel) -> None:
+    """★ The identifier method: the other comparisons' m come from pairs sharing a strong ID.
+
+    EM over the identifier comparison alone has no single answer, since λ and its m trade off: on the demo world
+    it drifted without converging, and here it lands 0.036 off the true m. Read with the known m, and updating
+    only the identifier's, it converges on the truth.
+    """
+    rules = person_model.match
+    m, u = _truth(rules)
+    pairs = _synthetic(rules, m, u, lam=0.3, n=20_000, seed=5)
+    known = {spec.name: m[spec.name] for spec in rules.comparisons if spec.name != "person_ref"}
+    result = em(pairs, _bare(rules), u, known=known)
+    assert result.converged
+    assert result.lam == pytest.approx(0.3, abs=0.02)
+    for got, want in zip(result.m["person_ref"], m["person_ref"], strict=True):
+        assert got == pytest.approx(want, abs=TOLERANCE)
+    for name, values in known.items():
+        assert result.m[name] == tuple(values)  # read, never updated
 
 
 def test_em_that_does_not_converge_says_so(person_model: EntityModel) -> None:

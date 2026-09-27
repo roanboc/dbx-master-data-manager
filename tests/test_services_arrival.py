@@ -7,9 +7,10 @@ from datetime import timedelta
 
 import pytest
 
+from mdm.models.changes import WorkWrites
 from mdm.models.errors import Forbidden
 from mdm.models.records import SourceKey
-from tests.test_services_fixtures import (
+from tests.helpers import (
     T0,
     all_changes,
     arrive,
@@ -353,6 +354,56 @@ def test_a_retired_master_id_hint_routes_to_the_survivor(hub) -> None:
     assert "rule1:retired_id" in last.authority_ref
 
 
+def _crm_master_id_policy(hub, value: str) -> None:
+    """Publish the person model again with crm's `master_id` policy set (before any golden record)."""
+    doc = hub.registry.published("person").to_dict()
+    for source in doc["sources"]:
+        if source["system"] == "crm":
+            source["policy"]["master_id"] = value
+    hub.registry.publish("person", hub.registry.load_doc(doc, hub.actor).version, hub.actor)
+
+
+def test_an_active_master_id_hint_waits_for_a_steward_by_default(hub) -> None:
+    """★ Rule RULE1 makes a retired ID automatic, not an active one: the default policy holds it."""
+    land(hub, [row("hr", hr_key(1), "person", person_payload(1, person_ref=person_ref(1001)), version=1)])
+    arrive(hub)
+    keep = master_of(hub, "person", "hr", hr_key(1))
+    land(hub, [row("crm", crm_person_key(9), "person", {**person_payload(9), "master_id": keep})])
+    report = arrive(hub)
+    assert report.linked == 0 and master_of(hub, "person", "crm", crm_person_key(9)) is None
+    [task] = [
+        t for t in open_tasks(hub, "person", "review") if t.source == SourceKey("crm", crm_person_key(9))
+    ]
+    assert task.reason == "master_id_held" and task.master_ids == (keep,)
+
+
+def test_an_active_master_id_hint_links_when_the_source_policy_says_auto(hub) -> None:
+    _crm_master_id_policy(hub, "auto")
+    land(hub, [row("hr", hr_key(1), "person", person_payload(1, person_ref=person_ref(1001)), version=1)])
+    arrive(hub)
+    keep = master_of(hub, "person", "hr", hr_key(1))
+    land(hub, [row("crm", crm_person_key(9), "person", {**person_payload(9), "master_id": keep})])
+    report = arrive(hub)
+    assert report.linked == 1 and master_of(hub, "person", "crm", crm_person_key(9)) == keep
+    last = hub.store.commits_by_version([report.last_version])[0]
+    assert "crm.master_id=auto" in last.authority_ref
+
+
+def test_a_master_id_hint_never_links_past_a_cannot_link_rule(hub) -> None:
+    _crm_master_id_policy(hub, "auto")
+    land(hub, [row("hr", hr_key(1), "person", person_payload(1, person_ref=person_ref(1001)), version=1)])
+    arrive(hub)
+    keep = master_of(hub, "person", "hr", hr_key(1))
+    hinted = {**person_payload(9, person_ref=person_ref(1009)), "master_id": keep}
+    land(hub, [row("crm", crm_person_key(9), "person", hinted)])
+    arrive(hub)
+    assert master_of(hub, "person", "crm", crm_person_key(9)) is None
+    [task] = [
+        t for t in open_tasks(hub, "person", "exception") if t.source == SourceKey("crm", crm_person_key(9))
+    ]
+    assert task.reason == "master_id_conflict" and task.master_ids == (keep,)
+
+
 def test_forbidden_mid_run_leaves_the_records_queued(hub) -> None:
     land(hub, mini_world(persons=2, organisations=0).rows)
     original = hub.authority.check
@@ -462,3 +513,109 @@ def test_the_small_demo_world_end_to_end(arrived_world) -> None:
     assert sorted(set(versions)) == list(range(1, report.last_version + 1)) and versions == sorted(versions)
     again = arrive(hub)
     assert (again.read, again.commits) == (0, 0)
+
+
+def test_an_address_without_its_key_arrives_and_never_stalls_the_queue(hub) -> None:
+    """★ A repeating group entry that lacks its key field reaches survivorship and settles."""
+    addresses = [{"line1": "1 Quill Lane", "city": "Norvale"}]
+    payload = person_payload(1, person_ref=person_ref(1001), addresses=addresses)
+    land(hub, [row("hr", hr_key(1), "person", payload, version=1)])
+    report = arrive(hub)
+    assert report.created == 1 and hub.store.queue_size() == 0
+    assert master_of(hub, "person", "hr", hr_key(1)) is not None
+    assert arrive(hub).read == 0 and hub.store.queue_size() == 0
+
+
+def test_a_record_the_planner_cannot_handle_becomes_an_exception_task(hub, monkeypatch) -> None:
+    """One record whose plan raises is given to a steward; the rest of its page settles and commits."""
+    import mdm.services.arrival as arrival_module
+
+    bad = SourceKey("hr", hr_key(2))
+    original = arrival_module.survive
+
+    def failing(model, rules, members, *args, **kwargs):
+        if any(m.source == bad for m in members):
+            raise ValueError("a planner defect")
+        return original(model, rules, members, *args, **kwargs)
+
+    monkeypatch.setattr(arrival_module, "survive", failing)
+    land(
+        hub,
+        [
+            row("hr", hr_key(i), "person", person_payload(i, person_ref=person_ref(1000 + i)), version=1)
+            for i in (1, 2)
+        ],
+    )
+    arrive(hub)
+    assert hub.store.queue_size() == 0
+    assert master_of(hub, "person", "hr", hr_key(1)) is not None
+    assert master_of(hub, "person", "hr", hr_key(2)) is None
+    assert [(t.source, t.reason) for t in open_tasks(hub, "person", "exception")] == [
+        (bad, "planning_failed")
+    ]
+
+
+def test_intake_never_undoes_a_release_committed_after_it_read_the_state(hub, monkeypatch) -> None:
+    """★ held and the approved values move only by a commit's work writes, never by intake's upsert."""
+    source = SourceKey("finance", finance_key(0))
+    land(hub, [row("finance", finance_key(0), "organisation", org_payload(0), version=1)])
+    arrive(hub)
+    with hub.store.transaction():
+        hub.store.apply_work(WorkWrites("organisation", hold=(source,)))
+    before = hub.store.source_states("organisation", [source])[source]
+    assert before.held
+    original = hub.store.put_source_states
+
+    def racing(states, **kwargs):  # a steward's release commits after intake read `held`
+        hub.store.apply_work(
+            WorkWrites("organisation", release=(source,), approve=((source, before.event_id),))
+        )
+        return original(states, **kwargs)
+
+    monkeypatch.setattr(hub.store, "put_source_states", racing)
+    newer = row(
+        "finance",
+        finance_key(0),
+        "organisation",
+        org_payload(0, city="Easthollow"),
+        version=2,
+        at=T0 + timedelta(hours=1),
+    )
+    hub.arrival.intake([change(newer, 999)])
+    after = hub.store.source_states("organisation", [source])[source]
+    assert after.event_id == newer.event_id
+    assert after.held is False and after.approved_event_id == before.event_id
+
+
+def test_replaying_rejects_pages_through_all_of_them_and_marks_only_rows_read(hub) -> None:
+    from mdm.backend import guard
+
+    land(hub, [row("ledger", f"L{i}", "person", {"given_name": "Ada"}) for i in range(5)])
+    assert arrive(hub).rejected == 5
+    gone = hub.store.rejects(10)[0]
+    with guard.simulating_integration_platform(hub.settings, hub.store.prefix):
+        hub.store._execute(
+            f"DELETE FROM {hub.store.t('landing', 'source_change')} WHERE event_id = ?", [gone.event_id]
+        )
+    replay = hub.arrival.replay_rejects(started_by=hub.actor, limit=2)
+    assert replay.read == 4 and replay.rejected == 4  # every page, not the first two only
+    assert hub.store.reject_count() == 5 and hub.store.reject_count(replayed=True) == 0
+
+
+def test_a_row_over_the_landing_size_limits_is_rejected_too_large(hub) -> None:
+    import mdm.capacity as capacity
+
+    long_name = "A" * (capacity.MAX_TEXT_CHARS + 1)
+    many = [{"kind": f"k{i}", "line1": "1 Quill Lane"} for i in range(capacity.MAX_GROUP_ITEMS + 1)]
+    land(
+        hub,
+        [
+            row("crm", crm_person_key(1), "person", {"given_name": long_name}),
+            row("crm", crm_person_key(2), "person", {**person_payload(2), "addresses": many}),
+            row("crm", crm_person_key(3), "person", person_payload(3)),
+        ],
+    )
+    report = arrive(hub)
+    assert report.rejected == 2 and report.created == 1
+    reasons = sorted((r.reason, r.attributes) for r in hub.store.rejects(10))
+    assert reasons == [("too_large", ("addresses",)), ("too_large", ("given_name",))]

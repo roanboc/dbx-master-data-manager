@@ -396,8 +396,6 @@ def test_match_narrative_is_a_labelled_suggestion(world_env) -> None:
     payload = _hr_payload()
     args = ("match", "--entity", "person", "--record-file", "-", "--narrative", "--top", "1")
     result = mdm(world_env, *args, input=json.dumps(payload), code=None)
-    if isinstance(result.exception, NotImplementedError):
-        pytest.skip("the assistance plumbing (owner: SERVICES) is not built yet")
     assert result.exit_code == 0, result.output
     assert "suggestion from stub, not a decision:" in result.stdout
     for attribute in ("given_name", "family_name", "email"):

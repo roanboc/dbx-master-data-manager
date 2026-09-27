@@ -63,11 +63,11 @@ STOPWORDS = frozenset({"the", "and", "of"})
 
 _WHITESPACE = re.compile(r"\s+")
 _SCHEME_PREFIX = re.compile(r"^[a-z][a-z0-9+.\-]*://")
-_ISO_DATE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$")
-_COMPACT_DATE = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
-_YMD_SLASH = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})$")
-_SLASH_OR_DASH = re.compile(r"^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})$")
-_DOTTED = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$")
+_ISO_DATE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?\Z")
+_COMPACT_DATE = re.compile(r"^(\d{4})(\d{2})(\d{2})\Z")
+_YMD_SLASH = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})\Z")
+_SLASH_OR_DASH = re.compile(r"^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})\Z")
+_DOTTED = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})\Z")
 #: letters NFKD does not decompose into a base letter and a mark
 _LETTERS = str.maketrans({"ø": "o", "Ø": "o", "æ": "ae", "Æ": "ae", "œ": "oe", "Œ": "oe", "ł": "l", "Ł": "l",
                           "đ": "d", "Đ": "d", "ð": "d", "Ð": "d", "þ": "th", "Þ": "th", "ı": "i"})  # fmt: skip

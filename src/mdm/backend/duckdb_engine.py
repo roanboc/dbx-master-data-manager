@@ -57,7 +57,8 @@ class DuckDBStore(SqlStore):
             self._key = f":memory:{id(self)}"
         else:
             file = Path(path)
-            file.parent.mkdir(parents=True, exist_ok=True)
+            # the store holds source records: on a shared machine only its owner reads the directory
+            file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             self._key = str(file.resolve())
         self.path = path
         self._lock = _file_lock(self._key)
@@ -66,6 +67,9 @@ class DuckDBStore(SqlStore):
         self._tx_thread: int | None = None
         with self._lock:
             self._conn.execute("SET TimeZone = 'UTC'")
+
+    def server_version(self) -> str:
+        return f"DuckDB {duckdb.__version__}"
 
     # ------------------------------------------------------------------ statements
 

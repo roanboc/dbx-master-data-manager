@@ -10,7 +10,7 @@ import pytest
 from mdm.engine.standardise import phone_e164
 from mdm.models.errors import EstimationError
 from mdm.services import estimation as estimation_module
-from tests.test_services_fixtures import (
+from tests.helpers import (
     T0,
     arrive,
     crm_person_key,

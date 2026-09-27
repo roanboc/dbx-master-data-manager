@@ -64,6 +64,7 @@ from mdm.models.records import (
     StewardValue,
     XrefRow,
 )
+from mdm.models.safety import safe
 from mdm.models.tasks import Task
 
 _TENTH = Decimal("1E-10")
@@ -71,6 +72,11 @@ _T = ddl.table
 
 
 # ---------------------------------------------------------------------------------------------- encoding
+
+
+def new_redaction_id() -> str:
+    """A random redaction ID, `RD-` and 20 hex digits."""
+    return "RD-" + secrets.token_hex(10)
 
 
 def _decimal_text(value: Any) -> str:
@@ -210,6 +216,10 @@ class SqlStore(ABC):
             listener(sql)
 
     # ------------------------------------------------------------------ engine hooks (B.5.3)
+
+    @abstractmethod
+    def server_version(self) -> str:
+        """The engine and its version, as a report prints them: "DuckDB 1.5.0", "Postgres 17.2"."""
 
     @abstractmethod
     def _execute(self, sql: str, params: Sequence[Any] = ()) -> int:
@@ -570,12 +580,12 @@ class SqlStore(ABC):
     def drop_all(self) -> None:
         """Drop every schema of the prefix: tests and `mdm demo reset` only.
 
-        Refuses the prefix "mdm" on Postgres (`GuardError`), and any shared store other than the live
-        suite's run prefix (`PlatformRefused`).
+        Refuses the prefix "mdm" on Postgres (`GuardError`), and any store outside the local mode other
+        than the live suite's run prefix (`PlatformRefused`).
         """
         if self.engine == "postgres" and self.prefix == guard.DEFAULT_PREFIX:
             raise GuardError("drop_refused", prefix=self.prefix)
-        if self.settings.shared_store and not guard.live_run(self.prefix):
+        if not (self.settings.local_mode or guard.live_run(self.prefix, self.settings)):
             raise PlatformRefused("drop_refused", prefix=self.prefix)
         with guard.ddl_scope():
             for group in reversed(ddl.GROUPS):
@@ -1022,8 +1032,8 @@ class SqlStore(ABC):
                     "entity": r.entity,
                     "source_system": r.source.system if r.source else None,
                     "source_key": r.source.key if r.source else None,
-                    "reason": r.reason,
-                    "attributes": list(r.attributes),
+                    "reason": safe(r.reason),
+                    "attributes": safe(list(r.attributes)),
                     "rejected_at": now,
                     "replayed_at": None,
                 }
@@ -1117,6 +1127,8 @@ class SqlStore(ABC):
         "rules_failed",
         "updated_at",
     )
+    # set on insert only; afterwards the commit's work writes own them (see put_source_states)
+    _STATE_KEPT = ("held", "approved_values", "approved_event_id")
 
     @staticmethod
     def _state_row(s: SourceState) -> dict[str, Any]:
@@ -1186,7 +1198,10 @@ class SqlStore(ABC):
     ) -> int:
         """Upsert; only rows that changed are written (`updated_at` alone is no change). Returns the rows written.
 
-        A record given twice keeps its last state. `stored` (an addition to the plan's signature) is
+        `held`, `approved_values` and `approved_event_id` are written when a record's state is first
+        inserted and never by this upsert afterwards: only a commit's work writes (hold, release,
+        approve) move them, so a steward's release or approval committed between the caller's read
+        and this write is never undone. A record given twice keeps its last state. `stored` (an addition to the plan's signature) is
         what the caller already read for these records (None for a record with no state yet): the
         comparison then uses it instead of reading the states again. It must be what is stored now.
         """
@@ -1194,7 +1209,7 @@ class SqlStore(ABC):
             return 0
         table = _T("work", "source_state")
         latest = _dedupe_last(list(states), key=lambda s: (s.entity, s.source))
-        compared = [c for c in table.columns if c.name != "updated_at"]
+        compared = [c for c in table.columns if c.name != "updated_at" and c.name not in self._STATE_KEPT]
         changed: list[dict[str, Any]] = []
         by_entity: dict[str, list[SourceState]] = {}
         for state in latest:
@@ -1223,7 +1238,11 @@ class SqlStore(ABC):
             table,
             changed,
             conflict=("entity", "source_system", "source_key"),
-            update=[c for c in self._STATE_COLUMNS if c not in ("entity", "source_system", "source_key")],
+            update=[
+                c
+                for c in self._STATE_COLUMNS
+                if c not in ("entity", "source_system", "source_key") and c not in self._STATE_KEPT
+            ],
         )
 
     def states_by_sample_hash(
@@ -1460,9 +1479,10 @@ class SqlStore(ABC):
             "source_system": task.source.system if task.source else None,
             "source_key": task.source.key if task.source else None,
             "master_ids": list(task.master_ids),
-            "reason": task.reason,
-            "suggestion": dict(task.suggestion),
-            "evidence": dict(task.evidence),
+            # checked where they are written, whatever built them: no free text reaches a task (RULE10)
+            "reason": safe(task.reason),
+            "suggestion": safe(dict(task.suggestion)),
+            "evidence": safe(dict(task.evidence)),
             "event_id": task.event_id,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
@@ -2712,7 +2732,7 @@ class SqlStore(ABC):
                     "authority_kind": cs.authority.kind,
                     "authority_ref": cs.authority.ref,
                     "reason": cs.reason,
-                    "evidence": dict(cs.evidence),
+                    "evidence": safe(dict(cs.evidence)),
                     "item_count": item_count,
                     "created_at": self.clock(),
                 }
@@ -2821,7 +2841,7 @@ class SqlStore(ABC):
                     "master_id": master_id,
                     "attribute": attribute,
                     "reason": reason,
-                    "detail": detail,
+                    "detail": safe(dict(detail)),
                     "accessed_at": self.clock(),
                 }
             ],
@@ -2848,9 +2868,12 @@ class SqlStore(ABC):
         checker: Actor,
         authority_ref: str,
         reason: str,
+        *,
+        redaction_id: str | None = None,
     ) -> str:
-        """One redaction_log row; returns its ID."""
-        redaction_id = "RD-" + secrets.token_hex(10)
+        """One redaction_log row; returns its ID. Pass the ID given to `vault_redact`, so the emptied values
+        name the redaction that emptied them; one is made when none is given."""
+        redaction_id = redaction_id or new_redaction_id()
         self._insert(
             _T("audit", "redaction_log"),
             [

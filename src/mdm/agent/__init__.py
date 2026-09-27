@@ -7,6 +7,23 @@ prompt (RULE10); `prompt.assert_masked` runs before every call (decision 17).
 """
 
 from mdm.agent.narrative import case_narrative
-from mdm.agent.provider import choose_provider
+from mdm.agent.prompt import MaskedPrompt, assert_masked, build_prompt
+from mdm.agent.provider import (
+    Provider,
+    ServingEndpointProvider,
+    StubProvider,
+    Suggestion,
+    choose_provider,
+)
 
-__all__ = ["case_narrative", "choose_provider"]
+__all__ = [
+    "MaskedPrompt",
+    "Provider",
+    "ServingEndpointProvider",
+    "StubProvider",
+    "Suggestion",
+    "assert_masked",
+    "build_prompt",
+    "case_narrative",
+    "choose_provider",
+]

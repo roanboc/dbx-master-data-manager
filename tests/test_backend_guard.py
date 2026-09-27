@@ -13,7 +13,6 @@ from mdm.backend.store import SqlStore
 from mdm.config import Settings
 from mdm.models.errors import GuardError, PlatformRefused
 from mdm.models.records import LandingRow, SourceKey, XrefRow
-from tests.conftest import ENGINES
 
 T0 = datetime(2026, 1, 5, 9, 0, tzinfo=UTC)
 
@@ -92,11 +91,33 @@ def test_ddl_on_published_schemas_needs_the_ddl_scope(store: SqlStore) -> None:
         store._execute(f"CREATE OR REPLACE VIEW {store.t('read', 'x')} AS SELECT 1 AS a")
     with pytest.raises(GuardError, match="drop_outside_ddl"):
         store._execute(f"DROP TABLE IF EXISTS {store.t('work', 'job_run')}")
-    store._execute(
-        f"CREATE TABLE IF NOT EXISTS {store.t('work', 'scratch')} (a INTEGER)"
-    )  # work is not guarded
+    with pytest.raises(GuardError, match="ddl_outside_scope"):  # no schema is left out
+        store._execute(f"CREATE TABLE IF NOT EXISTS {store.t('work', 'scratch')} (a INTEGER)")
+    with pytest.raises(GuardError, match="ddl_outside_scope"):
+        store._execute(f"ALTER TABLE {store.t('audit', 'access_log')} DROP COLUMN reason")
     with guard.ddl_scope():
+        store._execute(f"CREATE TABLE IF NOT EXISTS {store.t('work', 'scratch')} (a INTEGER)")
         store._execute(f"DROP TABLE {store.t('work', 'scratch')}")
+
+
+def test_the_vault_is_redacted_never_deleted(store: SqlStore) -> None:
+    table = store.t("vault", "personal_value")
+    for sql in (f"DELETE FROM {table}", f"/*mdm:small*/ TRUNCATE {table}"):
+        with pytest.raises(GuardError, match="vault_values_are_redacted_not_deleted"):
+            store._execute(sql)
+    update = f"UPDATE {table} SET value = NULL WHERE value_id = 'none'"
+    with pytest.raises(GuardError, match="vault_update_outside_redact"):
+        store._execute(update)
+    with guard.redact_scope():
+        store._execute(update)
+
+
+def test_the_target_is_read_whatever_its_case() -> None:
+    for sql in ("INSERT INTO MDM_CORE.person VALUES (1)", "insert into Mdm_Core.person values (1)"):
+        with pytest.raises(GuardError, match="core_write_outside_commit"):
+            guard.check_statement(sql, "mdm")
+    with pytest.raises(GuardError, match="audit_is_insert_only"):
+        guard.check_statement("DELETE FROM MDM_AUDIT.change_log", "mdm")
 
 
 def test_check_statement_reads_the_first_target() -> None:
@@ -116,7 +137,10 @@ def test_check_statement_reads_the_first_target() -> None:
         guard.check_statement("COPY mdm_core.change FROM '/tmp/x'", "mdm")
     with pytest.raises(GuardError):
         guard.check_statement("CREATE SCHEMA IF NOT EXISTS mdm_core", "mdm")
-    guard.check_statement("CREATE SCHEMA IF NOT EXISTS mdm_work", "mdm")
+    with pytest.raises(GuardError):
+        guard.check_statement("CREATE SCHEMA IF NOT EXISTS mdm_work", "mdm")
+    with guard.ddl_scope():
+        guard.check_statement("CREATE SCHEMA IF NOT EXISTS mdm_work", "mdm")
     assert guard.statement_kind("/* a */ /* b */ select 1") == "SELECT"
 
 
@@ -126,15 +150,13 @@ def test_scopes_do_not_leak_to_another_thread() -> None:
         assert guard.active_scopes() == {"commit", "ddl"}
         worker = threading.Thread(target=lambda: seen.append(guard.active_scopes()))
         worker.start()
-        worker.join()
+        worker.join(timeout=60)
     assert seen == [frozenset()]
     assert guard.active_scopes() == frozenset()
 
 
 @pytest.mark.postgres
 def test_drop_all_refuses_the_default_prefix_on_postgres(request: pytest.FixtureRequest) -> None:
-    if "postgres" not in ENGINES:
-        pytest.skip("the run leaves Postgres out")
     dsn = request.getfixturevalue("postgres_dsn")
     store = open_store(Settings(backend="postgres", postgres_dsn=dsn, allow_personas=True))
     try:

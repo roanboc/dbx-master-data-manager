@@ -2,11 +2,13 @@
 
 `run()`: requires `run_arrival`; takes the "arrival" lease (not held ->
 `skipped_busy`, the CLI prints one line and exits 0); a job_run row with
-heartbeats; `reader.tick()`; `reader.reconcile()` when due, its rows through
-`intake`; `settle()` drains what an earlier run left queued; then batches:
-`next_batch` -> `intake` -> `settle` until empty; `reader.tick()`.
+heartbeats; `reader.reconcile()` when due, its rows through `intake`;
+`settle()` drains what an earlier run left queued; then batches: `next_batch`
+-> `intake` -> `settle` until empty; `reader.tick()` last, so a gap past its
+timeout is probed by this run before it can be declared lost.
 
-`intake(rows, batch)`: rejects with reasons and attribute names; standardise;
+`intake(rows, batch)`: rejects with reasons and attribute names (a row over the
+landing contract's size limits is `too_large`); standardise;
 vault the personal values in their own short transaction; `put_source_versions`
 (fault point "after_versions"); then one transaction: each record's state
 moves only forward by its version key, a moved record gets its state, blocking
@@ -30,11 +32,12 @@ queued and the next run drains the queue first.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
@@ -192,6 +195,29 @@ class _Accepted:
     match: Mapping[str, Any] | None = None  # the match forms' JSON form
 
 
+def _longest_text(value: Any) -> int:
+    """The length of the longest text anywhere inside `value`."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, Mapping):
+        return max((_longest_text(v) for v in value.values()), default=0)
+    if isinstance(value, (list, tuple)):
+        return max((_longest_text(v) for v in value), default=0)
+    return 0
+
+
+def _size_problems(payload: Mapping[str, Any]) -> tuple[bool, list[str]]:
+    """(the payload is over MAX_PAYLOAD_BYTES, the attribute names over the text or group limits)."""
+    names = sorted(
+        token(str(name))[:60]
+        for name, value in payload.items()
+        if _longest_text(value) > capacity.MAX_TEXT_CHARS
+        or (isinstance(value, list) and len(value) > capacity.MAX_GROUP_ITEMS)
+    )
+    whole = len(json.dumps(payload, separators=(",", ":"), default=str).encode()) > capacity.MAX_PAYLOAD_BYTES
+    return whole, names
+
+
 def _type_problems(model: EntityModel, payload: Mapping[str, Any]) -> list[str]:
     """Attribute names whose value has a JSON type the attribute can never hold."""
     problems: list[str] = []
@@ -298,7 +324,6 @@ class ArrivalService:
             run_id = self.store.start_job("arrival", started_by.name)
             self._throttle = self._make_throttle(bulk)
             try:
-                self._position(report, self.reader.tick())
                 if self.reader.due_for_reconcile():
                     report.add(self._reconcile_rows(bulk))
                 report.add(self.settle(bulk=bulk))
@@ -365,24 +390,31 @@ class ArrivalService:
             return report
 
     def replay_rejects(self, *, started_by: Actor, limit: int = 1000) -> ArrivalReport:
-        """Rejected landing rows read again after the model or the source was fixed; those accepted now are
-        marked replayed, the others stay rejected."""
+        """Rejected landing rows read again after the model or the source was fixed, `limit` rejects a
+        page until none is left; those read and accepted now are marked replayed, the others stay
+        rejected (a reject whose landing row is gone is never read, so it is never marked)."""
         require(started_by, "run_arrival")
         limit = capacity.require_limit(limit, capacity.READ_PAGE)
         with self.store.exclusive_lease("arrival") as held:
             if not held:
                 return ArrivalReport(skipped_busy=True)
-            rejects = self.store.rejects(limit)
-            if not rejects:
-                return ArrivalReport()
-            seqs = sorted({r.landing_seq for r in rejects})
-            rows = self.store.landing_in_ranges([(s, s) for s in seqs], len(seqs))
-            wanted = {r.event_id for r in rejects}
-            rows = [r for r in rows if r.event_id in wanted]
-            report, rejected_again = self._intake(rows, None)
-            self.store.mark_rejects_replayed(sorted(wanted - rejected_again))
-            report.add(self.settle())
-            return report
+            report = ArrivalReport()
+            after: str | None = None
+            while True:
+                rejects = self.store.rejects(limit, after)
+                if not rejects:
+                    return report
+                seqs = sorted({r.landing_seq for r in rejects})
+                rows = self.store.landing_in_ranges([(s, s) for s in seqs], len(seqs))
+                wanted = {r.event_id for r in rejects}
+                rows = [r for r in rows if r.event_id in wanted]
+                page, rejected_again = self._intake(rows, None)
+                report.add(page)
+                self.store.mark_rejects_replayed(sorted({r.event_id for r in rows} - rejected_again))
+                report.add(self.settle())
+                after = rejects[-1].event_id
+                if len(rejects) < limit:
+                    return report
 
     def process(self, changes: Sequence[SourceChange], *, bulk: bool = False) -> ArrivalReport:
         """`intake` then `settle` (tests, replay)."""
@@ -423,6 +455,9 @@ class ArrivalService:
         payload = change.payload
         if not isinstance(payload, Mapping):
             return "bad_payload", (), model, spec
+        whole, oversized = _size_problems(payload)
+        if whole or oversized:
+            return "too_large", tuple(oversized), model, spec
         known = {a.name for a in model.attributes} | {"master_id"}
         unknown = sorted(token(str(k))[:60] for k in payload if k not in known)
         if unknown:
@@ -725,8 +760,21 @@ class ArrivalService:
         self, entity: str, page: Sequence[tuple[SourceKey, str, int]], bulk: bool
     ) -> ArrivalReport:
         conflicted: set[SourceKey] = set()
+        failed: set[SourceKey] = set()
         for attempt in range(3):
-            planned = self._plan_page(entity, page, conflicted)
+            try:
+                planned = self._plan_page(entity, page, conflicted, failed)
+            except MdmError:
+                raise
+            except Exception:
+                # one record the planner cannot handle must not stall arrival: find it, give it to a
+                # steward as an exception task, and plan the rest of the page without it
+                if failed:
+                    raise
+                failed = self._records_that_fail(entity, page)
+                if not failed:
+                    raise
+                planned = self._plan_page(entity, page, conflicted, failed)
             model = self.registry.published(entity)
             cs = automated_change_set(
                 entity,
@@ -783,10 +831,34 @@ class ArrivalService:
         log.warning(safe_message("arrival_page_left_queued", entity=entity, records=len(page)))
         return ArrivalReport()
 
+    def _records_that_fail(self, entity: str, page: Sequence[tuple[SourceKey, str, int]]) -> set[SourceKey]:
+        """The records of a page whose plan raises when each is planned alone (planning writes nothing)."""
+        failing: set[SourceKey] = set()
+        for row in page:
+            try:
+                self._plan_page(entity, [row], set(), set())
+            except MdmError:
+                raise
+            except Exception as exc:
+                failing.add(row[0])
+                log.warning(
+                    safe_message(
+                        "arrival_record_failed",
+                        entity=entity,
+                        source=source_token(row[0]),
+                        error=type(exc).__name__,
+                    )
+                )
+        return failing
+
     # ------------------------------------------------------------------ one page's plan
 
     def _plan_page(
-        self, entity: str, page: Sequence[tuple[SourceKey, str, int]], conflicted: set[SourceKey]
+        self,
+        entity: str,
+        page: Sequence[tuple[SourceKey, str, int]],
+        conflicted: set[SourceKey],
+        failed: Collection[SourceKey] = (),
     ) -> _PagePlan:
         store = self.store
         model = self.registry.published(entity)
@@ -809,6 +881,10 @@ class ArrivalService:
         for source, state in states.items():
             if source not in spec_of:
                 plans[source] = [Plan("task", source, None, "exception", "unknown_source", "", {})]
+            elif source in failed:
+                plans[source] = [
+                    Plan("task", source, linked.get(source), "exception", "planning_failed", "", {})
+                ]
             elif source in conflicted:
                 plans[source] = [
                     Plan(
@@ -912,6 +988,22 @@ class ArrivalService:
                 for m, row in store.golden(entity, sorted(set(hinted.values()))).items()
                 if row.status == "active"
             }
+            # the hinted record's members' valid strong IDs: a hint never links past a cannot-link rule
+            hinted_members = (
+                store.members(entity, sorted(actives), capacity.MAX_MEMBERS_CHECKED) if actives else {}
+            )
+            unread = sorted({m for ms in hinted_members.values() for m in ms if m not in known_states})
+            if unread:
+                known_states.update(store.source_states(entity, unread))
+            member_ids = {
+                master: frozenset(
+                    i
+                    for m in ms
+                    if m in known_states and known_states[m].status == "active"
+                    for i in known_states[m].strong_ids(model)
+                )
+                for master, ms in hinted_members.items()
+            }
             for source, hint in hinted.items():
                 resolution = Resolution("new_cluster", (source,), (), None, None, None, reason="master_id")
                 plans[source] = [
@@ -923,6 +1015,9 @@ class ArrivalService:
                         retired,
                         record=source,
                         hint_active=hint in actives,
+                        hint_blocked=conflict(model, strong[source], member_ids.get(hint, frozenset()))
+                        if hint in actives
+                        else None,
                     )
                 ]
         clustering = [s for s in new if s not in plans]

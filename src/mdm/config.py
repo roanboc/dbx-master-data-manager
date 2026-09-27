@@ -4,7 +4,9 @@
 personas, the simulator, `mdm demo reset` and creating the landing tables. It
 is decided by the store, not by where the process runs: a laptop pointed at
 Lakebase has `lakebase_endpoint` set and is not local; a plain Postgres is not
-local either unless `MDM_ALLOW_PERSONAS=1` marks it as a test database.
+local either unless `MDM_ALLOW_PERSONAS=1` marks it as a test database, and
+the store then opens only when that database is on this machine (a unix
+socket or a loopback address) and is not Lakebase's `databricks_postgres`.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import dataclasses
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from mdm.models.errors import ConfigError
@@ -23,7 +25,13 @@ from mdm.models.errors import ConfigError
 PLATFORM_VARIABLES = ("DATABRICKS_APP_NAME", "DATABRICKS_APP_PORT", "DATABRICKS_RUNTIME_VERSION")
 BACKENDS = ("duckdb", "postgres")
 AGENT_PROVIDERS = ("auto", "endpoint", "stub")
-SCHEMA_PREFIX_RE = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
+SCHEMA_PREFIX_RE = re.compile(r"[a-z][a-z0-9_]{0,30}")  # matched whole (fullmatch): no trailing newline
+#: the TLS modes a connection that carries a Lakebase token over a network may use: none sends it in clear
+SAFE_SSLMODES = ("require", "verify-ca", "verify-full")
+#: hosts no network lies between: a unix socket directory, or loopback
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+#: the smallest pool: the arrival lease holds one connection for the whole run, statements need another
+POOL_MIN = 2
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
 
@@ -32,7 +40,7 @@ _FALSE = frozenset({"", "0", "false", "no", "off"})
 class Settings:
     backend: str = "duckdb"  # MDM_BACKEND: duckdb | postgres
     duckdb_path: str = ".mdm/mdm.duckdb"  # MDM_DUCKDB_PATH (":memory:" allowed)
-    postgres_dsn: str = ""  # MDM_POSTGRES_DSN, libpq URL or key=value; empty = PG* variables
+    postgres_dsn: str = field(default="", repr=False)  # MDM_POSTGRES_DSN (may hold a password); empty = PG*
     lakebase_endpoint: str = ""  # MDM_LAKEBASE_ENDPOINT projects/<p>/branches/<b>/endpoints/<e>
     pg_host: str = ""  # PGHOST
     pg_port: int = 5432  # PGPORT
@@ -45,7 +53,7 @@ class Settings:
     allow_personas: bool = (
         False  # MDM_ALLOW_PERSONAS=1: a test Postgres may take personas, run the simulator and reset
     )
-    pool_max: int = 8  # MDM_POOL_MAX
+    pool_max: int = 8  # MDM_POOL_MAX, at least POOL_MIN
     connection_max_age: int = 2700  # MDM_CONNECTION_MAX_AGE seconds (45 min, under the 1 h token)
     agent_provider: str = "auto"  # MDM_AGENT_PROVIDER: auto | endpoint | stub
     agent_endpoint: str = ""  # MDM_AGENT_ENDPOINT
@@ -60,7 +68,10 @@ class Settings:
 
     @property
     def local_mode(self) -> bool:
-        """Personas, the simulator, reset and landing DDL allowed."""
+        """Personas, the simulator, reset and landing DDL allowed.
+
+        On Postgres, `MDM_ALLOW_PERSONAS=1` is honoured only for a server on this machine: the store
+        refuses to open otherwise (`PostgresStore`, `personas_need_a_local_postgres`)."""
         return not self.shared_store and (self.backend == "duckdb" or self.allow_personas)
 
     @classmethod
@@ -114,7 +125,7 @@ class Settings:
             "models_dir": text("MDM_MODELS_DIR", cls.models_dir) or cls.models_dir,
             "role": text("MDM_ROLE"),
             "allow_personas": flag("MDM_ALLOW_PERSONAS"),
-            "pool_max": integer("MDM_POOL_MAX", cls.pool_max, minimum=1),
+            "pool_max": integer("MDM_POOL_MAX", cls.pool_max, minimum=POOL_MIN),
             "connection_max_age": integer("MDM_CONNECTION_MAX_AGE", cls.connection_max_age, minimum=60),
             "agent_provider": text("MDM_AGENT_PROVIDER", cls.agent_provider).lower() or cls.agent_provider,
             "agent_endpoint": text("MDM_AGENT_ENDPOINT"),
@@ -127,13 +138,16 @@ class Settings:
         return settings
 
     def validate(self) -> None:
-        """`ConfigError` when the backend, the schema prefix or the agent provider is not one allowed."""
+        """`ConfigError` when the backend, the schema prefix, the agent provider or the pool size is not one
+        allowed (the TLS mode is checked where the host is known: `lakebase_auth.tls_mode`)."""
         if self.backend not in BACKENDS:
             raise ConfigError("bad_setting", variable="MDM_BACKEND")
-        if not SCHEMA_PREFIX_RE.match(self.schema_prefix):
+        if not SCHEMA_PREFIX_RE.fullmatch(self.schema_prefix):
             raise ConfigError("bad_setting", variable="MDM_SCHEMA_PREFIX")
         if self.agent_provider not in AGENT_PROVIDERS:
             raise ConfigError("bad_setting", variable="MDM_AGENT_PROVIDER")
+        if self.pool_max < POOL_MIN:
+            raise ConfigError("bad_setting", variable="MDM_POOL_MAX")
 
     def with_(self, **changes: Any) -> Settings:
         """A copy with `changes` applied and validated (`dataclasses.replace`)."""

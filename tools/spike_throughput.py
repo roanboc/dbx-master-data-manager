@@ -4,8 +4,9 @@
         [--seed 7] [--time-limit 1800] [--out .mdm/spike] [--models models]
 
 1. A fresh store: a DuckDB file under --out, or a Postgres prefix `spike`
-   (--dsn, else MDM_POSTGRES_DSN, else a throwaway server from
-   tests/postgres_server.py), with allow_personas set for that store.
+   (--dsn, else a throwaway server from tests/postgres_server.py; never
+   MDM_POSTGRES_DSN), with allow_personas set for that store, which opens only
+   on a server on this machine.
 2. init, load and publish the starter models and code lists.
 3. A world of about --records source records, initial_load=True; time `land`.
 4. Time `arrival.run(bulk=True)`; candidates per record at 25/50/100 %, the
@@ -69,7 +70,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure landing and arrival throughput on one engine.")
     parser.add_argument("--engine", choices=("duckdb", "postgres"), required=True)
     parser.add_argument(
-        "--dsn", default=None, help="Postgres DSN (else MDM_POSTGRES_DSN, else a throwaway server)"
+        "--dsn", default=None, help="Postgres DSN of a server on this machine (else a throwaway server)"
     )
     parser.add_argument("--records", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=7)
@@ -150,18 +151,6 @@ def _peak_rss_mb() -> float:
     return round(peak / 1024 if sys.platform != "darwin" else peak / 1024 / 1024, 1)
 
 
-def _engine_version(settings: Settings) -> str:
-    if settings.backend == "duckdb":
-        import duckdb
-
-        return f"DuckDB {duckdb.__version__}"
-    import psycopg
-
-    with psycopg.connect(settings.postgres_dsn) as conn:
-        version = conn.info.server_version
-    return f"Postgres {version // 10000}.{version % 10000}"
-
-
 # ---------------------------------------------------------------------------------------------- the run
 
 
@@ -174,14 +163,16 @@ def _fresh_store(args: argparse.Namespace) -> tuple[Settings, SqlStore, Callable
             leftover.unlink(missing_ok=True)
         settings = Settings(backend="duckdb", duckdb_path=str(path), models_dir=str(MODELS))
         return settings, open_store(settings), lambda: None
-    dsn = args.dsn or os.environ.get("MDM_POSTGRES_DSN", "").strip()
+    # never MDM_POSTGRES_DSN: the tool drops its prefix, so it takes a server only when named on purpose,
+    # and the store refuses personas unless that server is on this machine (decision 13)
+    dsn = args.dsn
     let_go: Callable[[], None] = lambda: None  # noqa: E731
     if not dsn:
         from tests.postgres_server import postgres_for_the_run
 
         found, let_go = postgres_for_the_run()
         if found is None:
-            raise SystemExit("no Postgres: pass --dsn, set MDM_POSTGRES_DSN, or install Postgres 16 or later")
+            raise SystemExit("no Postgres: pass --dsn, or install Postgres 16 or later")
         dsn = found
     settings = Settings(
         backend="postgres",
@@ -222,7 +213,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     settings, store, let_go = _fresh_store(args)
     probe = Probe()
     try:
-        result["engine_version"] = _engine_version(settings)
+        result["engine_version"] = store.server_version()
         store.init_schema(create_landing=True)
         hub = Hub.open(settings, store=store, as_role="data_owner")
         _publish_models(hub, args.models)

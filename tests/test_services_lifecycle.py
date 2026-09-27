@@ -7,7 +7,7 @@ import pytest
 from mdm.models.authority import Actor
 from mdm.models.errors import Forbidden
 from mdm.models.records import SourceKey
-from tests.test_services_fixtures import (
+from tests.helpers import (
     all_changes,
     arrive,
     crm_person_key,
@@ -66,7 +66,7 @@ def test_link_and_detach_recompute_both_records(hub) -> None:
     assert moved.commit_version is not None
     assert master_of(hub, "person", "crm", crm_person_key(1)) == y
     kinds = _kinds(hub, moved.commit_version)
-    assert kinds[x][2] == ("values", "xref") or "xref" in kinds[x][2]
+    assert "xref" in kinds[x][2]
     assert "xref" in kinds[y][2]
     detached = hub.lifecycle.detach("person", crm, actor=MAKER, reason="not this person either")
     assert master_of(hub, "person", "crm", crm_person_key(1)) is None

@@ -182,6 +182,9 @@ def _keyed_union(
         entries.append(winner.value)
         sources.append({"key": key, "source": winner.source.text()})
         wins[winner.source] += 1
+    if not wins:
+        # No entry carries its key: nothing to union, and the caller falls back to the plain winner.
+        return [], [], ranked_members[0].source
     top = min(wins, key=lambda source: (-wins[source], source.system, source.key))
     return entries, sources, top
 

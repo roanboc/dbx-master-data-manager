@@ -270,3 +270,16 @@ def test_the_winner_is_always_a_candidate(person_model: EntityModel, strategies:
     values, provenance = run(person_model, members, rules)
     assert values["city"] in {f"Town{i}" for i in range(3)}
     assert provenance["city"]["winner"]["value"] == values["city"]
+
+
+def test_a_keyed_union_whose_entries_carry_no_key_falls_back_to_the_plain_winner(
+    person_model: EntityModel,
+) -> None:
+    """★ An address without its `kind` must not stop survivorship: the group has nothing to union."""
+    addresses = [{"line1": "1 Quill Lane", "city": "Norvale"}]
+    values, provenance = run(
+        person_model, [member("hr:H1", {"family_name": "Arden", "addresses": addresses})]
+    )
+    assert values["addresses"] == addresses
+    assert provenance["addresses"]["winner"]["source"] == "hr:H1"
+    assert "group" not in provenance["addresses"]

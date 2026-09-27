@@ -27,9 +27,9 @@ from mdm.models.records import RuleResult, StdRecord
 
 #: compiled here, never in YAML (`mdm.models.entity_model.PATTERN_NAMES` lists the names)
 NAMED_PATTERNS: Mapping[str, re.Pattern[str]] = {
-    "email": re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$"),
-    "postcode": re.compile(r"^[A-Z0-9]{3,10}$"),
-    "url": re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"),
+    "email": re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+\Z"),
+    "postcode": re.compile(r"^[A-Z0-9]{3,10}\Z"),
+    "url": re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+\Z"),
 }
 
 

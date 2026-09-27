@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import Counter
 
@@ -9,8 +10,8 @@ import pytest
 
 import mdm.capacity as capacity
 from mdm.models.records import SourceKey
-from tests.conftest import ENGINES, open_hub
-from tests.test_services_fixtures import (
+from tests.conftest import ONLY_POSTGRES_ENGINE, THREAD_TIMEOUT, join_all, open_hub
+from tests.helpers import (
     arrive,
     clusters,
     land,
@@ -113,16 +114,18 @@ def test_a_forbidden_commit_leaves_its_records_queued(hub) -> None:
     assert hub.store.queue_size() == 0
 
 
-@pytest.mark.skipif("postgres" not in ENGINES, reason="the engines of this run leave Postgres out")
-@pytest.mark.parametrize("engine", ["postgres"], indirect=True)
-def test_two_planners_at_once_the_second_conflicts_and_links_to_the_first(hub, make_store, engine) -> None:
+@ONLY_POSTGRES_ENGINE
+def test_two_planners_at_once_the_second_conflicts_and_links_to_the_first(
+    hub, make_store, engine, caplog: pytest.LogCaptureFixture
+) -> None:
     """With the lease bypassed, the expected-master check turns the second commit into a conflict; its re-plan
     links to the first golden record, and no golden record is left without members."""
     land(hub, WORLD.rows)
     rows = hub.store.landing_above(0, 1000)
     hub.arrival.intake(rows)
     errors: list[BaseException] = []
-    gate = threading.Barrier(2)
+    gate = threading.Barrier(2, timeout=THREAD_TIMEOUT)
+    caplog.set_level(logging.INFO, logger="mdm.arrival")
 
     def settle() -> None:
         try:
@@ -134,9 +137,10 @@ def test_two_planners_at_once_the_second_conflicts_and_links_to_the_first(hub, m
     threads = [threading.Thread(target=settle) for _ in range(2)]
     for thread in threads:
         thread.start()
-    for thread in threads:
-        thread.join()
+    join_all(threads)
     assert not errors, errors
+    # the second planner met the first one's commit: the conflict path ran, it was not serialised away
+    assert any(r.getMessage().startswith("arrival_conflict") for r in caplog.records)
     assert hub.store.queue_size() == 0
     for entity in ("organisation", "person"):
         members = hub.store.member_counts(entity, list(partition(hub, entity)))

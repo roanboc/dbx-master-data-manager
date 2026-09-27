@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 #: attribute names, codes, identifiers, source keys; no space, no "@", at most 120 characters
-SAFE_TEXT_RE = re.compile(r"^[A-Za-z0-9_.:=/+\-]{0,120}$")
+SAFE_TEXT_RE = re.compile(r"^[A-Za-z0-9_.:=/+\-]{0,120}\Z")
 
 
 def safe(value: Any) -> Any:

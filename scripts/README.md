@@ -17,8 +17,8 @@ All four exit `0` when everything passes and `1` otherwise, printing what failed
 They need nothing but Python — no network, no plugin installed, no packages —
 which is the point: a project has to be able to check itself on its own.
 
-`make hooks` points git at `scripts/hooks/`, so the same checks run before every
-push.
+`make hooks` points git at `scripts/hooks/`, so the checks CI runs, all but the
+test suite, run before every push.
 
 | File | What it is |
 | ---- | ---------- |
@@ -29,7 +29,7 @@ push.
 | `model_graph.py` | Library, imported by `check_model.py` and by the method's reading tools. The single parse of the document convention — element IDs, catalogue tables, relationship tables in either form (compact `From \| To \| Relationship \| Notes`, or full with each end's name), the resolution of a bare identifier inside a domain, and the neighbourhood walk the reading tools use |
 | `element-prefixes.json` | Data, read by `model_graph.py`. The element-ID prefixes and what each stands for |
 | `scan_public_safe.py` | Executable, from the Reference Data Manager. Not a model check: it scans every path and line for what must never reach this public repository (workspace hosts, storage URIs, e-mail addresses, UUIDs) and the private denylist, matched inside words, when `--terms` names it or `.public-safe-terms.txt` is present. `.public-safe-allow.txt` at the root lists literals it may ignore. CI runs it with the built-in patterns only |
-| `hooks/pre-push` | Executable, POSIX shell. Runs the three validators, the scan (with the private denylist when `MDM_PUBLIC_SAFE_TERMS` or `.public-safe-terms.txt` names one, the built-in patterns otherwise) and `uv run ruff check .` before every push, and refuses the push on any failure |
+| `hooks/pre-push` | Executable, POSIX shell. Runs the three validators, the scan (with the private denylist when `MDM_PUBLIC_SAFE_TERMS` or `.public-safe-terms.txt` names one, the built-in patterns otherwise) and ruff's lint rules and formatting check, from the lockfile as it stands (`uv run --frozen`), before every push, and refuses the push on any failure. The test suite stays with `make test` |
 
 ## Everything else runs from the method
 

@@ -10,7 +10,7 @@ import yaml
 from mdm.models.errors import Forbidden, ModelError, NotFound
 from mdm.services.context import Hub
 from tests.conftest import CODELISTS, MODELS
-from tests.test_services_fixtures import arrive, land, row
+from tests.helpers import arrive, land, row
 
 
 def _doc(name: str) -> dict:
@@ -78,6 +78,18 @@ def test_an_incompatible_version_is_refused(bare) -> None:
         bare.registry.publish("organisation", 2, bare.actor)
     assert raised.value.code == "incompatible_model"
     assert any(p.startswith("attribute_removed:") for p in raised.value.problems)
+
+
+def test_a_version_that_unmasks_a_personal_attribute_is_refused(bare) -> None:
+    bare.registry.publish("person", bare.registry.load_doc(_doc("person"), bare.actor).version, bare.actor)
+    doc = _doc("person")
+    for attribute in doc["attributes"]:
+        if attribute["name"] == "email":
+            attribute["masking"] = "none"
+    version = bare.registry.load_doc(doc, bare.actor).version
+    with pytest.raises(ModelError) as raised:
+        bare.registry.publish("person", version, bare.actor)
+    assert "masking_relaxed:person.email" in raised.value.problems
 
 
 def test_republishing_is_refused_once_golden_records_exist(hub) -> None:

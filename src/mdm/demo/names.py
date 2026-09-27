@@ -49,7 +49,7 @@ _FAMILY_SUFFIX = (
 )  # fmt: skip
 _ORG_FIRST = (
     "Vel", "Quor", "Bras", "Mond", "Tess", "Kal", "Dru", "Fenn", "Gorm", "Hal",
-    "Jast", "Lum", "Nex", "Orv", "Pry", "Rast", "Sorn", "Tav", "Umb", "Wyn",
+    "Jast", "Lum", "Nyv", "Orv", "Pry", "Rast", "Sorn", "Tav", "Umb", "Wyn",
     "Xan", "Yst", "Zor", "Crel", "Drav", "Esk", "Frim", "Glav", "Hurn", "Irv",
 )  # fmt: skip
 _ORG_SECOND = (

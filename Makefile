@@ -1,5 +1,8 @@
 .PHONY: install hooks lint format test test-fast test-live validate check demo spike clean
 
+# pytest-xdist: one worker per core, each test file on one worker (its module fixtures stay shared)
+PYTEST_ACROSS_CORES = -n auto --dist loadfile
+
 install:            ## create .venv and install runtime and dev dependencies with uv
 	uv sync
 
@@ -13,10 +16,10 @@ format:             ## ruff format
 	uv run ruff format .
 
 test:               ## the whole suite on DuckDB and on a Postgres started for the run (or MDM_TEST_POSTGRES)
-	uv run pytest
+	uv run pytest $(PYTEST_ACROSS_CORES)
 
 test-fast:          ## DuckDB only, without the slow and live tests, while iterating
-	MDM_TEST_ENGINES=duckdb uv run pytest -m "not slow and not live"
+	MDM_TEST_ENGINES=duckdb uv run pytest $(PYTEST_ACROSS_CORES) -m "not slow and not live"
 
 test-live:          ## the live tests on a Lakebase endpoint (MDM_LAKEBASE_ENDPOINT and the SDK credentials)
 	MDM_LIVE_LAKEBASE=1 uv run --extra databricks pytest -m live

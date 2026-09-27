@@ -260,11 +260,3 @@ def all_changes(hub: Hub, entity: str | None = None, page_rows: int = 500) -> li
         if page.cursor is None:
             return out
         since, cursor = page.next_watermark, page.cursor
-
-
-def test_the_mini_world_is_invented_and_valid() -> None:
-    world = mini_world()
-    assert len({r.event_id for r in world.rows}) == len(world.rows)
-    assert all(r.payload.get("email", "@example.org").endswith("@example.org") for r in world.rows)
-    assert {r.entity for r in world.rows} == {"person", "organisation"}
-    assert set(world.truth) == {(r.entity, SourceKey(r.source_system, r.source_key)) for r in world.rows}

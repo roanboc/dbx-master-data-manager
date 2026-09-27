@@ -20,7 +20,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from mdm.config import Settings
+from mdm.config import LOCAL_HOSTS, SAFE_SSLMODES, Settings
 from mdm.models.errors import ConfigError, MdmError
 
 #: the database every Lakebase endpoint is created with
@@ -147,13 +147,27 @@ class LakebaseCredentials:
             return self._user
 
 
+def tls_mode(settings: Settings, host: str) -> str:
+    """The `sslmode` of a connection that carries a token: `PGSSLMODE`, default require.
+
+    `ConfigError("bad_setting", variable="PGSSLMODE")` for a mode that could fall back to clear text
+    (disable, allow, prefer) unless the host is a unix socket or loopback, where no network lies between.
+    """
+    sslmode = settings.pg_sslmode or "require"
+    if sslmode not in SAFE_SSLMODES and not (host.startswith("/") or host in LOCAL_HOSTS):
+        raise ConfigError("bad_setting", variable="PGSSLMODE")
+    return sslmode
+
+
 def connection_kwargs(settings: Settings, credentials: Credentials | None) -> Callable[[], dict[str, Any]]:
     """A callable the pool calls for every new connection.
 
     host, port, dbname (default databricks_postgres on Lakebase), user (PGUSER, else DATABRICKS_CLIENT_ID,
     else the SDK's current user), password=credentials.token() (fresh each call), sslmode (require on
     Lakebase). Without credentials: `MDM_POSTGRES_DSN` alone when it is set, else the PG* settings
-    given (libpq reads the rest, `PGPASSWORD` included, from the environment). Every connection is
+    given (libpq reads the rest, `PGPASSWORD` included, from the environment). With credentials, the
+    TLS mode is `tls_mode`'s, so the token never travels over a network connection that could fall back
+    to clear text. Every connection is
     in autocommit: the store opens transactions itself.
     """
 
@@ -172,17 +186,19 @@ def connection_kwargs(settings: Settings, credentials: Credentials | None) -> Ca
             if settings.pg_sslmode:
                 out["sslmode"] = settings.pg_sslmode
             return out
+        host = settings.pg_host or credentials.host()
+        sslmode = tls_mode(settings, host)
         user = settings.pg_user
         if not user:
             named = getattr(credentials, "user", None)
             user = named() if callable(named) else os.environ.get("DATABRICKS_CLIENT_ID", "")
         out.update(
-            host=settings.pg_host or credentials.host(),
+            host=host,
             port=settings.pg_port or 5432,
             dbname=settings.pg_database or DEFAULT_DATABASE,
             user=user,
             password=credentials.token(),
-            sslmode=settings.pg_sslmode or "require",
+            sslmode=sslmode,
         )
         return out
 

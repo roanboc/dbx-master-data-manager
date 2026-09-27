@@ -8,7 +8,7 @@ from mdm.models.authority import Actor
 from mdm.models.errors import Forbidden
 from mdm.models.records import SourceKey
 from mdm.services.privacy import source_subject
-from tests.test_services_fixtures import (
+from tests.helpers import (
     arrive,
     crm_person_key,
     hr_key,
@@ -83,9 +83,16 @@ def test_redaction_needs_an_owner_a_different_administrator_and_the_typed_confir
     )
     assert emptied and set(hub.vault.store.vault_get(emptied).values()) == {None}
     rows = hub.store._fetch_all(
-        f"/*mdm:paged*/ SELECT actor, checker, reason FROM {hub.store.t('audit', 'redaction_log')} LIMIT 10"
+        f"/*mdm:paged*/ SELECT actor, checker, reason, redaction_id FROM {hub.store.t('audit', 'redaction_log')} "
+        "LIMIT 10"
     )
-    assert rows == [(OWNER.name, ADMIN.name, "erasure request")]
+    assert [row[:3] for row in rows] == [(OWNER.name, ADMIN.name, "erasure request")]
+    # every emptied value names the redaction that emptied it
+    named = hub.store._fetch_all(
+        f"/*mdm:paged*/ SELECT DISTINCT redaction_id FROM {hub.store.t('vault', 'personal_value')} "
+        "WHERE redacted_at IS NOT NULL LIMIT 10"
+    )
+    assert named == [(rows[0][3],)]
 
 
 def test_masked_equals_the_read_view(hub) -> None:

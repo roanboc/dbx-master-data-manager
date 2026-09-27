@@ -9,7 +9,7 @@ from pathlib import Path
 import mdm.capacity as capacity
 from mdm.backend import ddl
 from mdm.models.errors import CapacityError
-from tests.test_services_fixtures import arrive, land, mini_world
+from tests.helpers import arrive, land, mini_world
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "mdm"
 _TAG = re.compile(r"^\s*/\*mdm:(keyed|paged|aggregate|small)\*/")
@@ -88,6 +88,23 @@ def test_the_import_rule() -> None:
             if target in IMPORT_RULE or target == "cli":
                 problems.append((str(relative), module))
     assert problems == []
+
+
+#: what gives SQL away: a statement, or a call that runs one
+_SQL = re.compile(r"_fetch_all|_execute\b|\.execute\(|\bSELECT\b|\bINSERT INTO\b")
+
+
+def test_no_sql_outside_the_backend() -> None:
+    """Invariant 1: every statement lives in `src/mdm/backend/`; the other layers call `SqlStore` methods."""
+    outside = [p for p in sorted(SRC.rglob("*.py")) if p.relative_to(SRC).parts[0] != "backend"]
+    assert outside
+    found = [
+        f"{path.relative_to(SRC)}:{number}"
+        for path in outside
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if _SQL.search(line)
+    ]
+    assert found == []
 
 
 def test_the_declared_figures_are_consistent() -> None:

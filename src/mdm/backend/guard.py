@@ -1,10 +1,15 @@
 """The guard: writes the store refuses outside their scope (owner: BACKEND, B.5.4).
 
 `SqlStore._execute` calls `check_statement` on every statement: a cheap regex
-on the leading keyword and the first `<prefix>_<group>.` target.
+on the leading keyword and the first `<prefix>_<group>.` target, whatever its
+case.
 
 The scopes live in a context variable, so a scope opened in one thread or task
 never lets another one write.
+
+The guard checks the hub's own statements, so a defect in the hub cannot write
+where it must not. It is not the security boundary: on the platform the
+database grants are (the hub's role, the landing grants, the listener grants).
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ from functools import lru_cache
 from mdm.config import Settings
 from mdm.models.errors import GuardError, PlatformRefused
 
-WRITE_SCOPES = ("commit", "ddl", "simulator")
+WRITE_SCOPES = ("commit", "ddl", "simulator", "redact")
 #: the active write scopes of the current context
 _scope: ContextVar[frozenset[str]] = ContextVar("mdm_write_scope", default=frozenset())
 #: the prefix the platform's own hub uses; the live suite never writes landing rows there
@@ -61,14 +66,22 @@ def ddl_scope() -> Iterator[None]:
         yield
 
 
-def live_run(prefix: str) -> bool:
-    """True for the live suite's own run prefix: `MDM_LIVE_LAKEBASE=1` and a prefix other than "mdm"."""
-    return os.environ.get(LIVE_VARIABLE) == "1" and prefix != DEFAULT_PREFIX
+@contextmanager
+def redact_scope() -> Iterator[None]:
+    """Opens the "redact" scope; used only by `services.privacy.Vault.redact`, the one UPDATE of the vault."""
+    with _opened("redact"):
+        yield
+
+
+def live_run(prefix: str, settings: Settings) -> bool:
+    """True for the live suite's own run prefix: `MDM_LIVE_LAKEBASE=1`, a prefix other than "mdm", and a
+    process the platform did not start (inside an App or a job the switch is never honoured)."""
+    return os.environ.get(LIVE_VARIABLE) == "1" and prefix != DEFAULT_PREFIX and not settings.platform_signals
 
 
 def landing_allowed(settings: Settings, prefix: str) -> bool:
     """Whether the hub may create or write the landing tables itself: the local mode, or the live run."""
-    return settings.local_mode or live_run(prefix)
+    return settings.local_mode or live_run(prefix, settings)
 
 
 @contextmanager
@@ -86,7 +99,7 @@ def simulating_integration_platform(settings: Settings, prefix: str) -> Iterator
 
 @lru_cache(maxsize=64)
 def _target_re(prefix: str) -> re.Pattern[str]:
-    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(prefix)}_([a-z]+)(?![A-Za-z0-9_])")
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(prefix)}_([a-z]+)(?![A-Za-z0-9_])", re.I)
 
 
 def statement_kind(sql: str) -> str:
@@ -97,15 +110,15 @@ def statement_kind(sql: str) -> str:
 
 def _first_group(sql: str, prefix: str, start: int = 0) -> str | None:
     found = _target_re(prefix).search(sql, start)
-    return found.group(1) if found else None
+    return found.group(1).lower() if found else None
 
 
 def check_statement(sql: str, prefix: str) -> None:
     """`GuardError` when the statement is a write outside its scope.
 
     A write (INSERT/UPDATE/DELETE/MERGE/TRUNCATE/COPY) to <p>_core.* without "commit"; any write to
-    <p>_landing.* without "simulator"; UPDATE/DELETE/TRUNCATE on <p>_audit.*; DDL (CREATE/ALTER/DROP) on
-    <p>_core, <p>_read or <p>_landing without "ddl"; DROP anywhere without "ddl".
+    <p>_landing.* without "simulator"; UPDATE/DELETE/TRUNCATE/MERGE on <p>_audit.*; DELETE/TRUNCATE/MERGE
+    on <p>_vault.*, and UPDATE there without "redact"; any DDL (CREATE/ALTER/DROP) without "ddl".
     """
     kind = statement_kind(sql)
     if kind == "WITH":  # a data-modifying common table expression: judge the write inside it
@@ -126,10 +139,13 @@ def check_statement(sql: str, prefix: str) -> None:
             raise GuardError("landing_write_refused", statement=kind.lower())
         if group == "audit" and kind in ("UPDATE", "DELETE", "TRUNCATE", "MERGE", "UPSERT"):
             raise GuardError("audit_is_insert_only", statement=kind.lower())
+        if group == "vault" and kind in ("DELETE", "TRUNCATE", "MERGE", "UPSERT"):
+            raise GuardError("vault_values_are_redacted_not_deleted", statement=kind.lower())
+        if group == "vault" and kind == "UPDATE" and "redact" not in scopes:
+            raise GuardError("vault_update_outside_redact", statement=kind.lower())
         return
     if "ddl" in scopes:
         return
     if kind == "DROP":
         raise GuardError("drop_outside_ddl")
-    if group in ("core", "read", "landing"):
-        raise GuardError("ddl_outside_scope", statement=kind.lower(), group=group)
+    raise GuardError("ddl_outside_scope", statement=kind.lower(), group=group or "none")

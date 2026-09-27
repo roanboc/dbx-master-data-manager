@@ -6,10 +6,11 @@ from itertools import combinations
 
 import pytest
 
+import mdm.capacity as capacity
 from mdm.models.errors import EstimationError
 from mdm.services import estimation as estimation_module
 from tests.conftest import ENGINES, open_hub
-from tests.test_services_fixtures import land, mini_world, partition
+from tests.helpers import land, mini_world, partition
 
 WORLD = mini_world(persons=90, organisations=12)
 
@@ -82,3 +83,25 @@ def test_the_same_numbers_on_both_engines(make_store) -> None:
         _intake_only(hub)
         drafts.append(hub.estimation.estimate("person", actor=hub.actor, method="auto")[1])
     assert drafts[0] == drafts[1]
+
+
+def test_a_capped_pass_keeps_a_sample_by_hash_that_stands_for_every_pair(hub, monkeypatch) -> None:
+    """Over EM_MAX_PAIRS, a pass keeps pairs by hash, not the lowest source keys, and each kept pair's weight
+    makes the kept union stand for the whole union, so the prior is not biased low."""
+    _intake_only(hub)
+    model = hub.registry.published("person")
+    seeds, _ = hub.estimation._by_hash("person", 10_000)
+    full, _, unweighted = hub.estimation._pairs(model, seeds)
+    assert unweighted == {}
+    name = max(full, key=lambda n: len(full[n]))
+    cap = len(full[name]) // 2
+    assert cap > 20
+    monkeypatch.setattr(capacity, "EM_MAX_PAIRS", cap)
+    capped, _, weights = hub.estimation._pairs(model, seeds)
+    assert len(capped[name]) <= cap and weights and all(w > 1 for w in weights.values())
+    lowest = sorted((p.left, p.right) for p in full[name])[:cap]
+    assert [(p.left, p.right) for p in capped[name]] != lowest
+    every = {(p.left, p.right) for levels in full.values() for p in levels}
+    kept = {(p.left, p.right) for levels in capped.values() for p in levels}
+    estimate = sum(weights.get(pair, 1.0) for pair in kept)
+    assert abs(estimate - len(every)) / len(every) < 0.25

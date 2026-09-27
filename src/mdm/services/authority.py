@@ -24,13 +24,13 @@ from mdm.models.authority import (
     NEEDS_CHECKER,
     NEVER_AUTOMATIC,
     ROLES,
+    RULE1_CASES,
     Actor,
     Authority,
 )
 from mdm.models.changes import ChangeSet, item_clause, item_kind
 from mdm.models.entity_model import POLICY_FIELDS, EntityModel
 from mdm.models.errors import Forbidden, NotFound, PlatformRefused
-from mdm.services.policy import RULE1_CASES
 from mdm.services.support import token
 
 if TYPE_CHECKING:

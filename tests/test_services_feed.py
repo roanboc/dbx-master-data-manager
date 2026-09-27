@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mdm.models.authority import Actor
-from tests.test_services_fixtures import (
+from tests.helpers import (
     all_changes,
     arrive,
     golden_rows,

@@ -9,9 +9,11 @@ since personas are refused on a shared store.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from tests.conftest import LIVE, LIVE_ACTOR, START_ENV, new_prefix
+from tests.conftest import LIVE, LIVE_ACTOR, START_ENV, dispose, new_prefix
 
 if not LIVE:
     pytest.skip("MDM_LIVE_LAKEBASE=1 runs the live suite", allow_module_level=True)
@@ -21,7 +23,10 @@ pytestmark = pytest.mark.live
 
 def test_a_run_prefix_on_lakebase_end_to_end(small_world: object) -> None:
     pytest.importorskip("databricks.sdk", reason="the databricks extra is not installed")
-    from mdm.backend import ddl, guard
+    from typer.testing import CliRunner
+
+    from mdm import cli
+    from mdm.backend import guard
     from mdm.backend.factory import open_store
     from mdm.config import Settings
     from mdm.demo import land
@@ -36,8 +41,15 @@ def test_a_run_prefix_on_lakebase_end_to_end(small_world: object) -> None:
     store = open_store(settings)
     try:
         store.init_schema(create_landing=False)
+        # the landing table as the integration team creates it: from the command's own output
+        printed = CliRunner().invoke(
+            cli.app,
+            ["--json", "ddl", "--group", "landing"],
+            env={"MDM_BACKEND": "postgres", "MDM_SCHEMA_PREFIX": store.prefix},
+        )
+        assert printed.exit_code == 0, printed.output
         with guard.ddl_scope():
-            for statement in ddl.all_ddl(store.prefix, store.engine, ["landing"]):
+            for statement in json.loads(printed.stdout):
                 store._execute(statement)
         assert store.table_columns("landing", "source_change")
         hub = Hub.open(settings, store=store, actor=LIVE_ACTOR)
@@ -54,5 +66,4 @@ def test_a_run_prefix_on_lakebase_end_to_end(small_world: object) -> None:
         finally:
             hub.close()
     finally:
-        store.drop_all()
-        store.close()
+        dispose(store)  # drops the run prefix, and closes the pool even when the drop fails

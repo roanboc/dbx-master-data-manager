@@ -147,10 +147,15 @@ def em(
     u: Mapping[str, tuple[float, ...]],
     *,
     fixed: Collection[str] = (),
+    known: Mapping[str, Sequence[float]] | None = None,
     max_iter: int = capacity.EM_MAX_ITERATIONS,
     tol: float = 1e-5,
 ) -> EMResult:
     """Expectation-maximisation of m and λ with u fixed.
+
+    `known`: comparisons whose m is already estimated (from a strong identifier): read in the E step with that m,
+    never updated. Without them, EM over one comparison alone has no single answer (λ and m trade off), and it
+    drifts along that ridge instead of converging.
 
     Start: m from rules (or a declining default), λ = 0.1.
     E: a = log2 λ + Σ log2 m_c[l]; b = log2(1-λ) + Σ log2 u_c[l]; p_i = 1 / (1 + 2**clip(b - a, -60, 60))
@@ -165,6 +170,9 @@ def em(
     fixed_set = frozenset(fixed)
     active = [i for i, name in enumerate(names) if name not in fixed_set]
     m = _start_m(rules)
+    for name, values in (known or {}).items():
+        m[name] = list(values)
+    held = frozenset(known or {})
     lam = START_LAMBDA
     ordered = sorted(levels, key=lambda p: (p.left, p.right))
     n_pairs = len(ordered)
@@ -205,8 +213,8 @@ def em(
                     seen[j] += mass
         delta = 0.0
         for j, i in enumerate(active):
-            if seen[j] <= 0.0:
-                continue  # never observed in this pass: nothing to learn, the starting m stays
+            if seen[j] <= 0.0 or names[i] in held:
+                continue  # never observed in this pass, or already known: the starting m stays
             k = k_sizes[j]
             new = [(agree[j][level] + SMOOTHING) / (seen[j] + SMOOTHING * k) for level in range(k)]
             old = m[names[i]]
@@ -266,13 +274,16 @@ def union_expected_matches(
     rules: MatchRules,
     u: Mapping[str, tuple[float, ...]],
     fixed: Mapping[str, Collection[str]],
+    weights: Mapping[tuple[SourceKey, SourceKey], float] | None = None,
 ) -> float:
     """Expected matches over the deduplicated union of the passes' pairs.
 
     Each pass scores its own pairs as its EM did (its m and λ, its key comparisons skipped); a pair several
-    passes found counts once, with the mean of their probabilities. Scale the result to the population with
-    `scale_to_population` before `global_prior`.
+    passes found counts once, with the mean of their probabilities, times its weight in `weights` (the
+    inverse of its chance of being kept when a pass's pairs were capped; 1 when absent). Scale the result
+    to the population with `scale_to_population` before `global_prior`.
     """
+    weights = weights or {}
     found: dict[tuple[SourceKey, SourceKey], list[float]] = {}
     for pass_name in sorted(passes):
         result = results[pass_name]
@@ -281,7 +292,7 @@ def union_expected_matches(
         for pair, chance in zip(pairs, chances, strict=True):
             ends = (pair.left, pair.right) if pair.left <= pair.right else (pair.right, pair.left)
             found.setdefault(ends, []).append(chance)
-    return sum(sum(values) / len(values) for _ends, values in sorted(found.items()))
+    return sum(sum(values) / len(values) * weights.get(ends, 1.0) for ends, values in sorted(found.items()))
 
 
 def m_from_identifier(

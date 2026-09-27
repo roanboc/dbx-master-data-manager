@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -18,10 +19,10 @@ from mdm.backend.lakebase_auth import (
     LakebaseCredentials,
     connection_kwargs,
 )
-from mdm.backend.postgres_engine import PostgresStore, advisory_key, connection_gone, to_pg
+from mdm.backend.postgres_engine import PostgresStore, advisory_key, connection_gone, local_server, to_pg
 from mdm.backend.store import SqlStore
 from mdm.config import Settings
-from mdm.models.errors import ConfigError, MdmError
+from mdm.models.errors import ConfigError, MdmError, PlatformRefused
 from tests.conftest import ENGINES
 
 ENDPOINT = "projects/demo/branches/production/endpoints/primary"
@@ -165,6 +166,25 @@ def test_the_pool_kwargs_give_a_fresh_password(no_pg_variables: None) -> None:
     clock.now += 301
     second = kwargs()
     assert second["password"] != first["password"]
+
+
+def test_the_token_never_travels_over_a_connection_that_may_be_in_clear(no_pg_variables: None) -> None:
+    clock = Clock()
+    workspace = FakeWorkspace(clock)
+    credentials = LakebaseCredentials(ENDPOINT, workspace=lambda: workspace, clock=clock)
+    for mode in ("disable", "allow", "prefer"):
+        settings = Settings(backend="postgres", lakebase_endpoint=ENDPOINT, pg_sslmode=mode)
+        with pytest.raises(ConfigError, match="PGSSLMODE"):
+            connection_kwargs(settings, credentials)()
+        with pytest.raises(ConfigError, match="PGSSLMODE"):
+            PostgresStore(settings, credentials)
+    for mode in ("require", "verify-ca", "verify-full"):
+        settings = Settings(backend="postgres", lakebase_endpoint=ENDPOINT, pg_sslmode=mode)
+        assert connection_kwargs(settings, credentials)()["sslmode"] == mode
+    # a unix socket or loopback has no network to intercept: a test server without TLS still signs in
+    local = Settings(backend="postgres", lakebase_endpoint=ENDPOINT, pg_sslmode="disable", pg_host="/tmp/pg")
+    assert lakebase_auth.tls_mode(local, "/tmp/pg") == "disable"
+    assert lakebase_auth.tls_mode(local, "127.0.0.1") == "disable"
 
 
 def test_the_pool_kwargs_without_lakebase() -> None:
@@ -314,3 +334,50 @@ def test_an_unreachable_server_fails_fast(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setattr(postgres_engine, "OPEN_TIMEOUT", 1.0)
     with pytest.raises(MdmError, match="store_unreachable"):
         PostgresStore(Settings(backend="postgres", postgres_dsn=f"host={tmp_path} port=1 connect_timeout=1"))
+
+
+def test_personas_are_honoured_only_for_a_server_on_this_machine() -> None:
+    assert local_server("/tmp/mdm-pg", "", "mdm")
+    assert local_server("localhost", "127.0.0.1", "mdm") and local_server("localhost", "::1", "mdm")
+    assert not local_server("instance.example.com", "203.0.113.7", "mdm")
+    assert not local_server("/tmp/mdm-pg", "", DEFAULT_DATABASE)  # Lakebase's database, even tunnelled
+    with pytest.raises(ConfigError, match="MDM_POOL_MAX"):
+        Settings.from_env({"MDM_POOL_MAX": "1"})
+
+
+@needs_postgres
+@pytest.mark.postgres
+def test_a_persona_store_on_lakebases_database_is_refused(request: pytest.FixtureRequest) -> None:
+    dsn = request.getfixturevalue("postgres_dsn")
+    with psycopg.connect(dsn, autocommit=True) as admin:
+        if not admin.execute("SELECT 1 FROM pg_database WHERE datname = %s", [DEFAULT_DATABASE]).fetchone():
+            admin.execute(f"CREATE DATABASE {DEFAULT_DATABASE}")
+    parts = pg_parts(dsn)
+    parts["dbname"] = DEFAULT_DATABASE
+    shared = psycopg.conninfo.make_conninfo(**parts)
+    with pytest.raises(PlatformRefused, match="personas_need_a_local_postgres"):
+        open_store(
+            Settings(backend="postgres", postgres_dsn=shared, allow_personas=True, schema_prefix="tpersona1")
+        )
+    open_store(Settings(backend="postgres", postgres_dsn=shared, schema_prefix="tpersona1")).close()
+
+
+@needs_postgres
+@pytest.mark.postgres
+def test_connections_the_server_dropped_while_idle_are_replaced(make_store: Callable[..., SqlStore]) -> None:
+    """★ After an idle disconnect or a scale to zero, the lease and a transaction start on live connections."""
+    store = make_store("postgres")
+    assert isinstance(store, PostgresStore) and store._pool.max_size >= 2
+    pids: set[int] = set()
+    with store.transaction():  # a second connection, taken by another thread, so the pool holds two
+        pids.add(backend_pid(store))
+        other = threading.Thread(target=lambda: pids.add(backend_pid(store)))
+        other.start()
+        other.join(timeout=30)
+    assert len(pids) == 2
+    for pid in pids:
+        kill(store.settings.postgres_dsn, pid)
+    with store.exclusive_lease("arrival") as held:
+        assert held
+        with store.transaction():
+            assert store.last_commit_version() == 0

@@ -63,6 +63,14 @@ _SETTING_VARIABLES = (
     "MDM_AGENT_ENDPOINT",
     "MDM_THROTTLE_ROWS_PER_HOUR",
     "MDM_GAP_TIMEOUT_SECONDS",
+    # libpq and Settings.from_env read these: a developer's shell must not point a test elsewhere
+    "PGHOST",
+    "PGPORT",
+    "PGDATABASE",
+    "PGUSER",
+    "PGPASSWORD",
+    "PGSSLMODE",
+    "PGSERVICE",
 )
 _ENGINE_MARKS = {"postgres": [pytest.mark.postgres], "lakebase": [pytest.mark.live]}
 
@@ -70,6 +78,23 @@ _ENGINE_MARKS = {"postgres": [pytest.mark.postgres], "lakebase": [pytest.mark.li
 def engine_params() -> list[Any]:
     """The engines of the run as pytest params, each Postgres one marked `postgres`, the live one `live`."""
     return [pytest.param(e, marks=_ENGINE_MARKS.get(e, []), id=e) for e in ENGINES]
+
+
+#: a test that needs Postgres itself (another connection, a server-side kill): the Postgres param only, with
+#: its `postgres` mark, so `-m postgres` selects it; an empty set when the run leaves Postgres out
+ONLY_POSTGRES_ENGINE = pytest.mark.parametrize(
+    "engine", [p for p in engine_params() if p.id == "postgres"], indirect=True
+)
+#: seconds a test waits for a barrier or a thread before it fails instead of hanging
+THREAD_TIMEOUT = 60.0
+
+
+def join_all(threads: list[Any], timeout: float = THREAD_TIMEOUT) -> None:
+    """Join every thread, failing the test when one is still running after `timeout` (a deadlock)."""
+    for thread in threads:
+        thread.join(timeout=timeout)
+    alive = [t.name for t in threads if t.is_alive()]
+    assert not alive, f"threads still running after {timeout} s: {alive}"
 
 
 def new_prefix() -> str:
@@ -157,7 +182,11 @@ def on_platform(monkeypatch: pytest.MonkeyPatch) -> str:
 
 @pytest.fixture(scope="session")
 def postgres_dsn() -> Iterator[str]:
-    """The Postgres of the run: named by MDM_TEST_POSTGRES, or started here and stopped at the end."""
+    """The Postgres of the run: named by MDM_TEST_POSTGRES, or started here and stopped at the end.
+
+    Skips every test that asks for it when the run leaves Postgres out (`MDM_TEST_ENGINES=duckdb`)."""
+    if "postgres" not in ENGINES:
+        pytest.skip("the run leaves Postgres out")
     dsn, let_go = postgres_for_the_run()
     if dsn is None:
         if postgres_required():

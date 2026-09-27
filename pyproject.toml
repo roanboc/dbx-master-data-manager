@@ -21,7 +21,11 @@ dependencies = [
 databricks = ["databricks-sdk>=0.143"]
 
 [dependency-groups]
-dev = ["pytest>=9.1", "ruff>=0.16"]
+dev = [
+    "pytest>=9.1",
+    "pytest-xdist>=3.8",
+    "ruff>=0.16",
+]
 
 [project.scripts]
 mdm = "mdm.cli:main"
@@ -42,7 +46,11 @@ markers = [
   "live: runs against a Lakebase endpoint (MDM_LIVE_LAKEBASE=1)",
   "slow: over five seconds; runs in CI, skipped by make test-fast",
 ]
-filterwarnings = ["ignore::DeprecationWarning"]
+# a thread that raises inside a test fails the test, never passes with a warning
+filterwarnings = [
+  "error::pytest.PytestUnhandledThreadExceptionWarning",
+  "ignore::DeprecationWarning",
+]
 
 [tool.ruff]
 # scripts/ holds archreator's validators verbatim, so they can be refreshed from upstream.

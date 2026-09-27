@@ -17,13 +17,15 @@ boolean, date, timestamp -> timestamptz, json or repeating -> json. A
 No uuid, no arrays, no vectors, no partitions.
 
 Every name here is an unquoted identifier outside both engines' reserved
-words, so no statement quotes one. The plan's `access_log.at` and
+words, so no statement quotes one; `ident()` refuses any other name at the
+point a statement is built from it. The plan's `access_log.at` and
 `redaction_log.at` are `accessed_at` and `redacted_at`: `at` is reserved on
 DuckDB.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -661,9 +663,23 @@ ENTITY_FIXED_COLUMNS = frozenset(ENTITY_LEAD_COLUMNS + ENTITY_TRAIL_COLUMNS)
 _BY_NAME: Mapping[tuple[str, str], Table] = {(t.group, t.name): t for t in TABLES}
 
 
+_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+
+
+def ident(name: str) -> str:
+    """`name` when it is an unquoted identifier both engines accept as written; ValueError otherwise.
+
+    No statement here quotes a name, so every name a statement is built from passes through this
+    check first, whatever checked it upstream (a model file, a setting).
+    """
+    if not isinstance(name, str) or not _IDENTIFIER.fullmatch(name):
+        raise ValueError("not a plain identifier")
+    return name
+
+
 def schema_name(prefix: str, group: str) -> str:
     """`f"{prefix}_{group}"`: the schema of one group."""
-    return f"{prefix}_{group}"
+    return f"{ident(prefix)}_{ident(group)}"
 
 
 def qualified(prefix: str, table: Table) -> str:
@@ -710,7 +726,7 @@ def index_name(table: Table, columns: Sequence[str]) -> str:
 
 
 def _column_sql(column: Column, prefix: str, engine: str, in_key: bool) -> str:
-    parts = [column.name, sql_type(column.type, engine)]
+    parts = [ident(column.name), sql_type(column.type, engine)]
     if not column.nullable or in_key:
         parts.append("NOT NULL")
     if column.default is not None:
@@ -726,6 +742,7 @@ def render_schema(prefix: str, group: str) -> str:
 
 def render_table(table: Table, prefix: str, engine: str) -> list[str]:
     """CREATE TABLE IF NOT EXISTS, then its indexes (CREATE INDEX IF NOT EXISTS)."""
+    ident(table.name)
     key = set(table.primary_key)
     lines = [_column_sql(c, prefix, engine, c.name in key) for c in table.columns]
     lines.append("PRIMARY KEY (" + ", ".join(table.primary_key) + ")")
@@ -751,12 +768,13 @@ def entity_table(model: EntityModel) -> Table:
     A table only ever gains columns at the end: an attribute a later model version adds is appended
     after `_updated_at` (`add_column_sql`), so the order here is the order of a table created fresh.
     """
+    ident(model.entity)
     columns = [
         _n("master_id", "text"),
         _n("status", "text", check=_in("status", ("active", "retired", "merged"))),
         _c("survivor_id", "text"),
     ]
-    columns.extend(_c(a.name, attribute_type(a.type, a.repeating)) for a in model.column_attributes())
+    columns.extend(_c(ident(a.name), attribute_type(a.type, a.repeating)) for a in model.column_attributes())
     columns.extend(
         (
             _n("_commit_version", "bigint"),
@@ -778,9 +796,11 @@ def masked_view_sql(
     columns become `left(c, 1) || '***'`; every other personal type `CAST(NULL AS <type>)`. `engine`
     spells the type of a masked non-text column (JSON on DuckDB, jsonb on Postgres).
     """
+    ident(model.entity)
     personal = {a.name: a for a in model.column_attributes() if a.personal}
     expressions = []
     for name in ordered_columns:
+        ident(name)
         attribute = personal.get(name)
         if attribute is None:
             expressions.append(name)
@@ -815,6 +835,7 @@ def add_column_sql(table: Table, column: Column, prefix: str, engine: str) -> st
 
     An added column is nullable whatever its declaration, since the rows already there have no value.
     """
+    ident(table.name)
     definition = _column_sql(
         Column(column.name, column.type, True, column.default, column.check), prefix, engine, False
     )
@@ -838,20 +859,24 @@ def grants_sql(
 ) -> list[str]:
     """Postgres only: the listener interface's grants (B.8.1).
 
-    USAGE and SELECT on <p>_core for the reader and notifier roles, USAGE and SELECT on <p>_read for
-    people, and ALTER DEFAULT PRIVILEGES FOR ROLE <hub_role> IN SCHEMA <p>_core GRANT SELECT ON TABLES
-    TO <reader roles>, so a new entity's table is readable without a manual grant. `people_roles`
-    (an addition to the plan's signature) are the roles people read `<p>_read` through; the same
-    default privileges cover the views a new entity adds there.
+    USAGE and SELECT on <p>_core for the reader roles; USAGE on <p>_core and SELECT on
+    <p>_core.commit_log alone for the change notifier, which announces versions and never reads a
+    record (least access), with no default privileges; USAGE and SELECT on <p>_read for people; and
+    ALTER DEFAULT PRIVILEGES FOR ROLE <hub_role> IN SCHEMA <p>_core GRANT SELECT ON TABLES TO <reader
+    roles>, so a new entity's table is readable without a manual grant. `people_roles` (an addition
+    to the plan's signature) are the roles people read `<p>_read` through; the same default
+    privileges cover the views a new entity adds there.
     """
     core = schema_name(prefix, "core")
     read = schema_name(prefix, "read")
     hub = quote_role(hub_role)
     statements: list[str] = []
-    listeners = [*reader_roles, *([notifier_role] if notifier_role else [])]
-    for role in listeners:
+    for role in reader_roles:
         statements.append(f"GRANT USAGE ON SCHEMA {core} TO {quote_role(role)}")
         statements.append(f"GRANT SELECT ON ALL TABLES IN SCHEMA {core} TO {quote_role(role)}")
+    if notifier_role:
+        statements.append(f"GRANT USAGE ON SCHEMA {core} TO {quote_role(notifier_role)}")
+        statements.append(f"GRANT SELECT ON {core}.commit_log TO {quote_role(notifier_role)}")
     for role in reader_roles:
         statements.append(
             f"ALTER DEFAULT PRIVILEGES FOR ROLE {hub} IN SCHEMA {core} GRANT SELECT ON TABLES TO {quote_role(role)}"

@@ -7,7 +7,7 @@ import pytest
 from mdm.models.authority import Actor
 from mdm.models.errors import Forbidden, NotFound
 from mdm.services.profiling import pattern_of
-from tests.test_services_fixtures import GIVEN, land, mini_world
+from tests.helpers import GIVEN, land, mini_world
 
 
 def test_pattern_of() -> None:
@@ -25,6 +25,8 @@ def test_a_profile_counts_and_masks(hub) -> None:
     given = by_name["given_name"]
     assert given.filled == persons and given.empty == 0
     assert all(value.endswith("***") and len(value) == 4 for value, _ in given.top)
+    # the distinct count is of the values, not of their masked forms
+    assert given.distinct == len({r.payload["given_name"] for r in world.rows if r.entity == "person"})
     assert not any(name in str(profile) for name in GIVEN)
     assert by_name["city"].top[0][0] in {r.payload.get("city") for r in world.rows}  # not personal: shown
     assert by_name["email"].empty > 0  # student records carry no e-mail

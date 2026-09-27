@@ -5,14 +5,12 @@ from __future__ import annotations
 import threading
 from datetime import timedelta
 
-import pytest
-
 from mdm.backend import guard
 from mdm.models.canonical import canonical_json, iso
 from mdm.models.records import Gap
 from mdm.services.landing import Batch, LandingReader, missing_ranges, split_gap
-from tests.conftest import ENGINES
-from tests.test_services_fixtures import (
+from tests.conftest import ONLY_POSTGRES_ENGINE, THREAD_TIMEOUT, join_all
+from tests.helpers import (
     T0,
     arrive,
     crm_person_key,
@@ -47,11 +45,6 @@ def _land_at(hub, landing_row, seq: int) -> None:
                 seq,
             ],
         )
-
-
-ONLY_POSTGRES = pytest.mark.skipif(
-    "postgres" not in ENGINES, reason="the engines of this run leave Postgres out"
-)
 
 
 def _crm(i: int):
@@ -143,6 +136,8 @@ def test_a_lost_range_past_the_retention_is_dropped(hub, fake_clock) -> None:
     with hub.store.transaction():
         reader.record(batch)
     fake_clock.advance(601)
+    assert reader.tick().newly_lost == 0  # never probed since its timeout: not given up yet
+    assert reader.next_batch(10).rows == ()
     assert reader.tick().newly_lost == 1
     fake_clock.advance(timedelta(days=15).total_seconds())
     result = reader.reconcile(force=True)
@@ -151,8 +146,39 @@ def test_a_lost_range_past_the_retention_is_dropped(hub, fake_clock) -> None:
     assert not reader.due_for_reconcile()
 
 
-@ONLY_POSTGRES
-@pytest.mark.parametrize("engine", ["postgres"], indirect=True)
+def test_a_gap_past_its_timeout_is_probed_before_it_is_declared_lost(hub, fake_clock) -> None:
+    """★ Runs further apart than the gap timeout still read a row that committed late in between."""
+    hub.arrival.reader = LandingReader(hub.store, clock=fake_clock)
+    _land_at(hub, _crm(0), 1)
+    _land_at(hub, _crm(2), 3)
+    first = hub.arrival.run(started_by=hub.actor)
+    assert first.read == 2 and first.gaps_open == 1
+    _land_at(hub, _crm(1), 2)  # commits a minute later
+    fake_clock.advance(15 * 60)  # the next run, fifteen minutes on
+    second = hub.arrival.run(started_by=hub.actor)
+    assert second.read == 1 and second.gaps_open == 0 and second.gaps_lost == 0
+    assert master_of(hub, "person", "crm", crm_person_key(1)) is not None
+
+
+def test_reconcile_drops_only_the_ranges_it_read_to_the_end(hub, fake_clock) -> None:
+    """★ An expired lost range the probe's limit cut off is kept for the next round, never dropped."""
+    land(hub, [_crm(i) for i in range(3)])
+    seqs = sorted(c.landing_seq for c in hub.store.landing_above(0, 10))
+    long_ago = fake_clock() - timedelta(days=30)
+    with hub.store.transaction():
+        hub.store.save_reader(
+            "arrival", seqs[-1], 0, upsert=[Gap(n, n, "lost", long_ago, long_ago) for n in seqs]
+        )
+    reader = LandingReader(hub.store, clock=fake_clock)
+    first = reader.reconcile(force=True, limit=2)
+    assert [c.landing_seq for c in first.rows] == seqs[:2] and first.dropped == 0
+    with hub.store.transaction():
+        reader.record(first)
+    second = reader.reconcile(force=True, limit=2)
+    assert [c.landing_seq for c in second.rows] == seqs[2:] and second.dropped == 0
+
+
+@ONLY_POSTGRES_ENGINE
 def test_a_late_commit_from_another_connection_is_processed_exactly_once(hub, fake_clock) -> None:
     import psycopg
 
@@ -194,22 +220,26 @@ def landing_source(landing):
     return SourceKey(landing.source_system, landing.source_key)
 
 
-@ONLY_POSTGRES
-@pytest.mark.parametrize("engine", ["postgres"], indirect=True)
+@ONLY_POSTGRES_ENGINE
 def test_two_runs_at_once_one_holds_the_lease(hub) -> None:
     land(hub, [_crm(i) for i in range(20)])
     reports = []
-    gate = threading.Barrier(2)
+    errors: list[BaseException] = []
+    gate = threading.Barrier(2, timeout=THREAD_TIMEOUT)
 
     def run() -> None:
-        gate.wait()
-        reports.append(arrive(hub))
+        try:
+            gate.wait()
+            reports.append(arrive(hub))
+        except BaseException as exc:  # noqa: BLE001 - a crash in either run fails the test below
+            errors.append(exc)
 
     threads = [threading.Thread(target=run) for _ in range(2)]
     for thread in threads:
         thread.start()
-    for thread in threads:
-        thread.join()
+    join_all(threads)
+    assert not errors, errors
+    assert len(reports) == 2
     assert hub.store.queue_size() == 0
     assert sum(r.read for r in reports) == 20
     assert all(master_of(hub, "person", "crm", crm_person_key(i)) for i in range(20))

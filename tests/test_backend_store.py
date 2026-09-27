@@ -15,7 +15,7 @@ from mdm.backend.store import SqlStore, encode
 from mdm.models.authority import AUTOMATED_MATCHER, Actor, Authority
 from mdm.models.changes import ChangeRow, CommitLogRow, CreateGolden, WorkWrites, new_change_set
 from mdm.models.entity_model import EntityModel
-from mdm.models.errors import Conflict, MdmError, NotFound
+from mdm.models.errors import Conflict, GuardError, MdmError, NotFound
 from mdm.models.match import Band, Contribution, Explanation, PairScore
 from mdm.models.records import (
     Gap,
@@ -505,13 +505,17 @@ def test_vault_reuses_equal_live_values_and_redacts(store: SqlStore) -> None:
     )
     assert again[0] == ids[0] and again[1] not in ids
     assert store.vault_get([ids[0], ids[1]]) == {ids[0]: "Given01", ids[1]: "1990-04-01"}
-    emptied = store.vault_redact(["src:hr:H1"], redaction_id="RD-1")
+    with pytest.raises(GuardError, match="vault_update_outside_redact"):
+        store.vault_redact(["src:hr:H1"])  # only a redaction, in its own scope, updates the vault
+    with guard.redact_scope():
+        emptied = store.vault_redact(["src:hr:H1"], redaction_id="RD-1")
     assert emptied == sorted({ids[0], ids[1], again[1]})
     assert store.vault_get(emptied) == {i: None for i in emptied}
     assert store.vault_get([ids[3]]) == {ids[3]: "Given01"}
     fresh = store.vault_put([("person", "src:hr:H1", "given_name", "Given01")])
     assert fresh[0] not in emptied  # a redacted value is never reused
-    assert store.vault_redact(["src:hr:H1"]) == fresh
+    with guard.redact_scope():
+        assert store.vault_redact(["src:hr:H1"]) == fresh
 
 
 def test_audit_is_appended(store: SqlStore) -> None:
@@ -568,6 +572,12 @@ def test_audit_is_appended(store: SqlStore) -> None:
     assert access.startswith("AC-") and redaction.startswith("RD-")
     (entry,) = store.access_log(None, 10)
     assert (entry["actor"], entry["attribute"], entry["detail"]) == (OWNER.name, "given_name", {"n": 1})
+    # free text never reaches a detail, whoever built it: the writer checks it too (RULE10)
+    with pytest.raises(ValueError, match="free text"):
+        store.append_access(OWNER, "reveal", "person", None, None, "checking", {"note": "Ada Quill"})
+    with pytest.raises(ValueError, match="free text"):
+        store.put_rejects([Reject("ev-free", 1, "person", None, "bad_payload", ("an attribute",))])
+    assert len(store.access_log(None, 10)) == 1
 
 
 # ------------------------------------------------------------------------------------------ core
@@ -865,3 +875,12 @@ def test_landing_rows_need_the_simulator(store: SqlStore) -> None:
         1,
         T0,
     )
+
+
+def test_the_local_store_directory_is_private_to_its_owner(tmp_path: Any) -> None:
+    from mdm.backend.duckdb_engine import DuckDBStore
+    from mdm.config import Settings
+
+    path = tmp_path / ".mdm" / "mdm.duckdb"
+    DuckDBStore(Settings(duckdb_path=str(path))).close()
+    assert path.parent.stat().st_mode & 0o077 == 0

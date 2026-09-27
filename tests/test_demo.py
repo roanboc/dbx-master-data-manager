@@ -25,6 +25,7 @@ from mdm.engine.standardise import standardise_record
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import PlatformRefused
 from mdm.models.records import SourceChange, SourceKey
+from tests import helpers
 
 ROOT = Path(__file__).resolve().parents[1]
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+)")
@@ -334,12 +335,15 @@ def test_generated_text_passes_the_public_safety_scan(world: DemoWorld) -> None:
                 if not any(allowed in found.group(0).lower() for allowed in ALLOWED):
                     hits.append(label)
     assert hits == []
-    terms_file = os.environ.get("MDM_PUBLIC_SAFE_TERMS")
-    if not terms_file:
-        pytest.skip("MDM_PUBLIC_SAFE_TERMS names the private denylist; the built-in patterns passed")
+    named = os.environ.get("MDM_PUBLIC_SAFE_TERMS")
+    terms_file = Path(named) if named else ROOT / ".public-safe-terms.txt"
+    if not terms_file.is_file():
+        pytest.skip(
+            "no private denylist (MDM_PUBLIC_SAFE_TERMS or .public-safe-terms.txt); built-in patterns passed"
+        )
     terms = [
         line.strip()
-        for line in Path(terms_file).read_text(encoding="utf-8").splitlines()
+        for line in terms_file.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
     ]
     rule = re.compile("|".join(re.escape(t) for t in terms), re.IGNORECASE)
@@ -354,6 +358,9 @@ def test_generated_text_passes_the_public_safety_scan(world: DemoWorld) -> None:
     # count only: the test output never prints a term or the text it was found in
     assert sum(1 for text in texts if rule.search(text)) == 0
     assert sum(1 for word in vocabulary if rule.search(word)) == 0
+    # nor may a generated word of five letters or more be part of a term: it would read like the real name
+    lowered = [t.lower() for t in terms]
+    assert sum(1 for word in vocabulary if len(word) >= 5 and any(word.lower() in t for t in lowered)) == 0
 
 
 # ---------------------------------------------------------------------------------------------- landing and evaluation
@@ -381,3 +388,11 @@ def test_lander_writes_once_and_refuses_a_shared_store(on_platform: str) -> None
         )
     finally:
         store.close()
+
+
+def test_the_test_mini_world_is_invented_and_valid() -> None:
+    world = helpers.mini_world()
+    assert len({r.event_id for r in world.rows}) == len(world.rows)
+    assert all(r.payload.get("email", "@example.org").endswith("@example.org") for r in world.rows)
+    assert {r.entity for r in world.rows} == {"person", "organisation"}
+    assert set(world.truth) == {(r.entity, SourceKey(r.source_system, r.source_key)) for r in world.rows}

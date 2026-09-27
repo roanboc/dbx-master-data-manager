@@ -136,6 +136,13 @@ def test_the_same_id_on_both_sides_is_no_conflict() -> None:
     assert [r.sources for r in out] == [(A, B, C)]
 
 
+def test_one_shared_id_is_no_conflict_even_when_one_side_holds_another() -> None:
+    """The union test agrees with the cannot-link rule: values in common mean no conflict."""
+    ids = {A: {("PERSON_REF", "111"), ("PERSON_REF", "333")}, B: {("PERSON_REF", "111")}}
+    out = resolve_batch(plain(A, B, ids=ids), {}, [pair(A, B, 95.0)], {})
+    assert [r.sources for r in out] == [(A, B)]
+
+
 def test_a_must_link_pair_joins_and_a_cannot_link_pair_does_not() -> None:
     joined = resolve_batch(plain(A, B), {}, [pair(A, B, 30.0, "must_link:person_ref")], {})
     assert [r.sources for r in joined] == [(A, B)]

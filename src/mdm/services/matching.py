@@ -20,11 +20,14 @@ from mdm.backend.store import SqlStore
 from mdm.engine.blocking import keys_from_forms, rank_candidates
 from mdm.engine.score import CompiledRules, explain, fast_weight, worth_explaining
 from mdm.engine.standardise import standardise_record
+from mdm.models.authority import Actor
 from mdm.models.canonical import utcnow
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import NotFound
 from mdm.models.match import GoldenCandidate, PairScore
 from mdm.models.records import RegisteredId, SourceChange, SourceKey, SourceState, StdRecord
+from mdm.models.safety import safe_detail
+from mdm.services.authority import require
 from mdm.services.registry import ModelRegistry
 from mdm.services.support import token
 
@@ -210,17 +213,21 @@ class MatchService:
         self,
         entity: str,
         *,
+        actor: Actor,
         payload: Mapping[str, Any] | None = None,
         source: SourceKey | None = None,
         rules_version: int | None = None,
         top: int = 5,
         clock: Any = utcnow,
     ) -> list[GoldenCandidate]:
-        """Scores a record (a payload, or a stored source record) against the golden records; writes nothing.
+        """Scores a record (a payload, or a stored source record) against the golden records.
 
+        Requires `match_test`: each comparison's level could tell a masked value to someone who varies the
+        record, so a consumer may not, and every call writes an access-log row (it changes nothing else).
         A payload is standardised as its `source_system` key names (else the model's first source); it may
         carry the keys of the landing payload. Returns the best `top` golden candidates, best first.
         """
+        require(actor, "match_test")
         model = self.registry.published(entity)
         rules = self.registry.compiled(entity, rules_version)
         top = capacity.require_limit(top, 100)
@@ -250,6 +257,15 @@ class MatchService:
             record = standardise_record(model, spec, change)
         else:
             raise NotFound("nothing_to_match", entity=entity)
+        self.store.append_access(
+            actor,
+            "match_test",
+            entity,
+            None,
+            None,
+            "match_test",
+            safe_detail(top=top, stored=source is not None, rules_version=rules.rules.version),
+        )
         search = self.search(model, rules, [record], explain_all=True)
         pairs = {record.source: [p for p in search.pairs.get(record.source, []) if p.right != record.source]}
         golden = self.golden_candidates(
