@@ -4,7 +4,7 @@ _[← Strategy layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Strategy: Capability, Resource.
 
-**Status:** ◐ Draft catalogue — identified from the product owner's request and answers of 26 September 2026 and the approved Master Data Manager Blueprint; not yet validated.
+**Status:** ● Validated, 2026-09-27.
 
 ## Capabilities
 
@@ -183,6 +183,6 @@ Dashed edges are not true yet, because the capabilities they serve are not built
 | `RES1` | **Landing tables** — the source changes the integration platform writes into the operational database | External — the integration team's landing tables, which the hub reads and never writes | [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
 | `RES2` | **Platform hosting, store and compute** — the app host, the operational database and the jobs the hub runs on | External — the product owner's platform workspace; compute beyond the smallest size is spend the product owner agrees first | [Request](../reference/2026-09-26-request-and-answers.md#the-request) | |
 | `RES3` | **Steward time** — the hours data stewards can give to decisions, the scarcest resource the hub depends on | The stewards: [actor [`ACT2`] Data stewards](../2_business/1_business-actors-and-roles.md#actors) | Blueprint §1; adopted — steward time is treated as a resource the hub depends on | |
-| `RES4` | **Governed code lists** — reference values, such as countries and currencies, that the Reference Data Manager governs | External — the Reference Data Manager, which the hub reads and never writes | Blueprint §2 | How the hub reads them is open until initiative 2 |
+| `RES4` | **Governed code lists** — reference values, such as countries and currencies, that the Reference Data Manager governs | External — the Reference Data Manager, which the hub reads and never writes | Blueprint §2 | |
 | `RES5` | **Steward match labels** — every match decision a steward makes, kept as evidence for tuning rules | **Pending — future initiative** (initiative 3): labels arise as stewards decide | Blueprint §2 | |
 | `RES6` | **Language-model endpoint** — a configured serving endpoint for AI assistance, off until an administrator enables it per master data domain | **Pending — future initiative** (Release 2, initiative 5); Release 1 ships a stub | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers) | |

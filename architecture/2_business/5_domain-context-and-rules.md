@@ -4,7 +4,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Business layer: Business Rule, with the glossary of the domain.
 
-**Status:** ◐ Draft catalogue — identified from the product owner's request and answers of 26 September 2026 and the approved Master Data Manager Blueprint; not yet validated.
+**Status:** ● Validated, 2026-09-27.
 
 ## Glossary
 
@@ -159,5 +159,5 @@ Dashed edges are not true yet, because the hub that enforces these rules is not 
 | `RULE7` | **Bulk decisions pass a forced sample** — tasks decided together by pattern first pass a unanimous forced sample, one disagreement splits the group, and blind review re-checks a share afterwards | A pattern can hide an exception | **Pending — future initiative** (initiative 3) | Blueprint §3 flow (c) | |
 | `RULE8` | **Master IDs are never reused** — a master ID is opaque and always resolves; a merge retires one ID to its survivor, the retired-to-survivor map is published with chains collapsed, and unmerge brings the retired ID back | Listening systems join on master IDs | **Pending — future initiative** (initiative 2) | Blueprint §5.2; proposed by DMBOK2 Revised ch. 10 and ISO 8000-115 | |
 | `RULE9` | **The hub never writes a source record** — source records are read, versioned and linked, never changed, and a defect found in a source goes back to its owner as an issue | Source records belong to their systems of record, and the landing tables belong to the integration platform | **Pending — future initiative** (initiative 2) | [Request](../reference/2026-09-26-request-and-answers.md#the-request); [answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
-| `RULE10` | **Personal values are held apart and redacted by rule** — history holds personal values only by reference, and keeps the values apart; an erasure redacts a data subject's values, records the redaction and reports downstream copies; prompts to a language model carry masked values only | History must stay complete without keeping personal data for ever | **Pending — future initiative** (initiatives 2 and 4) | Blueprint §5.4, §5.6; [Answer 1](../reference/2026-09-26-request-and-answers.md#answers) | Retention periods, and who erases downstream copies, are not yet agreed (Blueprint question 4) |
+| `RULE10` | **Personal values are held apart and redacted by rule** — history holds personal values only by reference, and keeps the values apart; an erasure redacts a data subject's values, records the redaction and reports downstream copies; prompts to a language model carry masked values only | History must stay complete without keeping personal data for ever | **Pending — future initiative** (initiatives 2 and 4) | Blueprint §5.4, §5.6; [Answer 1](../reference/2026-09-26-request-and-answers.md#answers) | |
 | `RULE11` | **Least access by default** — every person sees personal values masked unless a role allows more; a failed role lookup gives the consumer role; every reveal is logged | A lookup failure must never widen access | **Pending — future initiative** (initiative 2) | Blueprint §5.6 | |

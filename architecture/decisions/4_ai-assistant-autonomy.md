@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-26
 **Touches:** [actor [`ACT9`] AI assistant](../2_business/1_business-actors-and-roles.md#ai-assistant)
 
