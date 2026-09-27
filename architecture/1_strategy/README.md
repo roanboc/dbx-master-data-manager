@@ -86,9 +86,9 @@ flowchart TB
   p1 -->|realizes| g2
   p2 -->|realizes| g2
   vs1 -.->|realizes| g2
-  vs1_3 -.->|flows to| vs1_4
+  vs1_3 -->|flows to| vs1_4
   cap5 -.->|serves| vs1_3
-  cap7 -.->|serves| vs1_4
+  cap7 -->|serves| vs1_4
   res3 -.->|assigned to| cap5
 
   classDef stakeholder fill:#f4ecfc,stroke:#9575cd,color:#333
@@ -101,4 +101,4 @@ flowchart TB
   style vs1 fill:#fbf4e2,stroke:#b08a3a,color:#333
 ```
 
-Dashed edges are not true yet, because the hub is not built.
+Solid edges are true: resolved arrivals reach Commit, which the sharing capability serves. Dashed edges wait for the steward workbench and the platform deployment.

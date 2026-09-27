@@ -1,0 +1,57 @@
+entity: organisation
+code: ORG
+domain: party
+style: coexistence
+display_name: "{name}"
+ai_enabled: false
+defaults: {calling_code: "999"}
+attributes:
+  - {name: name, type: text, standardise: org_name, required: true, criticality: critical}
+  - {name: registered_id, type: text, standardise: registered_id, scheme: ORG_REG, checksum: mod97, strong: true, criticality: critical}
+  - {name: phone, type: text, standardise: phone}
+  - {name: email, type: text, standardise: email}
+  - {name: website, type: text, standardise: url}
+  - {name: postcode, type: text, standardise: postcode}
+  - {name: city, type: text, standardise: text}
+  - {name: country, type: text, standardise: code, code_list: country}
+  - {name: addresses, type: json, repeating: true, key: kind, fields: [kind, line1, city, postcode, country]}
+  - {name: parent, type: reference, reference: {entity: organisation, key_source: finance, relationship: subsidiary_of}}
+  - {name: closed_on, type: date, standardise: date, end_date: true}
+sources:
+  - {system: finance, trust: 1, date_order: ymd, versioned: true, policy: {new: auto, update: auto, critical_update: auto, end_date: auto}}
+  - {system: crm, trust: 2, date_order: ymd, policy: {new: auto, update: auto, critical_update: hold, end_date: hold}, trust_by_attribute: {email: 1, website: 1}}
+match:
+  version: 1
+  mode: consolidate
+  prior: 0.002
+  bands: {upper: 90, lower: 60}
+  blocking:
+    - {name: name_postcode, keys: ["name.first.metaphone", "postcode"]}
+    - {name: registered_id, keys: ["id(registered_id)"]}
+    - {name: phone, keys: ["phone"]}
+    - {name: name_tokens, keys: ["sorted_tokens(name.tokens, 2)"]}
+  comparisons:
+    - {name: name, attribute: name, comparator: token_set, m: [0.70, 0.15, 0.10, 0.05], u: [0.001, 0.005, 0.030, 0.964]}
+    - {name: registered_id, attribute: registered_id, comparator: identifier, m: [0.85, 0.05, 0.10], u: [0.000001, 0.00001, 0.999989]}
+    - {name: phone, attribute: phone, comparator: phone, m: [0.50, 0.10, 0.40], u: [0.0005, 0.002, 0.9975]}
+    - {name: postcode, attribute: postcode, comparator: postcode, m: [0.75, 0.10, 0.15], u: [0.010, 0.050, 0.940]}
+    - {name: city, attribute: city, comparator: name, m: [0.85, 0.05, 0.05, 0.05], u: [0.050, 0.010, 0.010, 0.930]}
+    - {name: website, attribute: website, comparator: exact, m: [0.60, 0.40], u: [0.0001, 0.9999]}
+  hard_rules:
+    - {kind: must_link, attribute: registered_id}
+    - {kind: cannot_link, attribute: registered_id}
+survivorship:
+  version: 1
+  default: [source_trust, recency]
+  steward_rank: 0
+  attributes:
+    email: {strategies: [source_trust, recency]}
+    website: {strategies: [source_trust, recency]}
+    addresses: {strategies: [source_trust, recency], group: keyed_union}
+validation:
+  version: 1
+  rules:
+    - {rule_id: ORG-V1, attribute: name, kind: required, dimension: completeness}
+    - {rule_id: ORG-V2, attribute: registered_id, kind: checksum, dimension: validity}
+    - {rule_id: ORG-V3, attribute: country, kind: code_list, dimension: validity, params: {code_list: country}}
+    - {rule_id: ORG-V4, attribute: website, kind: pattern, dimension: validity, params: {pattern: url}}

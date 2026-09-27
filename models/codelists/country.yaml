@@ -1,0 +1,7 @@
+name: country
+source: invented list for the local mode; the governed list comes from the Reference Data Manager from initiative 4
+values:
+  - {code: XA, label: Example Country A}
+  - {code: XB, label: Example Country B}
+  - {code: XC, label: Example Country C}
+  - {code: XD, label: Example Country D}

@@ -4,7 +4,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Business layer: Business Actor, Business Role, Contract.
 
-**Status:** ◐ Draft catalogue — identified from the product owner's request and answers of 26 September 2026 and the approved Master Data Manager Blueprint; not yet validated.
+**Status:** ● Validated, 2026-09-27.
 
 ## Actors
 
@@ -33,8 +33,8 @@ flowchart LR
   act3 -->|assigned to| role4
   act4 -.->|assigned to| role6
   act5 -->|assigned to| role5
-  act6 -.->|assigned to| role2
-  act6 -.->|escalates to| role2
+  act6 -->|assigned to| role2
+  act6 -->|escalates to| role2
   act6 -.->|escalates to| role1
   act7 -.->|assigned to| role3
   act7 -.->|escalates to| role3
@@ -50,7 +50,7 @@ flowchart LR
   classDef role fill:#f7f099,stroke:#a89400,color:#333
 ```
 
-Cyan, and the mark (AI) for artificial intelligence, show an automated actor, never a person. Dashed edges are not true yet, because the hub is not built.
+Cyan, and the mark (AI) for artificial intelligence, show an automated actor, never a person. Solid edges are true. Dashed edges wait for the steward workbench, the platform deployment and the language model.
 
 | ID | Actor | Kind | State | Source | Notes |
 | -- | ----- | ---- | ----- | ------ | ----- |
@@ -59,10 +59,10 @@ Cyan, and the mark (AI) for artificial intelligence, show an automated actor, ne
 | `ACT3` | **Data engineers** — the data and analytics unit's engineers who configure models, sources and jobs; with the data stewards, the people behind stakeholder [`STK3`] Data stewards | Human | Exists today | Blueprint §5.6; adopted — named for the technical steward role | |
 | `ACT4` | **Hub administrators** — the product owner's staff who will run the hub | Human | **Pending — future initiative** (initiative 4): when the hub is deployed | Blueprint §5.6 | |
 | `ACT5` | **Record consumers** — staff and analysts who look golden records up; among [stakeholder [`STK4`] Consumers of master data](../1_strategy/1_motivation.md#stakeholders) | Human | Exists today | Blueprint §5.6 | |
-| `ACT6` | **Automated matcher** — settles the arrivals the published rules allow, recomputes golden values when a pin expires, and applies an approved rule version to existing records | Automated (AI), deterministic, with no language model — autonomous with checkpoint | **Pending — future initiative** (initiative 2) | Blueprint §4, §5.5; adopted — one actor for arrivals, pin expiry and approved re-evaluation | |
+| `ACT6` | **Automated matcher** — settles the arrivals the published rules allow, recomputes golden values when a pin expires, and applies an approved rule version to existing records | Automated (AI), deterministic, with no language model — autonomous with checkpoint | Exists for arrivals — the arrival job, `mdm arrive`, in `src/mdm/services/arrival.py`; its checkpoint (the quality breaker and the blind review of [decision 1](../decisions/1_automated-matcher-autonomy.md)) and the pin-expiry recompute **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence)); applying an approved rule version to existing records **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §4, §5.5; adopted — one actor for arrivals, pin expiry and approved re-evaluation | |
 | `ACT7` | **Work router** — ranks steward tasks, escalates breached service levels and releases lapsed claims | Automated (AI), deterministic, with no language model — autonomous with checkpoint | **Pending — future initiative** (initiative 3) | Blueprint §4; adopted — named "work router" | |
 | `ACT8` | **Quality breaker** — withdraws bulk rights and demotes the automatic band when agreement falls | Automated (AI), deterministic, with no language model — autonomous with checkpoint, reducing only | **Pending — future initiative** (initiative 3) | Blueprint §4 | |
-| `ACT9` | **AI assistant** — drafts case narratives, answers with cited records and suggests configuration | Automated (AI), with a language model — advisory | **Pending — future initiative** (Release 2, initiative 5); the stub in initiative 2 | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers); Blueprint §4 | |
+| `ACT9` | **AI assistant** — drafts case narratives, answers with cited records and suggests configuration | Automated (AI), with a language model — advisory | **Pending — future initiative** (Release 2, [initiative 5](../6_transition/2_sequence.md#sequence)); the stub answers today, in `src/mdm/agent/` | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers); Blueprint §4 | |
 
 ### Automated matcher
 
@@ -127,5 +127,5 @@ The AI assistant (`ACT9`) advises the person using it and commits nothing.
 
 | ID | Contract | Realized by | Source | Notes |
 | -- | -------- | ----------- | ------ | ----- |
-| `CTR1` | **Landing contract** — between the hub and the integration platform run by [stakeholder [`STK5`] Integration team](../1_strategy/1_motivation.md#stakeholders) (External). Every landing table has a non-null key, a change sequence, event and landing times and a deletion marker, with no duplicates; the hub reads the landing tables and never writes them | **Pending — future initiative** (initiative 2): written as an interface contract | Blueprint §2, question 2; [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | Not yet agreed with the integration team |
-| `CTR2` | **Listener contract** — among the hub, the change notifier run by [stakeholder [`STK6`] Data platform team](../1_strategy/1_motivation.md#stakeholders), and the integration platform run by stakeholder [`STK5`] Integration team (both External). Listening systems read only the published tables, whose change feed gives each commit a version. The change notifier announces new versions, and the integration platform queries the changes from its own watermark. Listening systems also read the map from retired to surviving identifiers (IDs), can skip initial loads, and receive bulk changes at an agreed throttle | **Pending — future initiative** (initiative 2): written as an interface contract | Blueprint §5.4, question 2; [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | Not yet agreed with the integration team or the data platform team |
+| `CTR1` | **Landing contract** — between the hub and the integration platform run by [stakeholder [`STK5`] Integration team](../1_strategy/1_motivation.md#stakeholders) (External). Every landing table has a non-null key, a change sequence, event and landing times and a deletion marker, with no duplicates; the hub reads the landing tables and never writes them | [landing interface](../4_application/5_interface-contracts.md#landing-interface); the integration team's agreement **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §2, question 2; [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
+| `CTR2` | **Listener contract** — among the hub, the change notifier run by [stakeholder [`STK6`] Data platform team](../1_strategy/1_motivation.md#stakeholders), and the integration platform run by stakeholder [`STK5`] Integration team (both External). Listening systems read only the published tables, whose change feed gives each commit a version. The change notifier announces new versions, and the integration platform queries the changes from its own watermark. Listening systems also read the map from retired to surviving identifiers (IDs), can skip initial loads, and receive bulk changes at an agreed throttle | [listener interface](../4_application/5_interface-contracts.md#listener-interface); the agreement of the data platform team and the integration team **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §5.4, question 2; [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |

@@ -1,7 +1,8 @@
 # The three validators and the public-safety scan, on every change. Activated
 # by `establish-project` for any project hosted on GitHub — public or private —
 # because no validator needs a repository setting enabled, a dependency
-# installed, or a secret.
+# installed, or a secret. The code job adds the lint and the test suite, on
+# DuckDB and on a Postgres service container.
 
 name: Model checks
 
@@ -10,11 +11,20 @@ on:
   push:
     branches: [main]
 
+# The repository is public: the jobs read it and nothing more.
+permissions:
+  contents: read
+
+# A new push cancels the run it supersedes.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check-model:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # All three validators are Python standard library, so there is nothing
       # to install and no lockfile to keep current.
       - name: Check relative Markdown and HTML links
@@ -27,8 +37,46 @@ jobs:
   public-safety:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Built-in patterns only: the denylist that names the organisation is
       # kept outside the repository, so it is absent here and the scan skips it.
       - name: Scan for content that must not be published
         run: python3 scripts/scan_public_safe.py --root .
+
+  code:
+    name: Lint and tests
+    runs-on: ubuntu-latest
+    # a deadlock in the commit-order lock or the lease fails the job instead of holding it for hours
+    timeout-minutes: 20
+    services:
+      postgres:
+        # postgres:17, pinned by digest
+        image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+        env:
+          POSTGRES_USER: mdm
+          POSTGRES_PASSWORD: mdm
+          POSTGRES_DB: mdm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MDM_TEST_POSTGRES: postgresql://mdm:mdm@localhost:5432/mdm
+      # Fail, never skip, when Postgres is missing: both engines are proved on every change.
+      MDM_REQUIRE_POSTGRES: "1"
+      # The install step is the only one that resolves: no later `uv run` re-locks or reaches the network.
+      UV_NO_SYNC: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.11"
+      - name: Install (fails when uv.lock does not match pyproject.toml)
+        run: uv sync --locked
+      - name: Lint
+        run: make lint
+      - name: Tests, across the runner's cores
+        run: make test

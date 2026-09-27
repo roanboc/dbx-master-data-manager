@@ -25,11 +25,11 @@ silence, so a reader can tell what was decided from what was never looked at.
 | - | ----- | ----------------------- | ------ |
 | 0 | Business design | Who are the customers, and how does each offering pay? | `Out of scope` — this project models an application, not an organisation |
 | 1 | Strategy | Why does this exist, and what must it be able to do? | `Local` — [1_strategy/](./1_strategy/README.md): motivation, capabilities and resources, and the value stream |
-| 2 | Business | Who does what, and which services are offered? | `Local` — [2_business/](./2_business/README.md): actors and roles, business services, business objects, and the domain context and rules |
-| 3 | Information | What information exists, and where does it live? | `Gap` — no information model yet; opens with initiative 2, Foundations |
-| 4 | Application | Which software realizes each business service? | `Gap` — no application design yet; opens with initiative 2, Foundations |
-| 5 | Technology | What runs it all — runtimes, build, hosting? | `Gap` — the platform is chosen but not yet modelled; opens with initiative 2, Foundations |
-| — | Transition | Where is this going, and in what order? | `Gap` — no roadmap of plateaus yet; opens with initiative 2, Foundations |
+| 2 | Business | Who does what, and which services are offered? | `Local` — [2_business/](./2_business/README.md): actors and roles, business services, business processes, business objects, and the domain context and rules |
+| 3 | Information | What information exists, and where does it live? | `Local` — [3_information/](./3_information/README.md): data domains and objects, the flows with the landing tables, the change feed and listening systems, and where data lives, how sensitive it is and how long it is kept |
+| 4 | Application | Which software realizes each business service? | `Local` — [4_application/](./4_application/README.md): application services and components, how they collaborate, the solution design, and the landing and listener interfaces |
+| 5 | Technology | What runs it all — runtimes, build, hosting? | `Local` — [5_technology/](./5_technology/README.md): technology services and nodes, deployment and checks, and capacity |
+| — | Transition | Where is this going, and in what order? | `Local` — [6_transition/](./6_transition/README.md): plateaus, gaps and the order of initiatives 2 to 7 |
 
 ## Around the layers
 
