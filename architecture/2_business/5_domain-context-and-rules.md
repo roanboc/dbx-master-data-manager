@@ -4,7 +4,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Business layer: Business Rule, with the glossary of the domain.
 
-**Status:** ● Validated, 2026-09-27.
+**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
 
 ## Glossary
 
@@ -27,6 +27,8 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 | Change notifier | The platform's service that tells the integration platform which commit versions are new; the hub does not run it | [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
 | Change set | See [business object [`BOBJ9`] Change set](./4_business-objects.md); committing one writes it to the published tables | Blueprint §6 | |
 | Checker | The second person who approves a change set; never its maker | Blueprint §5.5 | |
+| Claim | A steward's hold on a task, taken by the first decision on it; it lapses after ten minutes, and moving through the inbox never claims | Blueprint §3; adopted — ten minutes | |
+| Close call | A task whose two best candidates score within ten points of each other; a link then needs an explicit choice of candidate | Blueprint §3 flow (a); adopted — ten points | |
 | Cluster | The source records resolved to one golden record | Blueprint §2 | |
 | Code list | A governed set of reference values, kept in the Reference Data Manager | Blueprint §2; proposed by DMBOK2 Revised ch. 10 (reference data) | |
 | Commit path | The one route by which an approved change set reaches the published tables; it checks the authority again at commit time | Blueprint §5.5 | |
@@ -47,6 +49,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 | Dry run | An exact, uncommitted run of a new rule version over a whole entity, reporting every change it would make | Blueprint §3 flow (b) | |
 | Entity | A kind of master record within a master data domain, such as Person or Organisation | Blueprint §6 | |
 | Erasure | Redacting one data subject's personal values, recording the redaction and reporting downstream copies | Blueprint §2 | |
+| Escalate | Hand a task to the coordinating steward with a reason, releasing the claim | Blueprint §3 | |
 | Fingerprint | The counts, cluster hash and watermark of an approved dry run; a re-evaluation stops if the records differ from it | Blueprint §3 flow (b) | |
 | Forced sample | The alike tasks a steward must decide one by one before the rest of a pattern can be decided together | Blueprint §3 flow (c) | |
 | Go-live | The day a release first serves real data on the platform | adopted — the model's word for it | |
@@ -59,6 +62,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 | Incumbent hub | The master data management product the enterprise uses today; a later initiative migrates from it | [Request](../reference/2026-09-26-request-and-answers.md#the-request) | |
 | Initial load | A source's history loaded in bulk and flagged, so listening systems can skip it | Blueprint §2, §5.4 | |
 | Issue | See [business object [`BOBJ11`] Quality issue](./4_business-objects.md) | — | |
+| Label | A steward's recorded decision on a pair: a match, not a match, or two golden records kept apart; the automated matcher honours a not-a-match and a keep-apart | Blueprint §2; [decision 22](../decisions/22_labels-bind-the-matcher.md) | |
 | Landing sequence | The number the operational database gives each landing row as it is written; it follows writing order, not commit order, and can skip numbers | [Answer 5](../reference/2026-09-26-request-and-answers.md#answers); adopted — [decision 9](../decisions/9_landing-table-and-watermark.md) | |
 | Landing table | A table in the operational database into which the integration platform writes source changes; the hub reads it and never writes it | [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
 | Language-model service | A service that uses a language model to draft or answer; it only suggests, and each has a deterministic stub | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers); Blueprint §4 | |
@@ -90,10 +94,13 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 | Release | A planned set of capabilities delivered together: Release 1 masters Person and Organisation; Release 2 adds language-model services, hierarchies and trends; Release 3 adds rule drafting and agent tools | [Answers 1 and 2](../reference/2026-09-26-request-and-answers.md#answers); Blueprint §2 | |
 | Retire | End a golden record's life; its ID stays resolvable | Blueprint §2 | |
 | Reveal | Showing a masked personal value to a person whose role allows it, logged with a reason | Blueprint §2 | |
+| Service level | The time within which a task of one kind should be decided; past its due time the task is breaching | Blueprint §3; adopted — per task kind, until the governance policy holds it | |
 | Signature | The pattern of comparison results a pair shows, used to group review tasks decided together | Blueprint §3 | |
+| Snooze | Set a task aside until a chosen time; its service level keeps running | Blueprint §3 | |
 | Source policy | Per source, what its new records, updates, critical updates and end dates need before they commit | Blueprint §2 | |
 | Source record | See [business object [`BOBJ2`] Source record](./4_business-objects.md) | — | |
 | Source system | A system that supplies records, and the system of record for some attributes | adopted — the domain's definition; proposed by DMBOK2 Revised ch. 10 | |
+| Staged decision | A steward's decision waiting in the undo tray; undone, it never reaches the published tables | Blueprint §3, §4; [decision 19](../decisions/19_undo-tray.md) | |
 | Store | Where the hub keeps its data: the operational database on the platform, or a DuckDB file in the local mode | [Request](../reference/2026-09-26-request-and-answers.md#the-request) | |
 | Stub | The deterministic stand-in for a language-model service, used locally and whenever the model is unavailable | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers) | |
 | Survivorship | The per-attribute strategy that picks the golden value | Blueprint §2; proposed by DMBOK2 Revised ch. 10 | |
@@ -134,7 +141,7 @@ flowchart LR
   bobj10[["▧ Audit record [BOBJ10]"]]:::object
 
   rule1 -->|constrains| bobj2
-  rule2 -.->|constrains| bobj9
+  rule2 -->|constrains| bobj9
   rule3 -->|constrains| bobj9
   rule4 -.->|constrains| bobj1
   rule4 -.->|constrains| bobj6
@@ -152,20 +159,20 @@ flowchart LR
   classDef object fill:#fffbb5,stroke:#b8a200,color:#333
 ```
 
-Solid edges are true: the hub enforces those rules today. Dashed edges wait for the steward workbench and for governance on the platform.
+Solid edges are true: the hub enforces those rules today. Dashed edges wait for decisions by pattern and for governance on the platform.
 
 `RULE1`–`RULE3` are the approval matrix's defaults, which the data owners may change; the other rules always hold.
 
 | ID | Business rule | Why | Enforced by | Source | Notes |
 | -- | ------------- | --- | ----------- | ------ | ----- |
 | `RULE1` | **Source traffic follows the source's policy** — a non-critical update, an arrival in the automatic band and a deletion marker commit automatically. An arrival carrying a retired ID is routed to its survivor and commits automatically. A critical update or an end date follows the source's policy, and anything else becomes a task. A distinct arrival creates a golden record unless its source's policy holds it; an authored master data domain holds it, and a registry domain gives it a master ID with cross-references only | Sources send most changes, and a source's policy lets its data owner hold what matters | `src/mdm/services/policy.py`, applied by `src/mdm/services/arrival.py`; each automated change names its clause | Blueprint §5.5 | |
-| `RULE2` | **A steward decides routine changes alone** — one steward commits a link, consolidation, detach, non-critical edit, pin, reinstatement, re-run, or create in a consolidated domain, through the undo tray | These changes are frequent and reversible | **Pending — future initiative** (initiative 3) | Blueprint §5.5 | |
-| `RULE3` | **Four eyes on what is hard to reverse** — a steward's critical edit, merge, unmerge, retirement, large bulk change, or create in a coexistence or authored domain needs a checker who is not the maker and sees what the maker saw. A data owner can relax this per entity | Listening systems receive every commit, and these changes are costly to undo | `src/mdm/services/authority.py`, checked again at commit in `src/mdm/services/commit.py`, for merge, unmerge and retirement; critical edits, large bulk changes, creates in coexistence and authored domains, and showing the checker what the maker saw **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence)) | Blueprint §5.5 | |
+| `RULE2` | **A steward decides routine changes alone** — one steward commits a link, "Not a match", consolidation, detach, non-critical edit, pin, reinstatement, re-run, create in a consolidated domain, the approval or rejection of an update its source's policy held for a steward, keeping two golden records apart, or keeping a golden record with no source record, through the undo tray | These changes are frequent and reversible | `src/mdm/services/decisions.py` and `src/mdm/services/tray.py`, for a link, "Not a match", keeping apart, keeping a record with no source record, and approving or rejecting a held update, each through the undo tray; consolidation follows a link in consolidate mode; detach on screen **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence), story 3.6); create in a consolidated domain, non-critical edit, pin, reinstatement and re-run **Pending — future initiative** (initiative 3, story 3.7) | Blueprint §5.5 (the steward decisions, and the critical-attribute update held for a steward) | Approving a held update releases a value the source asserted; it is not a steward's critical edit under `RULE3` ([scope document 3](../scope/3_steward-workbench.md#stop-check)) |
+| `RULE3` | **Four eyes on what is hard to reverse** — a steward's critical edit, merge, unmerge, retirement, large bulk change, or create in a coexistence or authored domain needs a checker who is not the maker and sees what the maker saw. A data owner can relax this per entity | Listening systems receive every commit, and these changes are costly to undo | `src/mdm/services/authority.py`, checked again at commit in `src/mdm/services/commit.py`, for merge, unmerge and retirement; critical edits and showing the checker what the maker saw **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence), story 3.6); large bulk changes **Pending — future initiative** (initiative 3, story 3.3); creates in coexistence and authored domains **Pending — future initiative** (initiative 3, story 3.7) | Blueprint §5.5 | |
 | `RULE4` | **Governance changes are proven before they are published** — publishing a model, rule, policy, source policy, approval matrix or automation grant needs a data owner's proposal with an exact dry run, approved by a second data owner or the coordinating steward; the approval binds the dry run's fingerprint | One rule change can move thousands of records at once | **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)); until then `src/mdm/services/registry.py` publishes a model or rule set only while its entity holds no golden record, under a flagged bootstrap authority | Blueprint §5.5, §3 flow (b); adopted — a hard rule, because the approval matrix cannot relax the approval of its own changes | |
 | `RULE5` | **Destruction needs an owner and an administrator** — purging a retired record, or erasing a data subject's personal values, needs a data owner and an administrator, with a typed confirmation | Neither can be undone | **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) for purge and the erasure workflow; a redaction of vault values already needs a data owner, an administrator and a typed confirmation, in `src/mdm/services/privacy.py` | Blueprint §5.5 | |
 | `RULE6` | **Some actions are never automatic** — merge, unmerge, retirement, purge and erasure; changes to models, rules, policies or grants; and any change proposed through the agent tools always need a person | An automated mistake here reaches every listening system and is the costliest to reverse | `src/mdm/services/authority.py`, checked again at commit in `src/mdm/services/commit.py` | Blueprint §4 | |
-| `RULE7` | **Bulk decisions pass a forced sample** — tasks decided together by pattern first pass a unanimous forced sample, one disagreement splits the group, and blind review re-checks a share afterwards | A pattern can hide an exception | **Pending — future initiative** (initiative 3) | Blueprint §3 flow (c) | |
+| `RULE7` | **Bulk decisions pass a forced sample** — tasks decided together by pattern first pass a unanimous forced sample, one disagreement splits the group, and blind review re-checks a share afterwards | A pattern can hide an exception | **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence), story 3.3) | Blueprint §3 flow (c) | |
 | `RULE8` | **Master IDs are never reused** — a master ID is opaque and always resolves; a merge retires one ID to its survivor, the retired-to-survivor map is published with chains collapsed, and unmerge brings the retired ID back | Listening systems join on master IDs | `src/mdm/services/commit.py` (the master ID counter) and `src/mdm/services/lifecycle.py` (the retired ID map) | Blueprint §5.2; proposed by DMBOK2 Revised ch. 10 and ISO 8000-115 | |
 | `RULE9` | **The hub never writes a source record** — source records are read, versioned and linked, never changed, and a defect found in a source goes back to its owner as an issue | Source records belong to their systems of record, and the landing tables belong to the integration platform | `src/mdm/backend/guard.py`; on the platform, the landing grants of the [landing interface](../4_application/5_interface-contracts.md#landing-interface) | [Request](../reference/2026-09-26-request-and-answers.md#the-request); [answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |
 | `RULE10` | **Personal values are held apart and redacted by rule** — history holds personal values only by reference, and keeps the values apart; an erasure redacts a data subject's values, records the redaction and reports downstream copies; prompts to a language model carry masked values only | History must stay complete without keeping personal data for ever | `src/mdm/services/privacy.py` (the vault) and `src/mdm/models/safety.py` (no personal value in a detail or a message); erasure **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §5.4, §5.6; [Answer 1](../reference/2026-09-26-request-and-answers.md#answers) | |
-| `RULE11` | **Least access by default** — every person sees personal values masked unless a role allows more; a failed role lookup gives the consumer role; every reveal is logged | A lookup failure must never widen access | `src/mdm/services/authority.py` and the masked views of `src/mdm/backend/ddl.py` | Blueprint §5.6 | |
+| `RULE11` | **Least access by default** — every person sees personal values masked unless a role allows more; a failed role lookup gives the consumer role; every reveal is logged | A lookup failure must never widen access | `src/mdm/services/authority.py` and the masked views of `src/mdm/backend/ddl.py`; the workbench in `src/mdm/ui/`, which shows only what `src/mdm/services/privacy.py` masks, and asks a reason for every reveal ([decision 20](../decisions/20_masking-and-reveal-on-screen.md)) | Blueprint §5.6 | |

@@ -4,7 +4,7 @@ _[← Information layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Information: Data Object at level 2, grouped by data domain, with the Business Object each one realizes.
 
-**Status:** ● Validated, 2026-09-27.
+**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
 
 The persons and organisations the hub masters are rows of `DOBJ4.1`, not data objects of their own. Each object belongs to one of the [data domains](./1_data-domains.md).
 
@@ -79,24 +79,33 @@ flowchart LR
     dobj3_2["▦ Steward task [DOBJ3.2]"]:::object
     dobj3_3["▦ Quality rule result [DOBJ3.3]"]:::object
     dobj3_4["▦ Arrival position [DOBJ3.4]"]:::object
+    dobj3_5["▦ Staged decision [DOBJ3.5]"]:::object
+    dobj3_6["▦ Steward match label [DOBJ3.6]"]:::object
   end
   bobj8[["▧ Steward task [BOBJ8]"]]:::business
+  bobj9[["▧ Change set [BOBJ9]"]]:::business
+  res5[("▤ Steward match labels [RES5]")]:::resource
 
   dobj3_2 -->|realizes| bobj8
+  dobj3_5 -->|realizes| bobj9
+  dobj3_6 -->|associated with| res5
 
   classDef object fill:#c2f0ff,stroke:#0288d1,color:#333
   classDef business fill:#fffbb5,stroke:#b8a200,color:#333
+  classDef resource fill:#faf0d5,stroke:#c8a24a,color:#333
   style dobj3 fill:#9adcf0,stroke:#0288d1,color:#333
 ```
 
-Only the steward task stands for a business object. The other three are the hub's own working state, which no person handles directly.
+The steward task and the staged decision stand for business objects. The steward match label is the hub's copy of [resource [`RES5`] Steward match labels](../1_strategy/2_capabilities-and-resources.md#resources). The rest is the hub's own working state, which no person handles directly.
 
 | ID | Data object | Realized by | Source | Notes |
 | -- | ----------- | ----------- | ------ | ----- |
 | `DOBJ3.1` | **Candidate pair** — two source records found through a shared blocking key and scored at or above the lower band, with their comparison levels, score, band, signature and explanation, per rule version | `mdm_work.candidate_pair`, created by `src/mdm/backend/ddl.py` | Blueprint §5.2 | |
-| `DOBJ3.2` | **Steward task** — a review, possible duplicate, held arrival, exception or orphan the rules could not settle, with its candidates and suggestion; one open task per record and kind | `mdm_work.task`<br>`mdm_work.open_task`<br>created by `src/mdm/backend/ddl.py` | Blueprint §6 | |
+| `DOBJ3.2` | **Steward task** — a review, possible duplicate, held arrival, exception or orphan the rules could not settle, with its candidates and suggestion, its due time from the service level of its kind, and its claim, snooze and escalation; one open task per record and kind; a task opened again starts afresh | `mdm_work.task`<br>`mdm_work.open_task`<br>created by `src/mdm/backend/ddl.py` | Blueprint §6; adopted — service levels per task kind | |
 | `DOBJ3.3` | **Quality rule result** — each failure of a validation rule on a source record, by quality dimension, with the code-list version it used; and each record's checked and failed counts | `mdm_work.rule_result`; the counts in `mdm_work.source_state`<br>created by `src/mdm/backend/ddl.py` | Blueprint §2; the Data Management Body of Knowledge (DAMA-DMBOK2 Revised) ch. 13 | |
 | `DOBJ3.4` | **Arrival position** — the arrival job's high-water mark in the landing sequence, the gaps below it still probed, the source records whose latest version is not yet settled, rejected rows, unresolved references and job runs | `mdm_work.arrival_position`<br>`mdm_work.arrival_gap`<br>`mdm_work.arrival_queue`<br>`mdm_work.landing_reject`<br>`mdm_work.pending_reference`<br>`mdm_work.job_run`<br>created by `src/mdm/backend/ddl.py` | [Answer 3](../reference/2026-09-26-request-and-answers.md#answers); [decision 9](../decisions/9_landing-table-and-watermark.md) | |
+| `DOBJ3.5` | **Staged decision** — a steward's decision on a task while it waits out its undo window: the decision, its task, subject and target, the steward and role, the record's event the steward saw, the deadline, and how it settled (committed, undone or failed, with the change set or the reason) | `mdm_work.tray_entry`<br>`mdm_work.tray_lock`<br>created by `src/mdm/backend/ddl.py` | Blueprint §3, §4, §6; [decision 19](../decisions/19_undo-tray.md) | |
+| `DOBJ3.6` | **Steward match label** — the latest decision a steward made on a pair: a source record and a golden record matched or not, or two golden records kept apart, with the rule version, score, band and signature the steward saw | `mdm_work.match_label`, created by `src/mdm/backend/ddl.py` | Blueprint §2, §6; [decision 22](../decisions/22_labels-bind-the-matcher.md) | |
 
 ## Published master data
 
@@ -138,7 +147,7 @@ Four objects together hold a [business object [`BOBJ3`] Golden record](../2_busi
 | `DOBJ4.3` | **Retired ID map** — each retired master ID, the record it was merged into, its current survivor with chains collapsed, and the source records each merge moved | `mdm_core.retired_id` and its view `mdm_read.retired_id`<br>`mdm_hub.merge_member`<br>created by `src/mdm/backend/ddl.py` | Blueprint §5.2; ISO 8000-115 | |
 | `DOBJ4.4` | **Record relationship** — a typed, dated link between two golden records, one per source assertion, with the source record that asserted it | `mdm_core.relationship` and its view `mdm_read.relationship`, created by `src/mdm/backend/ddl.py` | Blueprint §6 | |
 | `DOBJ4.5` | **Change feed** — one change row per golden record a commit touched, and one commit-log row per commit, under gap-free commit versions | `mdm_core.change`<br>`mdm_core.commit_log`<br>created by `src/mdm/backend/ddl.py` | [Answer 5](../reference/2026-09-26-request-and-answers.md#answers); [decision 8](../decisions/8_commit-order-lock-and-change-feed.md) | |
-| `DOBJ4.6` | **Provenance** — for each golden value, the winner, the runners-up, the strategy and the rule version, with personal values by reference to the vault | `mdm_hub.provenance`, created by `src/mdm/backend/ddl.py` | Blueprint §5.2; ISO 8000-120 | |
+| `DOBJ4.6` | **Provenance** — for each golden value, the winner, the runners-up, the strategies, the strategy that decided, and the rule version, with personal values by reference to the vault | `mdm_hub.provenance`, created by `src/mdm/backend/ddl.py` | Blueprint §5.2; ISO 8000-120 | |
 | `DOBJ4.7` | **Steward value** — a value a steward set, when it was set, and its pin expiry; ranked as a source, or winning outright while pinned | `mdm_hub.steward_value`, created by `src/mdm/backend/ddl.py` | Blueprint §2 | |
 
 ## Audit and privacy

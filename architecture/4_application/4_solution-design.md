@@ -4,7 +4,7 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Layered: the application components, the store and the engines behind them.
 
-**Status:** ● Validated, 2026-09-27.
+**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
 
 The hub is one Python package, `mdm`, under `src/mdm/`. It runs the same code locally on DuckDB and on Postgres, and on Lakebase once deployed.
 
@@ -19,6 +19,7 @@ flowchart LR
   services["mdm.services"]:::layer
   agent["mdm.agent"]:::layer
   demo["mdm.demo"]:::layer
+  ui["mdm.ui"]:::layer
   cli["mdm.cli"]:::layer
 
   models -->|used by| settings
@@ -31,6 +32,8 @@ flowchart LR
   backend -->|used by| agent
   services -->|"used by, privacy only"| agent
   services -->|used by| cli
+  services -->|used by| ui
+  ui -->|used by| cli
   agent -->|used by| cli
   demo -->|used by| cli
 
@@ -45,21 +48,24 @@ A package uses only the packages to its left. The store and the engine sit side 
 | `mdm.config`, `mdm.capacity` | [`ACMP2`] Domain model and settings | `models` |
 | `mdm.engine` | [`ACMP4`] Matching engine | `models`, `capacity` |
 | `mdm.backend` | [`ACMP3`] SQL store | `models`, `config`, `capacity` |
-| `mdm.services` | [`ACMP5`] Arrival and matching services, [`ACMP6`] Commit service, [`ACMP7`] Model registry, [`ACMP8`] Record lifecycle, [`ACMP9`] Authority and privacy, [`ACMP14`] Service helpers, and the shared wiring of [`ACMP1`] Entry points | `models`, `config`, `capacity`, `engine`, `backend` |
+| `mdm.services` | [`ACMP5`] Arrival and matching services, [`ACMP6`] Commit service, [`ACMP7`] Model registry, [`ACMP8`] Record lifecycle, [`ACMP9`] Authority and privacy, [`ACMP14`] Service helpers, [`ACMP15`] Stewardship services, [`ACMP16`] Record reader, and the shared wiring of [`ACMP1`] Entry points | `models`, `config`, `capacity`, `engine`, `backend` |
 | `mdm.agent` | [`ACMP10`] Assistant | `models`, `config`, `capacity`, `backend`, `services.privacy` |
 | `mdm.demo` | [`ACMP11`] Integration platform simulator | `models`, `config`, `capacity`, `engine`, `backend` |
+| `mdm.ui` | [`ACMP12`] Steward workbench | `models`, `config`, `capacity`, `services` |
 | `mdm.cli` | [`ACMP1`] Entry points | everything |
 
-The [application components](./2_application-components.md#application-components) follow these edges. Six rules hold across the layers:
+The [application components](./2_application-components.md#application-components) follow these edges. Eight rules hold across the layers:
 
 1. No Structured Query Language (SQL) is written outside `src/mdm/backend/`.
 2. The store in `mdm.backend` and the engine in `mdm.engine` never import each other.
 3. Only `src/mdm/services/commit.py` writes `mdm_core`, inside the commit-order lock.
 4. The hub never writes the landing tables, except the local simulator in `src/mdm/demo/`.
-5. No detail, reason, suggestion, evidence, message or log line carries a personal value. Each carries attribute names, codes, IDs, source keys and counts only, through `src/mdm/models/safety.py`, and the store checks each one again where it writes a task, a reject, a change set or an access row.
+5. No detail, reason, suggestion, evidence, message or log line carries a personal value. Each carries attribute names, codes, IDs, source keys and counts only, through `src/mdm/models/safety.py`, and the store checks each one again where it writes a task, a reject, a staged decision, a label, a change set or an access row.
 6. Personas, the simulator and `mdm demo reset` run only on a local store.
+7. The workbench calls services only, through `src/mdm/ui/context.py`. It imports no store or engine module, reads no store attribute and writes no Structured Query Language (SQL).
+8. A personal value reaches the screen only as the services return it, masked by role. It never reaches an address, a component ID, browser storage, a tooltip, a log line or an error page.
 
-A test, `tests/test_services_capacity.py`, reads the syntax tree of every module and fails an import that breaks the table. The same file fails a line of SQL outside `src/mdm/backend/`, and any read of a large table that is neither keyed nor paged.
+A test, `tests/test_services_capacity.py`, reads the syntax tree of every module and fails an import that breaks the table, and any use of a store attribute in `src/mdm/ui/`. The same file fails a line of SQL outside `src/mdm/backend/`, and any read of a large table that is neither keyed nor paged.
 
 ## One store, two engines
 
@@ -137,7 +143,7 @@ flowchart LR
 6. **Hard rules.** A must-link or cannot-link rule on a strong registered ID fires only when both sides hold a valid one. It decides the band, and the waterfall still shows the arithmetic.
 7. **Explain.** A pair at or above the lower band keeps its explanation. It holds the prior, one weight per comparison, and the smallest single change that would move the pair a band up or down.
 8. **Cluster.** Automatic pairs join clusters strongest first. A union that would hold two different valid strong IDs of one scheme is refused. A record with two automatic golden candidates becomes a possible duplicate, because a merge is never automatic.
-9. **Survive.** Each golden value comes from the members' approved values, under the attribute's strategies: source trust, recency, completeness or frequency. A pinned steward value wins until its pin expires. Provenance records the winner, the runners-up and the strategy.
+9. **Survive.** Each golden value comes from the members' approved values, under the attribute's strategies: source trust, recency, completeness or frequency. A pinned steward value wins until its pin expires. Provenance records the winner, the runners-up, the strategies, and the strategy that decided.
 
 `mdm estimate` writes a draft match rule set. It runs expectation maximisation once per blocking pass, holding that pass's own key comparisons fixed, because they agree for non-matches inside the block too. Where at least 200 candidate pairs share a valid strong ID, it takes m from those pairs, and estimates only the ID's own m with the others read as known. It takes u for an exact level from value frequencies, and records the global prior apart from each pass's share of matches inside its blocks. A pass that does not converge saves nothing.
 
@@ -148,7 +154,7 @@ flowchart LR
   local["A person on a local store"]:::layer
   shared["A person on a shared store"]:::layer
   matcher["The automated matcher"]:::layer
-  persona["Persona: the role from --as or MDM_ROLE, else data owner"]:::layer
+  persona["Persona from --as, MDM_ROLE or the workbench header, by default the data owner, or the data steward in the workbench"]:::layer
   consumer["Consumer, until workspace groups map to roles"]:::layer
   rules["Authority: the rule versions and the clause of every item"]:::layer
   first["Check before planning"]:::layer
@@ -172,6 +178,9 @@ Every change set names an actor and an authority. [Component [`ACMP9`] Authority
 - An arrival naming an active master ID follows its source's `master_id` policy: held for a steward as a review task unless the data owner has set it to `auto`, and never linked past a cannot-link rule.
 - The commit checks each clause again against the published model, and each `rule1:` clause against that fixed list.
 - The commit log names a role or the automated actor, never a person. The audit's change set names the person, the checker and whether a persona acted.
+- The workbench takes its actor per request. On a local store it is a persona from the header, the data steward unless `MDM_ROLE` names another. On the platform it is the user the Databricks App forwards, a consumer until initiative 4 maps workspace groups to roles ([decision 21](../decisions/21_workbench-actor.md)).
+- Two browser tabs with the same persona act as the same steward.
+- `mdm ui` listens on a loopback address unless a Databricks App runs it. It answers only its own host name, refuses posts from another site and cannot be framed.
 - A model or rule set is published before its entity holds any golden record, under a flagged bootstrap authority. Publication over existing golden records waits for the dry run of [initiative 4](../6_transition/2_sequence.md#sequence).
 
 The six role names in the code are the six [business roles](../2_business/1_business-actors-and-roles.md#roles): `data_owner`, `data_steward`, `coordinating_steward`, `technical_steward`, `consumer` and `administrator`.
@@ -189,8 +198,53 @@ The six role names in the code are the six [business roles](../2_business/1_busi
 | `profile` | `technical_steward`, `data_owner`, `data_steward` | — |
 | `match_test` | `data_steward`, `coordinating_steward`, `technical_steward`, `data_owner` | One access-log row per test, because each comparison's level could tell a masked value |
 | `redact` | `data_owner` | A different person with the `administrator` role as checker, a reason and the typed confirmation `REDACT <count>` |
+| `view_tasks` | `data_steward`, `coordinating_steward`, `data_owner`, `technical_steward` | — |
+| `work_tasks` | `data_steward`, `coordinating_steward` | The claim; covers claim, release, snooze, escalate, stage and undo |
+| `not_a_match`, `keep_apart`, `keep_orphan`, `approve_update`, `reject_update` | `data_steward`, `coordinating_steward` | The undo tray; an audit change set even when nothing is published |
+| `flush_tray` | Every role but `consumer` | The tray lease; each decision is checked again under its own steward's role |
 
 No automated actor may merge, unmerge, retire, purge, erase or redact. Nor may it publish a model or rules, change a policy or grant a role, as [rule [`RULE6`] Some actions are never automatic](../2_business/5_domain-context-and-rules.md#business-rules) states.
+
+## The workbench
+
+```mermaid
+flowchart LR
+  browser["A browser"]:::layer
+  keys["Key listener, assets/keys.js"]:::layer
+  shell["Shell and pages, mdm.ui"]:::layer
+  ctx["Actor per request, mdm.ui.context"]:::layer
+  acmp15["⊞ Stewardship services [ACMP15]"]:::component
+  acmp16["⊞ Record reader [ACMP16]"]:::component
+  acmp9["⊞ Authority and privacy [ACMP9]"]:::component
+  worker["Tray worker, in the workbench's process on a local store"]:::layer
+  job["mdm tray flush, as a job on the platform"]:::layer
+
+  browser --> keys --> shell
+  browser --> shell
+  shell --> ctx --> acmp9
+  shell --> acmp15
+  shell --> acmp16
+  worker --> acmp15
+  job --> acmp15
+
+  classDef layer fill:#c2f0ff,stroke:#0288d1,color:#333
+  classDef component fill:#9adcf0,stroke:#0288d1,color:#333
+```
+
+[Component [`ACMP12`] Steward workbench](./2_application-components.md#application-components) is one Dash application ([decision 18](../decisions/18_workbench-shell-and-keys.md)).
+
+- Its pages are the inbox (`/`), the record view (`/record/<master ID>`) and the source record view (`/source/<system>/<key>`). A record view also opens by a retired ID, which resolves to its survivor, or by a source key.
+- Every component ID lives in `src/mdm/ui/ids.py`, and is built from IDs and codes only.
+- Every callback resolves the actor of its request, and passes it to each service call.
+- The inbox is read in keyed pages of 50, and every count stops at 999.
+- Moving through the inbox and choosing a candidate happen in the browser. A decision goes to the server one at a time.
+- A task's case is kept per task version and role, masked, and the next task's case is prepared while the steward reads.
+- The key listener yields to fields, lists, menus, dialogs and focused buttons, and a switch turns single-key shortcuts off.
+- A decision waits in the undo tray and commits through the commit path ([decision 19](../decisions/19_undo-tray.md)).
+- A revealed value is rendered once, and kept in no store of the page ([decision 20](../decisions/20_masking-and-reveal-on-screen.md)).
+- The relationships of a record are grouped by type and other end, naming every asserting source; the published table keeps one row per source assertion.
+- A failure is logged by its type only, and the error page shows no detail.
+- The workbench's actor, and what `mdm ui` answers, follow [authority and personas](#authority-and-personas) ([decision 21](../decisions/21_workbench-actor.md)).
 
 ## Adding an entity
 

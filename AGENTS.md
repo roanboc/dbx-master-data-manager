@@ -148,6 +148,9 @@ The catalogue lives with the skills, in the plugin, and is not restated here.
   plugin rather than from a copy in here.
 - `src/mdm/` — the hub: one Python package, run through the `mdm` command
   line. Its layers and invariants are in § Code below.
+- `src/mdm/ui/` — the steward workbench, a Dash application over the
+  services, with its assets; `app.py` serves it on the platform, and
+  `mdm ui` locally.
 - `models/` — the starter entity models, `person.yaml` and
   `organisation.yaml`, and `codelists/`, the code-list copies they validate
   against. All invented. An entity is added here, never in code.
@@ -156,22 +159,30 @@ The catalogue lives with the skills, in the plugin, and is not restated here.
   which needs `initdb` and `pg_ctl`), or the one `MDM_TEST_POSTGRES` names.
   `tests/conftest.py` holds the fixtures, and `tests/helpers.py` the invented
   mini world and the landing and read-back helpers the service tests share.
+  `tests/ui/` holds the browser checks with axe-core, run in their own CI job
+  and on demand with `make test-gui`; the rest of `tests/` runs without a
+  browser, the workbench's callbacks and pages included.
 - `tools/spike_throughput.py` — the throughput spike; its results live in
   `architecture/5_technology/3_capacity-and-throughput.md`.
+- `tools/workbench_live.py` and `tools/screenshots.py` — a seeded demo store
+  served for the browser checks, and the README's screenshots in
+  `docs/screenshots/`, from the invented demo world with the stub.
 - `pyproject.toml`, `uv.lock`, `Makefile` — the package, its locked
   dependencies (uv), and the targets below.
-- `.github/` — the checks workflow and the pull-request template.
+- `.github/` — the checks workflow, with its browser job, and the
+  pull-request template.
 - [`LICENSE`](./LICENSE), [`NOTICE`](./NOTICE) — Apache-2.0, with the MIT
   notice for the files copied from the method's scaffold.
 
 ## Code
 
 The package is layered, and a module imports only from layers to its left:
-`models` → `config`, `capacity` → `backend` | `engine` → `services` → `cli`.
-The assistant and the simulator sit beside the services: of the services,
-`agent` uses only `services.privacy`, and `demo` uses none. Tests in
-`tests/test_services_capacity.py` check the import rule and that no SQL is
-written outside `src/mdm/backend/`.
+`models` → `config`, `capacity` → `backend` | `engine` → `services` → `ui` →
+`cli`. The assistant and the simulator sit beside the services: of the
+services, `agent` uses only `services.privacy`, and `demo` uses none. Tests in
+`tests/test_services_capacity.py` check the import rule, that no SQL is
+written outside `src/mdm/backend/`, and that the workbench imports services
+only and reads no store.
 
 | Layer | Module | Role |
 | ----- | ------ | ---- |
@@ -179,10 +190,11 @@ written outside `src/mdm/backend/`.
 | Settings and capacity | `src/mdm/config.py`, `src/mdm/capacity.py` | `Settings.from_env` reads `MDM_*` variables; the declared figures, and the paging helpers `pages`, `chunks` and `require_limit` |
 | Store | `src/mdm/backend/` | Every SQL statement, once, in `store.py`, over two engines, `duckdb_engine.py` and `postgres_engine.py`; the DDL (`ddl.py`); the write guard (`guard.py`); Lakebase credentials (`lakebase_auth.py`); `factory.open_store(settings)` |
 | Matching engine | `src/mdm/engine/` | Standardise, key, compare, score and explain, estimate, cluster, survive, check quality. Pure and deterministic |
-| Services | `src/mdm/services/` | The landing reader, arrival, the commit path and the feed reader, lifecycle, the registry, authority and privacy; `Hub.open` in `context.py` wires them |
+| Services | `src/mdm/services/` | The landing reader, arrival, the commit path and the feed reader, lifecycle, the registry, authority and privacy; the inbox, decisions and the undo tray; the record reader; display helpers; `Hub.open` in `context.py` wires them |
+| Workbench | `src/mdm/ui/` | The Dash shell, pages and components; `ids.py` for every component ID; `assets/` for the key listener and the styles. It calls services through `ui/context.py`, never the store |
 | Assistant | `src/mdm/agent/` | Provider choice, masked prompts, the stub and the case narrative |
 | Simulator | `src/mdm/demo/` | Invented source changes, landed as the integration platform would |
-| Entry points | `src/mdm/cli.py` | The Typer app `mdm` |
+| Entry points | `src/mdm/cli.py`, `app.py` | The Typer app `mdm`, with `mdm ui` and `mdm tray flush`; `app.py` for the platform |
 
 ### Invariants (do not violate)
 
@@ -199,15 +211,30 @@ written outside `src/mdm/backend/`.
 5. **No personal value in a detail, reason, suggestion, evidence, message or
    log line** — attribute names, codes, IDs, source keys and counts only.
    Build every one through `src/mdm/models/safety.py`; the store checks each
-   again where it writes a task, a reject, a change set or an access row, and
-   `tests/test_services_personal_data.py` is the backstop.
+   again where it writes a task, a reject, a staged decision, a label, a
+   change set or an access row, and `tests/test_services_personal_data.py` is
+   the backstop.
 6. **Personas, the simulator and `mdm demo reset` run only on a local
    store**: DuckDB, or a test Postgres on this machine marked
    `MDM_ALLOW_PERSONAS=1` (the store refuses to open that setting on any other
    server).
    `Settings.local_mode` is the one test, and a Lakebase endpoint or a
    Databricks App or runtime variable always makes the store shared
-   (decision 13).
+   (decision 13). `mdm ui` listens on a loopback address unless a Databricks
+   App runs it, answers only its own host name, refuses posts from another
+   site and cannot be framed (decision 21).
+7. **The workbench calls services only**, through `src/mdm/ui/context.py`,
+   with the actor of each request. It imports no module of `backend` or
+   `engine`, touches no `.store`, writes no SQL and never writes `mdm_core`.
+8. **A steward's decision goes through the undo tray** (`hub.tray.stage`),
+   never straight to `lifecycle`. Only `tray.flush` commits it, audited even
+   when nothing publishes; the commit's own transaction checks the record's
+   event and the open task, and settles the staged decision (decision 19).
+9. **No personal value leaves a service except as the actor's role allows.**
+   A revealed value is rendered once, and kept in no `dcc.Store`, address,
+   component ID, browser storage or cache, tooltip, notification, error page
+   or log line. A failure is logged by its type only, and the workbench's
+   reveal reason is a code (decision 20).
 
 ### Established idioms (copy these; do not invent new ones)
 
@@ -226,6 +253,24 @@ written outside `src/mdm/backend/`.
 - **Demo data is invented**: names from `src/mdm/demo/names.py`, e-mail
   addresses at `example.org`, sources named `hr`, `student_records`, `crm`
   and `finance`. Never a real organisation or person.
+- **A new screen** is a module in `src/mdm/ui/pages/` with `skeleton()`,
+  `layout(ctx, …)` and `register(app)`. Its component IDs go in
+  `src/mdm/ui/ids.py`. View functions take the dataclasses of
+  `src/mdm/models/workbench.py` and return components, so they are tested
+  without services.
+- **A callback** is registered with `app.callback` or
+  `app.clientside_callback`, never the global `dash.callback`. It gets
+  `ctx = context.current(persona)`, calls a service with `actor=ctx.actor`,
+  and turns an `MdmError` into a notice with `context.notice(error)`, or runs
+  the call through `context.guarded`. An output shared with another callback
+  uses `allow_duplicate=True` with `prevent_initial_call=True`. A list
+  changes by `rowTransaction`, not by replacing `rowData`, unless the whole
+  page changed.
+- **Copy** speaks from the steward's side, in British English. A control
+  says what it does ("Link to ORG-000123", "Not a match", "Undo"); an error
+  says what went wrong and how to fix it (`src/mdm/ui/messages.py`).
+  Something not on screen yet is said in one line, never offered as a dead
+  button.
 
 ## Commands
 
@@ -247,17 +292,25 @@ make install     # uv sync: the runtime and development dependencies, from uv.lo
 make hooks       # point git at scripts/hooks, so the checks run before every push
 make lint        # ruff check and ruff format --check, as CI runs them
 make test        # pytest across the cores, on DuckDB and on Postgres (a throwaway server per worker, or MDM_TEST_POSTGRES)
-make test-fast   # DuckDB only, without the slow and live tests, while iterating
-make demo        # a fresh local store: land invented changes, arrive, commit, read the feed
+make test-fast   # DuckDB only, without the slow, live and browser tests, while iterating
+make demo        # a fresh local store: land invented changes and hard cases, arrive, commit, read the feed
+make ui          # the steward workbench on http://127.0.0.1:8050, over the local store (uv run mdm ui)
+make test-gui    # the browser checks with axe-core, on DuckDB; CI runs them in their own job
+make screenshots # docs/screenshots/, from the invented demo world with the stub
 make spike       # the throughput spike at 100,000 records on DuckDB
-make check       # the four checks above, the lint and the tests
+make check       # the four checks above, the lint and the tests; not the browser checks
 uv run mdm --help
 ```
 
 All of them — the four checks, the lint and the tests — must be green before
 pushing. CI sets `MDM_REQUIRE_POSTGRES=1`, so a missing Postgres fails the
 run rather than skipping it. The DuckDB file is single-writer: stop other
-processes on `.mdm/mdm.duckdb`, or point `MDM_DUCKDB_PATH` elsewhere.
+processes on `.mdm/mdm.duckdb`, or point `MDM_DUCKDB_PATH` elsewhere. `mdm ui`
+holds the file while it runs, so stop it before other `mdm` commands on the
+same file, or run it on a local Postgres. `make test-gui` runs with the
+`gui` dependency group and needs a Chromium build for the pinned Playwright,
+which CI's browser job installs, and `uv run --group gui playwright install
+chromium` fetches once on a workstation; `make check` never runs it.
 
 Everything else the method can do runs from the plugin against this project,
 so there is one copy of each tool rather than one per project:

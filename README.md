@@ -14,10 +14,15 @@ history in a vault, and names the authority behind every commit. The same test
 suite runs on both engines locally and in continuous integration (CI), on
 invented data only.
 
-Nothing is deployed yet, and there is no user interface. The steward
-workbench follows in initiative 3, and tuning, governance and the deployment
-to Databricks in initiative 4. Release 1 proves Person and Organisation end to
-end. The [roadmap](./architecture/6_transition/2_sequence.md) orders the rest.
+The steward workbench, initiative 3, has begun: locally, a steward decides
+tasks one at a time in an inbox, undoes a decision within its window, and
+reads any record with its provenance, masked by role. Its later stories add
+the automated matcher's checkpoint, decisions by pattern, routing, search,
+record actions with maker and checker, and authoring
+([scope](./architecture/scope/3_steward-workbench.md)). Nothing is deployed
+yet: tuning, governance and the deployment to Databricks follow in
+initiative 4. Release 1 proves Person and Organisation end to end. The
+[roadmap](./architecture/6_transition/2_sequence.md) orders the rest.
 
 ## Try it
 
@@ -26,12 +31,60 @@ With Python 3.11 and [uv](https://docs.astral.sh/uv/) installed:
 ```bash
 make install        # the environment, from uv.lock
 make demo           # a fresh local store: invented changes landed, arrived, committed, and the change feed read
+make ui             # the steward workbench on http://127.0.0.1:8050
 uv run mdm --help   # every command
 make test           # the suite across the cores, on DuckDB, and on Postgres when initdb and pg_ctl are installed
+make test-gui       # the browser checks with axe-core, which CI also runs in a job of their own
 ```
+
+The browser checks need a Chromium build for the pinned Playwright; `uv run
+--group gui playwright install chromium` fetches it once.
 
 The local store is one DuckDB file, `.mdm/mdm.duckdb`, and every name in it is
 invented.
+
+## The steward workbench
+
+The workbench is where a steward decides what the rules could not settle. It
+shows each task with its explanation beside it, and holds every decision in an
+undo tray for a minute before it commits.
+
+```bash
+make demo           # a fresh local store with invented tasks to decide
+make ui             # then open http://127.0.0.1:8050
+```
+
+The persona switcher in the header works on a local store only. Press `?` for
+the keys. `mdm ui` holds the DuckDB file while it runs, so stop it before other
+`mdm` commands on the same store.
+
+The screenshots show the invented demo world, taken with the stub assistant
+and a ten-minute undo window, so the countdown holds still while it is
+captured.
+
+![The inbox with the decide pane open on a close call between two organisations](docs/screenshots/inbox-light.png)
+
+_The inbox with the decide pane open on a close call between two organisations: the candidates side by side, the match-weight waterfall, what would flip it, and the impact line._
+
+![The same inbox and decide pane in the dark colour scheme](docs/screenshots/inbox-dark.png)
+
+_The same view in the dark colour scheme._
+
+![A decision staged in the undo tray, with its countdown and an Undo button](docs/screenshots/tray-light.png)
+
+_A decision staged in the undo tray, with its countdown._
+
+![The undo tray in the dark colour scheme, with a staged decision and its countdown](docs/screenshots/tray-dark.png)
+
+_The tray in the dark colour scheme._
+
+![A golden record with the Why open under one of its values](docs/screenshots/record-light.png)
+
+_A golden record with the Why open under one of its values: the survivorship sentence, the runners-up and the rule version._
+
+![The same golden record and its Why in the dark colour scheme](docs/screenshots/record-dark.png)
+
+_The same record in the dark colour scheme._
 
 ## What it does
 
@@ -40,12 +93,20 @@ invented.
 - Commits minimal change sets to one set of published tables, under a named
   authority, with an ordered change feed. The integration platform carries
   them to listening systems; the hub never propagates.
+- Gives stewards an inbox, decided one task at a time with the explanation
+  beside it, and an undo tray, so a mistake is undone before listening
+  systems see it.
+- Masks personal values by role on every screen, and logs every reveal with
+  its reason.
 - Gives the same answers on DuckDB and on Postgres.
 
 ## What it will do
 
-- Give stewards one keyboard-driven inbox, where they decide alike tasks
-  together after a forced sample.
+- Let stewards decide alike tasks together after a forced sample, with a
+  checkpoint that samples the automated matcher's decisions and can demote
+  its automatic band.
+- Put search, record actions with maker and checker, and record authoring on
+  screen.
 - Run on the platform, on Lakebase, with the same answers as locally.
 
 Language-model assistance only suggests, and arrives in Release 2;

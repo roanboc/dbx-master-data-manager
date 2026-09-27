@@ -4,7 +4,7 @@ _[← Information layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Information: where each Data Object is stored, how sensitive it is and how long it is kept, with the Application Components that write it.
 
-**Status:** ● Validated, 2026-09-27.
+**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
 
 ## Schema groups
 
@@ -17,6 +17,7 @@ flowchart LR
   acmp6["⊞ Commit service [ACMP6]"]:::component
   acmp9["⊞ Authority and privacy [ACMP9]"]:::component
   acmp10["⊞ Assistant [ACMP10]"]:::component
+  acmp15["⊞ Stewardship services [ACMP15]"]:::component
   acmp3["⊞ SQL store [ACMP3]"]:::component
 
   model[/"⎔ mdm_model"/]:::technology
@@ -43,6 +44,7 @@ flowchart LR
   acmp9 -->|writes| vault
   acmp9 -->|writes| audit
   acmp10 -->|writes| audit
+  acmp15 -->|writes| work
   acmp3 -->|creates| read
   core -.->|read by| ip
   core -.->|read by| cn
@@ -60,7 +62,7 @@ Only the commit service writes `mdm_core`, inside the commit-order lock, and the
 | ----- | ----- | ---------- | ------- | ---------------------- |
 | `mdm_model` | [data object [`DOBJ1.1`] Entity model version](./2_data-objects.md#master-data-configuration)<br>[data object [`DOBJ1.2`] Rule set version](./2_data-objects.md#master-data-configuration)<br>[data object [`DOBJ1.3`] Code-list copy](./2_data-objects.md#master-data-configuration) | [application component [`ACMP7`] Model registry](../4_application/2_application-components.md#application-components) | The hub's components | The hub's role only |
 | `mdm_landing` | [data object [`DOBJ2.1`] Landing row](./2_data-objects.md#source-intake) | The integration platform (External)<br>in the local mode, [application component [`ACMP11`] Integration platform simulator](../4_application/2_application-components.md#application-components) | [application component [`ACMP5`] Arrival and matching services](../4_application/2_application-components.md#application-components) | Owned by the integration platform's role, which grants the hub's role `USAGE` on the schema and `SELECT` on the table, and nothing more ([landing interface](../4_application/5_interface-contracts.md#landing-interface)) |
-| `mdm_work` | [data object [`DOBJ2.3`] Standardised source state](./2_data-objects.md#source-intake)<br>[data object [`DOBJ3.1`] Candidate pair](./2_data-objects.md#resolution-work)<br>[data object [`DOBJ3.2`] Steward task](./2_data-objects.md#resolution-work)<br>[data object [`DOBJ3.3`] Quality rule result](./2_data-objects.md#resolution-work)<br>[data object [`DOBJ3.4`] Arrival position](./2_data-objects.md#resolution-work) | application component [`ACMP5`] Arrival and matching services<br>[application component [`ACMP6`] Commit service](../4_application/2_application-components.md#application-components), which settles queued records and writes tasks in the commit transaction | The hub's components | The hub's role only |
+| `mdm_work` | [data object [`DOBJ2.3`] Standardised source state](./2_data-objects.md#source-intake)<br>[data object [`DOBJ3.1`] Candidate pair](./2_data-objects.md#resolution-work)<br>[data object [`DOBJ3.2`] Steward task](./2_data-objects.md#resolution-work)<br>[data object [`DOBJ3.3`] Quality rule result](./2_data-objects.md#resolution-work)<br>[data object [`DOBJ3.4`] Arrival position](./2_data-objects.md#resolution-work)<br>[data object [`DOBJ3.5`] Staged decision](./2_data-objects.md#resolution-work)<br>[data object [`DOBJ3.6`] Steward match label](./2_data-objects.md#resolution-work) | application component [`ACMP5`] Arrival and matching services<br>[application component [`ACMP6`] Commit service](../4_application/2_application-components.md#application-components), which settles queued records, writes tasks and labels, closes decided tasks and settles staged decisions in the commit transaction<br>[application component [`ACMP15`] Stewardship services](../4_application/2_application-components.md#application-components), for claims, snoozes, escalations and staged decisions | The hub's components | The hub's role only |
 | `mdm_hub` | [data object [`DOBJ2.2`] Source record version](./2_data-objects.md#source-intake)<br>[data object [`DOBJ4.3`] Retired ID map](./2_data-objects.md#published-master-data), for the source records each merge moved<br>[data object [`DOBJ4.6`] Provenance](./2_data-objects.md#published-master-data)<br>[data object [`DOBJ4.7`] Steward value](./2_data-objects.md#published-master-data)<br>the master identifier (ID) counter of [data object [`DOBJ4.1`] Golden record](./2_data-objects.md#published-master-data) | application component [`ACMP5`] Arrival and matching services, for source versions<br>application component [`ACMP6`] Commit service, for the rest | The hub's components | The hub's role only |
 | `mdm_vault` | [data object [`DOBJ5.3`] Personal value](./2_data-objects.md#audit-and-privacy) | [application component [`ACMP9`] Authority and privacy](../4_application/2_application-components.md#application-components), for arrival and commit | application component [`ACMP9`] Authority and privacy, to reveal a value with a logged reason | The hub's role only; never copied out of the operational database |
 | `mdm_core` | data object [`DOBJ4.1`] Golden record<br>[data object [`DOBJ4.2`] Cross-reference](./2_data-objects.md#published-master-data)<br>data object [`DOBJ4.3`] Retired ID map<br>[data object [`DOBJ4.4`] Record relationship](./2_data-objects.md#published-master-data)<br>[data object [`DOBJ4.5`] Change feed](./2_data-objects.md#published-master-data) | application component [`ACMP6`] Commit service, alone | Listening systems, through the integration platform; the change notifier; the hub's components | `USAGE` and `SELECT` for the integration platform's role, with default privileges so a new entity's table is readable without a manual grant; `USAGE` and `SELECT` on `mdm_core.commit_log` only, with no default privileges, for the change notifier's role |
@@ -119,9 +121,11 @@ Which values are personal is set per attribute by its masking class in the entit
 | [`DOBJ2.2`] Source record version | Internal | By vault reference only | Nothing to mask | It is the history of a source record |
 | [`DOBJ2.3`] Standardised source state | Personal | Values, approved values, comparison forms, registered IDs and blocking keys, in clear | Masked in every command-line output and profile | Current state only; earlier versions are in data object [`DOBJ2.2`] Source record version |
 | [`DOBJ3.1`] Candidate pair | Internal | None: comparison levels, scores and explanations only | Nothing to mask | Kept per rule version |
-| [`DOBJ3.2`] Steward task | Internal | None: reasons, suggestions and evidence carry codes and IDs only | Nothing to mask | Each task stays; claims naming a steward come with [initiative 3](../6_transition/2_sequence.md#sequence) |
+| [`DOBJ3.2`] Steward task | Confidential | None; the staff name of the claimant and of who snoozed or escalated it. Reasons, suggestions and evidence carry codes and IDs only | Nothing to mask | Each task stays, closed when decided |
 | [`DOBJ3.3`] Quality rule result | Internal | None | Nothing to mask | The latest failure per record and rule |
 | [`DOBJ3.4`] Arrival position | Confidential | None; the staff name of who started each job run | Nothing to mask | Job runs and rejected rows stay |
+| [`DOBJ3.5`] Staged decision | Confidential | None; the staff name and role of who decided | Nothing to mask | Kept after it settles, with its outcome |
+| [`DOBJ3.6`] Steward match label | Confidential | None; the staff name of who decided | Nothing to mask | The latest decision per pair; earlier ones are in data object [`DOBJ5.1`] Change set record |
 | [`DOBJ4.1`] Golden record | Personal | Values in clear, because listening systems need them | Masked in `mdm_read` and by `mdm record show`; revealed per attribute with a logged reason | Before and after in data object [`DOBJ5.2`] Change log entry, by vault reference |
 | [`DOBJ4.2`] Cross-reference | Internal | None | Nothing to mask | Before and after in data object [`DOBJ5.2`] Change log entry |
 | [`DOBJ4.3`] Retired ID map | Internal | None | Nothing to mask | Before and after in data object [`DOBJ5.2`] Change log entry |
@@ -144,12 +148,16 @@ Each field below carries attribute names, codes, IDs, source keys and counts onl
 | ----- | ---------------- |
 | The reason and attribute names of a rejected landing row | `mdm_work.landing_reject` |
 | A task's reason, suggestion and evidence | `mdm_work.task` |
+| A staged decision's subject, signature and outcome | `mdm_work.tray_entry` |
+| A label's signature | `mdm_work.match_label` |
 | A quality rule result | `mdm_work.rule_result` |
 | A candidate pair's comparison levels and explanation | `mdm_work.candidate_pair` |
 | A job's progress and error code | `mdm_work.job_run` |
 | A change set's evidence | `mdm_audit.change_set` |
 | An access row's detail: a reveal's attribute, a match test's size, an assistant call's provider and prompt hash | `mdm_audit.access_log` |
+| A reveal's reason, a code, from the workbench | `mdm_audit.access_log` |
 | Every command-line message and every log line | Nowhere; printed or logged only |
+| Every address, component ID, notification and browser-stored value of the workbench | Nowhere in the hub; built from IDs and codes only |
 
 ## Retention
 

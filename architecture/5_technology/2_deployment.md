@@ -4,7 +4,7 @@ _[← Technology layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Technology layer: Artifact, Node. Where the hub lives, what runs on every change, and how a built artifact reaches the place it runs.
 
-**Status:** ● Validated, 2026-09-27.
+**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
 
 ## Where this project lives
 
@@ -21,9 +21,9 @@ Everything in the repository is published, so the public-safety scan runs on eve
 
 | Trigger | What runs | Where it is defined |
 | ------- | --------- | ------------------- |
-| Every pull request, and every push to `main` | The link, reference and prose checks; the public-safety scan with its built-in patterns; an install that fails when `uv.lock` no longer matches `pyproject.toml`; ruff, for the lint rules and the formatting; pytest across the runner's cores, on DuckDB and on a `postgres:17` service container, which fails rather than skips when Postgres is missing, within 20 minutes. The jobs may only read the repository, their actions are pinned to commits and the image to its digest, and a newer push cancels the run it supersedes | `.github/workflows/checks.yml` |
+| Every pull request, and every push to `main` | The link, reference and prose checks; the public-safety scan with its built-in patterns; an install that fails when `uv.lock` no longer matches `pyproject.toml`; ruff, for the lint rules and the formatting; pytest across the runner's cores, on DuckDB and on a `postgres:17` service container, which fails rather than skips when Postgres is missing, within 20 minutes. The workbench's callbacks, pages, privacy and web-safety checks run in that suite, without a browser. A job of its own, "Workbench in a browser", installs the Chromium build that matches the pinned Playwright and runs the browser checks with axe-core ([decision 18](../decisions/18_workbench-shell-and-keys.md)). The jobs may only read the repository, their actions are pinned to commits and the image to its digest, and a newer push cancels the run it supersedes | `.github/workflows/checks.yml` |
 | Every push from a clone where `make hooks` ran | The link, reference and prose checks; the scan with the private denylist when one is present, and with the built-in patterns otherwise; ruff's lint rules and its formatting check, from the lockfile as it stands. The test suite stays with `make test` | `scripts/hooks/pre-push` |
-| On demand | The throughput spike, `make spike`; the demonstration, `make demo`; the live tests on a Lakebase endpoint, `make test-live`, once an endpoint exists | `Makefile` |
+| On demand | The throughput spike, `make spike`; the demonstration, `make demo`; the workbench, `make ui`; the browser checks, `make test-gui`, outside `make check`; the screenshots, `make screenshots`; the live tests on a Lakebase endpoint, `make test-live`, once an endpoint exists | `Makefile` |
 
 ## From build to runtime
 
@@ -35,10 +35,12 @@ flowchart LR
   art1[/"⎔ Python package [ART1]"/]:::artifact
   art2[/"⎔ Starter entity models [ART2]"/]:::artifact
   art3[/"⎔ Store schemas [ART3]"/]:::artifact
+  art8[/"⎔ Workbench screenshots [ART8]"/]:::artifact
 
   acmp1["⊞ Entry points [ACMP1]"]:::component
   acmp3["⊞ SQL store [ACMP3]"]:::component
   acmp6["⊞ Commit service [ACMP6]"]:::component
+  acmp12["⊞ Steward workbench [ACMP12]"]:::component
 
   dobj11["▦ Entity model version [DOBJ1.1]"]:::dataobject
   dobj1["▦ Master data configuration [DOBJ1]"]:::domain
@@ -49,11 +51,13 @@ flowchart LR
 
   node1 -->|hosts| art1
   node1 -->|hosts| art3
+  node1 -->|hosts| art8
   node4 -.->|hosts| art3
 
   art1 -->|realizes| acmp1
   art1 -->|realizes| acmp3
   art1 -->|realizes| acmp6
+  art1 -->|realizes| acmp12
   art2 -->|realizes| dobj11
   art3 -->|realizes| dobj1
   art3 -->|realizes| dobj2
@@ -69,21 +73,22 @@ flowchart LR
   classDef domain fill:#9adcf0,stroke:#0288d1,color:#333
 ```
 
-The package realizes all twelve existing [application components](../4_application/2_application-components.md#application-components); three are drawn. The store schemas realize the five [data domains](../3_information/1_data-domains.md#data-domains). The starter models become entity model versions once `mdm init --models models` loads them. The dashed node is the operational database of [initiative 4](../6_transition/2_sequence.md#sequence).
+The package realizes all fifteen existing [application components](../4_application/2_application-components.md#application-components); four are drawn. The screenshots are taken on a workstation, from the invented demo world only. The store schemas realize the five [data domains](../3_information/1_data-domains.md#data-domains). The starter models become entity model versions once `mdm init --models models` loads them. The dashed node is the operational database of [initiative 4](../6_transition/2_sequence.md#sequence).
 
 | ID | Artifact | Path | Deployed on | Source | Notes |
 | -- | -------- | ---- | ----------- | ------ | ----- |
-| `ART1` | **Python package** | `src/mdm/`, built from `pyproject.toml` and `uv.lock`, with the `mdm` command line as its entry point | [Node [`NODE1`] Workstation](./1_technology-services.md#nodes)<br>node [`NODE2`] CI runner<br>node [`NODE3`] Databricks workspace, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | [Decision 5](../decisions/5_python-dash-and-typer.md) | |
+| `ART1` | **Python package** | `src/mdm/`, built from `pyproject.toml` and `uv.lock`, with the `mdm` command line as its entry point, and the workbench's assets in `src/mdm/ui/assets/`<br>`app.py`, the workbench's entry point on the platform | [Node [`NODE1`] Workstation](./1_technology-services.md#nodes)<br>node [`NODE2`] CI runner<br>node [`NODE3`] Databricks workspace, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | [Decision 5](../decisions/5_python-dash-and-typer.md) | `app.py` serves the workbench from Dash's own threaded server, with its development tools and debugger off; a production web server in front of `create_app` comes with the packaging of [initiative 4](../6_transition/2_sequence.md#sequence) |
 | `ART2` | **Starter entity models** | `models/person.yaml`<br>`models/organisation.yaml`<br>`models/codelists/`<br>the invented starter Person and Organisation models, and the country code list | Loaded into the store by `mdm init --models models` | [Answer 1](../reference/2026-09-26-request-and-answers.md#answers); [decision 15](../decisions/15_code-list-snapshots.md) | |
 | `ART3` | **Store schemas** | The eight schema groups that `src/mdm/backend/ddl.py` creates: one file, `.mdm/mdm.duckdb`, locally, and schemas in the operational database on the platform | Node [`NODE1`] Workstation<br>node [`NODE4`] Lakebase project, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | [Decision 7](../decisions/7_schema-groups-and-one-published-schema.md) | |
 | `ART4` | **Checks workflow** | `.github/workflows/checks.yml` | Node [`NODE2`] CI runner | Blueprint §7 | |
 | `ART5` | **Developer tooling** | `Makefile`<br>`scripts/hooks/pre-push` | Node [`NODE1`] Workstation | Blueprint §7 | |
-| `ART6` | **Test suite** | `tests/`, which runs every store test on both engines | Node [`NODE1`] Workstation<br>node [`NODE2`] CI runner | [Decision 6](../decisions/6_one-sql-store-two-engines.md) | |
+| `ART6` | **Test suite** | `tests/`, which runs every store test on both engines<br>`tests/ui/`, the browser checks<br>`tools/workbench_live.py`, the seeded demo store they serve | Node [`NODE1`] Workstation<br>node [`NODE2`] CI runner | [Decision 6](../decisions/6_one-sql-store-two-engines.md) | |
 | `ART7` | **Throughput spike** | `tools/spike_throughput.py` | Node [`NODE1`] Workstation | [Decision 14](../decisions/14_declared-capacity.md) | |
+| `ART8` | **Workbench screenshots** | `tools/screenshots.py`<br>`tools/workbench_live.py`<br>`docs/screenshots/` | Node [`NODE1`] Workstation | [Decision 18](../decisions/18_workbench-shell-and-keys.md); they show the invented demo world only, taken with the stub | |
 
 ## What is deployed by hand
 
-Nothing is deployed yet: the hub runs on a workstation and in CI only. The platform steps belong to initiative 4, and each is manual because it commits a team the hub does not direct.
+Nothing is deployed yet: the hub and its workbench run on a workstation and in CI only. The platform steps belong to initiative 4, and each is manual because it commits a team the hub does not direct.
 
 | Step | Why it is manual | Who does it |
 | ---- | ---------------- | ----------- |

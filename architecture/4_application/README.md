@@ -12,8 +12,8 @@ The software that turns landing rows into published golden records, and the two 
 | - | -------- | -------- | ------------------- |
 | 1 | [1_application-services.md](./1_application-services.md) | Application Services | What does the software offer the business layer? |
 | 2 | [2_application-components.md](./2_application-components.md) | Application Components, each named by its source path | Which components provide those services, and where is each in the code? |
-| 3 | [3_application-collaborations.md](./3_application-collaborations.md) | The arrival and commit sequences | How do the components work together, and what happens when a step fails? |
-| 4 | [4_solution-design.md](./4_solution-design.md) | The layers, the store on two engines, matching, authority and personas | How is the code structured, and why? |
+| 3 | [3_application-collaborations.md](./3_application-collaborations.md) | The arrival, commit and decision sequences | How do the components work together, and what happens when a step fails? |
+| 4 | [4_solution-design.md](./4_solution-design.md) | The layers, the store on two engines, matching, authority and personas, and the workbench | How is the code structured, and why? |
 | 5 | [5_interface-contracts.md](./5_interface-contracts.md) | The landing and listener interfaces | What exactly does each interface promise the integration platform and the change notifier? |
 
 ## Metamodel
@@ -55,7 +55,8 @@ flowchart TB
   acmp1["⊞ Entry points [ACMP1]"]:::component
   acmp5["⊞ Arrival and matching services [ACMP5]"]:::component
   acmp8["⊞ Record lifecycle [ACMP8]"]:::component
-  acmp12["⊞ Steward workbench [ACMP12]"]:::pending
+  acmp12["⊞ Steward workbench [ACMP12]"]:::component
+  acmp15["⊞ Stewardship services [ACMP15]"]:::component
   acmp6["⊞ Commit service [ACMP6]"]:::component
   acmp4["⊞ Matching engine [ACMP4]"]:::component
   acmp9["⊞ Authority and privacy [ACMP9]"]:::component
@@ -65,19 +66,27 @@ flowchart TB
   asvc2(["⬮ Explainable matching [ASVC2]"]):::appservice
   asvc4(["⬮ Golden record commit [ASVC4]"]):::appservice
   asvc5(["⬮ Record lifecycle [ASVC5]"]):::appservice
+  asvc8(["⬮ Steward work [ASVC8]"]):::appservice
+  asvc9(["⬮ Undo tray [ASVC9]"]):::appservice
 
   acmp5 -->|realizes| asvc1
   acmp5 -->|realizes| asvc2
   acmp4 -->|realizes| asvc2
   acmp6 -->|realizes| asvc4
   acmp8 -->|realizes| asvc5
-  acmp12 -.->|realizes| asvc5
+  acmp12 -->|realizes| asvc5
+  acmp15 -->|realizes| asvc8
+  acmp15 -->|realizes| asvc9
+  asvc4 -->|serves| asvc9
   asvc2 -->|serves| asvc1
   asvc4 -->|serves| asvc1
   asvc4 -->|serves| asvc5
 
   acmp5 -->|serves| acmp1
   acmp8 -->|serves| acmp1
+  acmp12 -->|serves| acmp1
+  acmp15 -->|serves| acmp12
+  acmp8 -->|serves| acmp15
   acmp6 -->|serves| acmp5
   acmp6 -->|serves| acmp8
   acmp4 -->|serves| acmp5
@@ -87,7 +96,6 @@ flowchart TB
 
   classDef appservice fill:#c2f0ff,stroke:#0288d1,color:#333
   classDef component fill:#9adcf0,stroke:#0288d1,color:#333
-  classDef pending fill:#9adcf0,stroke:#0288d1,color:#333,stroke-dasharray: 4 3
 ```
 
-Arrivals and the record actions both reach the published tables through the commit service alone, which checks each change set's authority again before it commits. The dashed box and edge are the steward workbench, which arrives with [initiative 3](../6_transition/2_sequence.md#sequence).
+Arrivals, the record actions and the stewards' decisions all reach the published tables through the commit service alone, which checks each change set's authority again before it commits. A steward's decision first waits out its undo window in the undo tray.

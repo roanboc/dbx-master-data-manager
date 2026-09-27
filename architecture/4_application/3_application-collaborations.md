@@ -4,9 +4,9 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Application layer: Application Collaboration and Application Interaction, drawn as sequences.
 
-**Status:** ● Validated, 2026-09-27.
+**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
 
-Two sequences carry every change the hub publishes: an arrival, and the commit it ends in. The record actions of [component [`ACMP8`] Record lifecycle](./2_application-components.md#application-components) end in the same commit.
+Three sequences carry every change the hub publishes: an arrival, a steward's decision, and the commit each ends in. The record actions of [component [`ACMP8`] Record lifecycle](./2_application-components.md#application-components) end in the same commit.
 
 ## Arrival
 
@@ -96,6 +96,52 @@ What can fail, and what happens:
 2. A golden record or a cross-reference changed since planning. The commit raises a conflict and rolls back, and the caller plans again once.
 3. The process crashes before the commit. Nothing becomes visible, and the next commit takes the same version, so versions stay gap-free.
 4. A vault value written before the lock is left unused by a rollback. It is redacted with its subject like any other value.
-5. Nothing would be published. No version is used, but the work writes still commit, so the records settle.
+5. Nothing would be published. No version is used, but the work writes still commit, so the records settle. A steward's decision from the undo tray still writes its audit change set, with no commit version.
 6. A commit scope is opened inside another transaction. The store refuses it, so a commit never takes its lock late.
 7. A chunk fails after earlier chunks committed. The earlier versions stand, and the failed chunk's records stay queued for the next run.
+
+## Deciding a task
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant ui as ⊞ Steward workbench [ACMP12]
+  participant stw as ⊞ Stewardship services [ACMP15]
+  participant arr as ⊞ Arrival and matching services [ACMP5]
+  participant lif as ⊞ Record lifecycle [ACMP8]
+  participant com as ⊞ Commit service [ACMP6]
+  participant sto as ⊞ SQL store [ACMP3]
+
+  ui->>stw: open a task, claiming nothing, its case kept per task version and role
+  stw->>arr: score the record against its candidates, with explanations
+  stw->>lif: plan each candidate's link without committing, for the previews and impact lines
+  ui->>stw: a decision key: check the decision, claim the task, stage it with the event the steward saw
+  stw->>sto: one transaction: the claim, the staged decision and its locks
+  alt the steward undoes before the flush
+    stw->>sto: settle it undone, so nothing reaches the published tables
+  else the deadline passes
+    stw->>sto: the flush takes the tray lease without waiting, and reads the due decisions
+    stw->>lif: plan the decision again from the current rows
+    lif->>com: commit it under the steward's role, audited even if nothing publishes
+    com->>sto: one transaction: record still at the event seen, task still open, writes, label, task closed, settlement
+    opt the decision declined a record
+      stw->>arr: settle the record again under its source's policy
+    end
+  end
+```
+
+The inbox and the decide pane are [application service [`ASVC8`] Steward work](./1_application-services.md#application-services), and the tray is [application service [`ASVC9`] Undo tray](./1_application-services.md#application-services), performed by a steward ([business process [`BPROC3`] Decide a steward task](../2_business/3_business-processes.md#business-processes)). Locally the workbench's own process runs the flush every two seconds; on the platform a job runs `mdm tray flush` ([decision 19](../decisions/19_undo-tray.md)).
+
+What can fail, and what happens:
+
+1. Another steward acts first. The claim is refused with the time it lapses, and nothing is staged.
+2. The steward undoes after the flush began. The undo finds the decision settled, and says so.
+3. The source record changed, the task closed or the target was merged while the decision waited, even between the flush's check and its commit. The commit's transaction finds it and rolls back. The decision settles failed with its reason, the claim is released, and the task returns to the queue.
+4. Another commit moved a golden row between the plan and the commit. The flush plans again once, then settles the decision failed.
+5. The process stops mid-flush. The transaction rolls back, the decision stays staged, and the next flush commits it once.
+6. An unexpected failure interrupts a commit. The decision stays staged for the next pass, and settles failed after three passes.
+7. Two flushes run at once. The second finds the lease held and does nothing.
+8. A persona's decision meets a shared store. It settles failed, since personas act only on a local store.
+9. A declined record's source holds new records. Arrival opens a held task instead of creating one. A record with another candidate in the review band opens its review task again, under its old ID. A task opened again starts afresh, with a new due time and no claim, snooze or escalation.
+10. Arrival is running when a declined record is queued again. The record waits in the queue for that run, and the decision stays committed.
+11. A steward rejects a held update. The golden record keeps its value, but the source still asserts the new one, so its next event is held again. A source defect goes to the coordinating steward with E, "A source defect".

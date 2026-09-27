@@ -26,6 +26,20 @@ Release 1 is built and tested for under one million golden records per entity. [
 | Feed page | 5,000 change rows | One read of the change feed |
 | Landing row size | 4,000 characters a text value, 100 entries a repeating group, 64 KB a payload | One landing row; a row over a limit is rejected `too_large`, so no single row slows arrival |
 | Bulk throttle | 200,000 published rows an hour, proposed; off unless `MDM_THROTTLE_ROWS_PER_HOUR` sets it | How fast a later bulk change reaches listening systems |
+| Inbox page | 50 tasks, keyed by due time and task ID | One read of the inbox; it never skips with an offset |
+| Counts shown | Exact to 999, then "999+"; each count reads at most 1,000 rows | Every count on screen: views, task kinds, breaches and the tray (adopted — capped counts) |
+| Refresh | Counts every 30 seconds; the tray every 2 seconds while a decision is staged, and not at all otherwise | How often a browser tab asks the hub |
+| Candidates shown | 3 | The candidate columns of the decide pane |
+| Cases kept | 64 per process, masked, one per task version and role | The decide pane's prepared cases |
+| Members shown | 200 per record | The members listed on a record; the rest are counted |
+| Relationships shown | 200 per record | The relationships listed on a record; the rest are counted |
+| Timeline page | 50 events, newest first, keyed | One read of a record's history |
+| Tray shown | 50 of a steward's own decisions: those still staged, and those settled in the last 10 minutes | The tray's list in the header |
+| Tray flush | 100 decisions a pass, each in its own transaction; an unexpected failure is tried in 3 passes | One pass of the undo tray's flush |
+| Undo window | 60 seconds, set by `MDM_UNDO_SECONDS` | How long a staged decision can be undone (adopted — the Blueprint's window) |
+| Claim | 10 minutes, set by `MDM_CLAIM_MINUTES` | How long a task stays claimed without an action (adopted — the Blueprint's soft lock) |
+| Close call | 10 score points, set by `MDM_CLOSE_CALL_POINTS` | How close the top two candidates are before a link needs an explicit choice (adopted — ten points) |
+| Service levels | Review 8 hours, held 8, possible duplicate 24, exception 24, orphan 72, unresolved reference 72, set by `MDM_SLA_HOURS` | When a task starts breaching, per kind (adopted — until the governance policy holds them) |
 
 ## Measured throughput
 
