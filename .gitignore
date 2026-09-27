@@ -26,3 +26,15 @@ __pycache__/
 # The private denylist for the public-safety scan. It names the organisation, so
 # it never enters the history; CI runs the scan with its built-in patterns only.
 .public-safe-terms.txt
+
+# The Python environment uv creates, and the caches of the tools it runs.
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+
+# Local state: the local mode's DuckDB store and the spike's results. Demo data
+# lives only here, never in the history.
+.mdm/
+*.duckdb
+*.duckdb.wal

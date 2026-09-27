@@ -1,0 +1,71 @@
+entity: person
+code: PER
+domain: party
+style: consolidated
+display_name: "{given_name} {family_name}"
+ai_enabled: false
+defaults: {calling_code: "999"}          # reserved code: invented demo numbers never reach a real network
+attributes:
+  - {name: given_name, type: text, masking: personal, standardise: person_name, required: true}
+  - {name: family_name, type: text, masking: personal, standardise: person_name, required: true, criticality: critical}
+  - name: birth_date
+    type: date
+    masking: personal
+    standardise: date
+    criticality: critical
+    placeholders:
+      - {value: "1900-01-01"}
+      - {pattern: "*-01-01", sources: [student_records]}
+  - {name: email, type: text, masking: personal, standardise: email}
+  - {name: phone, type: text, masking: personal, standardise: phone}
+  - {name: postcode, type: text, masking: personal, standardise: postcode}
+  - {name: city, type: text, standardise: text}
+  - {name: country, type: text, standardise: code, code_list: country}
+  - {name: person_ref, type: text, masking: personal, standardise: registered_id, scheme: PERSON_REF, checksum: luhn, strong: true, criticality: critical}
+  - {name: addresses, type: json, repeating: true, key: kind, fields: [kind, line1, city, postcode, country], masking: personal}
+  - {name: employer, type: reference, reference: {entity: organisation, key_source: finance, relationship: works_at}}   # a relationship, never a column
+  - {name: left_on, type: date, standardise: date, end_date: true}
+sources:
+  - {system: hr, trust: 1, date_order: ymd, versioned: true, policy: {new: auto, update: auto, critical_update: auto, end_date: auto}}
+  - {system: student_records, trust: 2, date_order: dmy, policy: {new: auto, update: auto, critical_update: hold, end_date: hold}}
+  - {system: crm, trust: 3, date_order: ymd, policy: {new: auto, update: auto, critical_update: hold, end_date: hold}, trust_by_attribute: {email: 1, phone: 1}}
+match:
+  version: 1
+  mode: consolidate
+  prior: 0.001
+  bands: {upper: 90, lower: 60}
+  blocking:
+    - {name: family_birth_year, keys: ["family_name.metaphone", "birth_date.year"]}
+    - {name: email, keys: ["email"]}
+    - {name: person_ref, keys: ["id(person_ref)"]}
+    - {name: names_postcode, keys: ["given_name.metaphone", "family_name.metaphone", "postcode"]}
+  comparisons:
+    - {name: given_name, attribute: given_name, comparator: phonetic_name, m: [0.80, 0.08, 0.07, 0.05], u: [0.005, 0.010, 0.040, 0.945]}
+    - {name: family_name, attribute: family_name, comparator: phonetic_name, m: [0.85, 0.07, 0.05, 0.03], u: [0.002, 0.005, 0.020, 0.973]}
+    - {name: birth_date, attribute: birth_date, comparator: date, m: [0.85, 0.08, 0.04, 0.03], u: [0.0003, 0.002, 0.020, 0.9777]}
+    - {name: email, attribute: email, comparator: email, m: [0.60, 0.10, 0.30], u: [0.00001, 0.001, 0.99899]}
+    - {name: phone, attribute: phone, comparator: phone, m: [0.60, 0.10, 0.30], u: [0.0001, 0.001, 0.9989]}
+    - {name: postcode, attribute: postcode, comparator: postcode, m: [0.70, 0.10, 0.20], u: [0.010, 0.050, 0.940]}
+    - {name: person_ref, attribute: person_ref, comparator: identifier, m: [0.90, 0.05, 0.05], u: [0.000001, 0.00001, 0.999989]}
+  hard_rules:
+    - {kind: must_link, attribute: person_ref}
+    - {kind: cannot_link, attribute: person_ref}
+survivorship:
+  version: 1
+  default: [source_trust, recency]
+  steward_rank: 0
+  attributes:
+    email: {strategies: [recency, source_trust]}
+    phone: {strategies: [recency, source_trust]}
+    birth_date: {strategies: [source_trust, completeness]}
+    addresses: {strategies: [source_trust, recency], group: keyed_union}
+validation:
+  version: 1
+  rules:
+    - {rule_id: PER-V1, attribute: family_name, kind: required, dimension: completeness}
+    - {rule_id: PER-V2, attribute: given_name, kind: required, dimension: completeness}
+    - {rule_id: PER-V3, attribute: birth_date, kind: range, dimension: validity, params: {min: "1900-01-02", max: today}}
+    - {rule_id: PER-V4, attribute: birth_date, kind: placeholder, dimension: accuracy}
+    - {rule_id: PER-V5, attribute: person_ref, kind: checksum, dimension: validity}
+    - {rule_id: PER-V6, attribute: country, kind: code_list, dimension: validity, params: {code_list: country}}
+    - {rule_id: PER-V7, attribute: email, kind: pattern, dimension: validity, params: {pattern: email}}

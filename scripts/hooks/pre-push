@@ -1,0 +1,40 @@
+#!/bin/sh
+# The checks CI runs, before every push. Enable with `make hooks`
+# (git config core.hooksPath scripts/hooks).
+#
+# The three validators always; the public-safety scan with the private denylist
+# when it is present (MDM_PUBLIC_SAFE_TERMS, else .public-safe-terms.txt), with
+# the built-in patterns only otherwise; ruff when uv is installed. Exits
+# non-zero on any failure.
+
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+failed=0
+run() {
+    "$@" || failed=1
+}
+
+run python3 scripts/check_links.py
+run python3 scripts/check_model.py
+run python3 scripts/check_prose.py
+
+terms="${MDM_PUBLIC_SAFE_TERMS:-.public-safe-terms.txt}"
+if [ -f "$terms" ]; then
+    run python3 scripts/scan_public_safe.py --root . --terms "$terms"
+else
+    echo "pre-push: no denylist at $terms; scanning with the built-in patterns only" >&2
+    run python3 scripts/scan_public_safe.py --root . --terms ""
+fi
+
+if command -v uv >/dev/null 2>&1; then
+    run uv run ruff check .
+else
+    echo "pre-push: uv not found; ruff skipped" >&2
+fi
+
+if [ "$failed" -ne 0 ]; then
+    echo "pre-push: a check failed; nothing was pushed" >&2
+    exit 1
+fi
+exit 0

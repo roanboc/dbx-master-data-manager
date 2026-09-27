@@ -1,7 +1,8 @@
 # The three validators and the public-safety scan, on every change. Activated
 # by `establish-project` for any project hosted on GitHub — public or private —
 # because no validator needs a repository setting enabled, a dependency
-# installed, or a secret.
+# installed, or a secret. The code job adds the lint and the test suite, on
+# DuckDB and on a Postgres service container.
 
 name: Model checks
 
@@ -32,3 +33,36 @@ jobs:
       # kept outside the repository, so it is absent here and the scan skips it.
       - name: Scan for content that must not be published
         run: python3 scripts/scan_public_safe.py --root .
+
+  code:
+    name: Lint and tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: mdm
+          POSTGRES_PASSWORD: mdm
+          POSTGRES_DB: mdm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MDM_TEST_POSTGRES: postgresql://mdm:mdm@localhost:5432/mdm
+      # Fail, never skip, when Postgres is missing: both engines are proved on every change.
+      MDM_REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Tests
+        run: uv run pytest

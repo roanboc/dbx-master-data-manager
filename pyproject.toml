@@ -1,0 +1,59 @@
+[project]
+name = "master-data-manager"
+version = "0.2.0"
+description = "Master Data Manager: explainable matching and golden records on DuckDB and Lakebase"
+license = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.5,<2",
+    "pytz>=2024.1",                 # DuckDB needs it to return TIMESTAMPTZ values
+    "psycopg[binary,pool]>=3.3,<4",
+    "rapidfuzz>=3.14,<4",
+    "jellyfish>=1.2,<2",
+    "pyyaml>=6.0",
+    "typer>=0.27",
+]
+
+[project.optional-dependencies]
+# What the platform needs: Lakebase credentials and, when enabled, a serving endpoint.
+# Imported lazily, only in backend/lakebase_auth.py and agent/provider.py.
+databricks = ["databricks-sdk>=0.143"]
+
+[dependency-groups]
+dev = ["pytest>=9.1", "ruff>=0.16"]
+
+[project.scripts]
+mdm = "mdm.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mdm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-q -m 'not live'"
+markers = [
+  "postgres: runs on the Postgres engine",
+  "live: runs against a Lakebase endpoint (MDM_LIVE_LAKEBASE=1)",
+  "slow: over five seconds; runs in CI, skipped by make test-fast",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+# scripts/ holds archreator's validators verbatim, so they can be refreshed from upstream.
+extend-exclude = ["scripts", ".agents"]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/mdm/cli.py" = ["B008"]

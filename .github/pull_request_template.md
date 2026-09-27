@@ -57,12 +57,15 @@
 ## Verification
 
 <!-- The commands that were run and what they said, plus anything checked by
-     hand. All three validators and the public-safety scan must be green:
+     hand. All three validators, the public-safety scan, the lint and the tests
+     must be green:
 
      python3 scripts/check_links.py
      python3 scripts/check_model.py
      python3 scripts/check_prose.py
      python3 scripts/scan_public_safe.py --root . --terms .public-safe-terms.txt
+     uv run ruff check .
+     uv run pytest
 -->
 
 ## Out of scope / follow-ups
