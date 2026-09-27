@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Touches:** [landing interface](../4_application/5_interface-contracts.md#landing-interface)
 

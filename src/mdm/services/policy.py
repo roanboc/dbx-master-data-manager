@@ -170,6 +170,9 @@ def _explained(resolution: Resolution) -> dict[str, Any]:
     detail: dict[str, Any] = {"score": round(best.score, 6), "band": best.band.value}
     if best.hard_rule:
         detail["hard_rule"] = token(best.hard_rule)
+    if best.counterfactuals:
+        # what the decision hinges on, so the inbox can say so without scoring the pair again
+        detail["hinge"] = token(best.counterfactuals[0].comparison)
     return detail
 
 

@@ -283,3 +283,36 @@ def test_a_keyed_union_whose_entries_carry_no_key_falls_back_to_the_plain_winner
     assert values["addresses"] == addresses
     assert provenance["addresses"]["winner"]["source"] == "hr:H1"
     assert "group" not in provenance["addresses"]
+
+
+# ------------------------------------------------------------------------------------------------ what decided (initiative 3)
+
+
+def test_the_strategy_that_decided_is_recorded(person_model: EntityModel) -> None:
+    """`decided_by`: trust decides; recency after a trust tie; a single holder; a pin; a keyed union; the tie-break."""
+    members = [
+        member("hr:H1", {"given_name": "Tamsin", "person_ref": "79927398713"}, days=1),
+        member("crm:C1", {"given_name": "Tam", "email": "tam@example.org"}, days=9),
+        member("crm:C2", {"given_name": "Tamsyn", "email": "tamsyn@example.org"}, days=9, seq=2),
+    ]
+    _, provenance = run(person_model, members)
+    assert provenance["given_name"]["decided_by"] == "source_trust"  # hr ranks 1, before crm's 3
+    assert provenance["person_ref"]["decided_by"] == "only"
+    # email: recency first; crm:C1 and crm:C2 share the day, and the later landing wins it
+    assert provenance["email"]["decided_by"] == "recency"
+    trust_tie = rules_with(person_model, city=("source_trust", "recency"))
+    same_rank = [
+        member("crm:C1", {"city": "Tarnwick"}, days=1),
+        member("crm:C2", {"city": "Ellsmoor"}, days=4),
+    ]
+    assert run(person_model, same_rank, trust_tie)[1]["city"]["decided_by"] == "recency"
+    tied = [member("crm:C2", {"city": "Tarnwick"}, days=1), member("crm:C1", {"city": "Ellsmoor"}, days=1)]
+    tie = run(person_model, tied, rules_with(person_model, city=("source_trust",)))[1]["city"]
+    assert (tie["decided_by"], tie["winner"]["source"]) == ("tie_break", "crm:C1")
+    pin = {"city": StewardValue("Quenby", NOW + timedelta(days=5), "persona:data_steward", T0)}
+    assert run(person_model, same_rank, steward=pin)[1]["city"]["decided_by"] == "pin"
+    groups = [
+        member("hr:H1", {"addresses": [{"kind": "home", "line1": "1 Ash Row"}]}),
+        member("crm:C1", {"addresses": [{"kind": "work", "line1": "2 Elm Row"}]}),
+    ]
+    assert run(person_model, groups)[1]["addresses"]["decided_by"] == "keyed_union"

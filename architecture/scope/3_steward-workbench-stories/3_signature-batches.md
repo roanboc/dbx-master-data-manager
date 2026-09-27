@@ -1,0 +1,44 @@
+# Story 3.3 — Signature batches with forced samples
+
+_[← Scope document](../3_steward-workbench.md)_
+
+**Goal:** alike review tasks are grouped by signature and decided together after a unanimous forced sample, as rule [`RULE7`] Bulk decisions pass a forced sample asks.
+
+## Context
+
+- [Rule [`RULE7`] Bulk decisions pass a forced sample](../../2_business/5_domain-context-and-rules.md#business-rules) and rule [`RULE3`] Four eyes on what is hard to reverse, for large bulk changes
+- [Actor [`ACT8`] Quality breaker](../../2_business/1_business-actors-and-roles.md#quality-breaker)
+- [Glossary](../../2_business/5_domain-context-and-rules.md#glossary): Signature, Forced sample, Blind review, Staged decision
+- [Business process [`BPROC3`] Decide a steward task](../../2_business/3_business-processes.md#business-processes)
+- [Application service [`ASVC9`] Undo tray](../../4_application/1_application-services.md#application-services); [decision 19](../../decisions/19_undo-tray.md)
+- [Declared capacity](../../5_technology/3_capacity-and-throughput.md#declared-capacity), for the commit chunk
+- [Story 3.1](./1_inbox-decide-tray-and-record.md) and [story 3.2](./2_matcher-checkpoint.md)
+
+## Acceptance criteria
+
+- [ ] G groups review tasks by signature, with the count, the label history and the blind-review agreement.
+- [ ] The forced sample draws 5 tasks plus 1 per 150 (Blueprint §3; adopted when built), stratified. One disagreement splits the disagreeing pattern off, and bulk decisions unlock only after a unanimous sample.
+- [ ] A batch shows every row's change, and commits in chunks of at most 500 published rows under one batch ID, with Stop. Above 250 decisions a second steward confirms (Blueprint §3; adopted when built).
+- [ ] The batch waits in the undo tray as one entry, and 2% of it (Blueprint §3; adopted when built) goes to blind review.
+- [ ] The breaker can withdraw a signature's bulk rights, and only a data owner restores them.
+- [ ] Undoing a whole batch after commit is compensation, a new change set per chunk.
+- [ ] Rule [`RULE7`] reads enforced.
+
+## Definition of done
+
+```bash
+uv run ruff check . && uv run ruff format --check .
+MDM_REQUIRE_POSTGRES=1 make test
+make test-gui
+python3 scripts/check_links.py && python3 scripts/check_model.py && python3 scripts/check_prose.py
+python3 scripts/scan_public_safe.py --root . --terms .public-safe-terms.txt
+```
+
+- The figures marked adopted join the [declared capacity](../../5_technology/3_capacity-and-throughput.md#declared-capacity) as the story builds them.
+- Kept true: `Enforced by` of rule [`RULE7`]; `Realized by` of [capability [`CAP5.1`] Steward work and pattern decisions](../../1_strategy/2_capabilities-and-resources.md#capabilities) and of [value stream stage [`VS1.3`] Resolve](../../1_strategy/3_value-stream.md#value-stream).
+
+## Out of scope
+
+- Explained ranks and "Take the next 25" — [story 3.4](./4_work-routing.md)
+- Undoing a batch from the audit screen — initiative 4
+- Automation grants that widen the automatic band — Release 2, initiative 5

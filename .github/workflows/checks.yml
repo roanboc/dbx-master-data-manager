@@ -2,7 +2,8 @@
 # by `establish-project` for any project hosted on GitHub — public or private —
 # because no validator needs a repository setting enabled, a dependency
 # installed, or a secret. The code job adds the lint and the test suite, on
-# DuckDB and on a Postgres service container.
+# DuckDB and on a Postgres service container. The browser job drives the
+# steward workbench in Chromium and checks it with axe.
 
 name: Model checks
 
@@ -80,3 +81,23 @@ jobs:
         run: make lint
       - name: Tests, across the runner's cores
         run: make test
+
+  browser:
+    name: Workbench in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # The install step is the only one that resolves: no later `uv run` re-locks or reaches the network.
+      UV_NO_SYNC: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.11"
+      - name: Install, with the browser checks' group (fails when uv.lock does not match)
+        run: uv sync --locked --group gui
+      # The Chromium build that matches the pinned Playwright, with its system libraries.
+      - name: Install Chromium for Playwright
+        run: uv run playwright install --with-deps chromium
+      - name: Browser checks with axe
+        run: make test-gui

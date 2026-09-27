@@ -30,6 +30,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from mdm.models.entity_model import EntityModel
+from mdm.models.workbench import LABELS, TRAY_STATUSES
 
 GROUPS = ("model", "landing", "work", "hub", "vault", "core", "read", "audit")
 LOGICAL_TYPES = ("text", "bigint", "int", "numeric", "boolean", "date", "timestamptz", "json")
@@ -288,11 +289,83 @@ TABLES: tuple[Table, ...] = (
             _c("claimed_at", "timestamptz"),
             _c("rank", "numeric"),
             _c("decided_at", "timestamptz"),
+            # the workbench (initiative 3): a snooze hides a task from My queue; an escalation marks it
+            _c("snoozed_until", "timestamptz"),
+            _c("snoozed_by", "text"),
+            _c("escalated_at", "timestamptz"),
+            _c("escalated_by", "text"),
+            _c("escalation", "text"),
         ),
         ("task_id",),
-        indexes=(("entity", "status", "kind"), ("task_key",)),
+        indexes=(
+            ("entity", "status", "kind"),
+            ("task_key",),
+            ("status", "due_at", "task_id"),  # the inbox's pages and capped counts
+            ("source_system", "source_key"),
+            ("claimed_by", "claimed_at"),  # "3 claimed by you" under My queue
+        ),
     ),
     Table("work", "open_task", (_n("task_key", "text"), _n("task_id", "text")), ("task_key",)),
+    # the undo tray (decision 19): a steward's decision waits here until its window passes; no label or
+    # reason column, since a tray line's words are built when it is read
+    Table(
+        "work",
+        "tray_entry",
+        (
+            _n("entry_id", "text"),
+            _n("task_id", "text"),
+            _n("entity", "text"),
+            _n("decision", "text"),  # checked by the service: the list grows story by story
+            _c("target", "text"),
+            _n("subject", "json"),
+            _c("signature", "text"),
+            _n("actor", "text"),
+            _n("actor_role", "text"),
+            _n("persona", "boolean"),
+            _c("event_id", "text"),
+            _n("planning_version", "bigint"),
+            _n("staged_at", "timestamptz"),
+            _n("deadline", "timestamptz"),
+            _n("status", "text", default="'staged'", check=_in("status", TRAY_STATUSES)),
+            _n("attempts", "int", default="0"),
+            _c("settled_at", "timestamptz"),
+            _c("change_set_id", "text"),
+            _c("outcome", "text"),
+        ),
+        ("entry_id",),
+        indexes=(("status", "deadline"), ("actor", "staged_at")),
+    ),
+    # one row per subject a staged decision holds ("task:<id>", "source:<entity>:<system>:<key>",
+    # "golden:<master ID>"): a second decision on the same subject is refused while the first waits
+    Table(
+        "work",
+        "tray_lock",
+        (_n("subject", "text"), _n("entry_id", "text")),
+        ("subject",),
+        indexes=(("entry_id",),),
+    ),
+    # a steward's label on a pair (decision 22): the latest decision per pair binds the automated matcher
+    Table(
+        "work",
+        "match_label",
+        (
+            _n("entity", "text"),
+            _n("left_ref", "text"),
+            _n("right_ref", "text"),
+            _n("label", "text", check=_in("label", LABELS)),
+            _c("rule_version", "int"),
+            _c("score", "numeric"),
+            _c("band", "text"),
+            _c("signature", "text"),
+            _c("task_id", "text"),
+            _c("entry_id", "text"),
+            _n("decided_by", "text"),
+            _n("decided_role", "text"),
+            _n("decided_at", "timestamptz"),
+        ),
+        ("entity", "left_ref", "right_ref"),
+        indexes=(("entity", "right_ref"),),
+    ),
     Table(
         "work",
         "rule_result",
@@ -556,7 +629,7 @@ TABLES: tuple[Table, ...] = (
             _n("parts", "json"),
         ),
         ("commit_version", "change_seq"),
-        indexes=(("entity", "commit_version"),),
+        indexes=(("entity", "commit_version"), ("master_id", "commit_version")),
     ),
     Table(
         "core",

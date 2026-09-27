@@ -63,6 +63,12 @@ _SETTING_VARIABLES = (
     "MDM_AGENT_ENDPOINT",
     "MDM_THROTTLE_ROWS_PER_HOUR",
     "MDM_GAP_TIMEOUT_SECONDS",
+    "MDM_UNDO_SECONDS",
+    "MDM_CLAIM_MINUTES",
+    "MDM_SLA_HOURS",
+    "MDM_CLOSE_CALL_POINTS",
+    "MDM_TRAY_WORKER",
+    "MDM_UI_PORT",
     # libpq and Settings.from_env read these: a developer's shell must not point a test elsewhere
     "PGHOST",
     "PGPORT",

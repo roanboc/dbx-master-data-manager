@@ -42,6 +42,8 @@ class Authority:
 
 
 _STEWARDS = frozenset({"data_steward", "coordinating_steward"})
+#: who may see the inbox: a consumer has none, and a data owner or technical steward reads without deciding
+_TASK_READERS = frozenset({"data_steward", "coordinating_steward", "data_owner", "technical_steward"})
 
 ACTIONS: Mapping[str, frozenset[str]] = {
     "read": frozenset(ROLES),
@@ -64,6 +66,16 @@ ACTIONS: Mapping[str, frozenset[str]] = {
     "match_test": frozenset({"data_steward", "coordinating_steward", "technical_steward", "data_owner"}),
     "load_code_lists": frozenset({"technical_steward", "data_owner"}),
     "redact": frozenset({"data_owner"}),  # + an administrator as checker, and a typed confirmation (RULE5)
+    # the steward workbench (initiative 3)
+    "view_tasks": _TASK_READERS,
+    "work_tasks": _STEWARDS,  # claim, release, snooze, escalate, stage, undo
+    "not_a_match": _STEWARDS,
+    "keep_apart": _STEWARDS,
+    "keep_orphan": _STEWARDS,
+    # a steward's decision alone: it releases a value the source asserted and its policy held (RULE2)
+    "approve_update": _STEWARDS,
+    "reject_update": _STEWARDS,
+    "flush_tray": frozenset(ROLES) - {"consumer"},
 }
 NEVER_AUTOMATIC = frozenset(
     {
@@ -84,3 +96,24 @@ NEEDS_CHECKER = frozenset({"merge", "unmerge", "retire", "redact"})
 RULE1_CASES = ("auto_band", "delete", "retired_id")
 #: item kinds an automated change set may carry
 AUTOMATIC_ITEMS = frozenset({"create", "update", "link", "detach", "relationship"})
+#: what a person reads for each role
+ROLE_LABELS: Mapping[str, str] = {
+    "data_owner": "Data owner",
+    "data_steward": "Data steward",
+    "coordinating_steward": "Coordinating steward",
+    "technical_steward": "Technical steward",
+    "consumer": "Consumer",
+    "administrator": "Administrator",
+}
+
+
+def allowed(actor: Actor, action: str) -> bool:
+    """Whether the action table lets `actor` take `action`: `services.authority.require` without raising, so
+    the workbench can show what a role cannot do, with the reason. For "arrival" the automated actor's name is
+    checked, for every other action the role; an unknown action is never allowed."""
+    permitted = ACTIONS.get(action)
+    if permitted is None:
+        return False
+    if action == "arrival":
+        return actor.kind == "automated" and actor.name in permitted
+    return actor.role in permitted

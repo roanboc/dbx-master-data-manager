@@ -32,6 +32,19 @@ two true persons sharing family name, address and the placeholder birth date
 crm numbers its keys once for both entities, so a crm key names one record
 whatever its entity (the vault's subject key `src:<system>:<key>` carries no
 entity).
+
+Hard cases for a steward (`hard_cases`, a share; 0 generates exactly the world
+generated before they existed), from a random stream of their own and with keys
+allocated after every regular key, so the regular rows never change:
+Organisation namesakes (creations, after every person: a second finance
+organisation with the name and city of one whose crm record, if any, carries its
+registered ID and a postcode; another postcode, a new registered ID, no website
+or phone), Organisation close calls (later events, after the deletes: a crm
+record with a namesake pair's name in other capitals and punctuation, the same
+city, a third postcode, and no registered ID, phone or website, which scores in
+the review band against both), and Person reviews (later events: a crm record
+with a person's names, the birth date one digit different in the same year, and
+no postcode, e-mail, phone or person reference).
 """
 
 from __future__ import annotations
@@ -65,6 +78,8 @@ _DELETES_AFTER = timedelta(days=45)
 _POSTCODE_LETTERS = "ABDEFGHJLNPQRSTUWXYZ"
 _UPDATE_STREAM = 1
 _DELETE_STREAM = 2
+_HARD_STREAM = 3
+_HARD_AFTER = timedelta(days=60)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +91,20 @@ class DemoConfig:
     deletes: float = 0.01
     initial_load: bool = False
     start: datetime = datetime(2026, 1, 5, tzinfo=UTC)
+    #: the share of records given an invented hard case for a steward (namesakes, close calls, reviews);
+    #: 0 generates exactly the world generated before hard cases existed
+    hard_cases: float = 0.0
+    #: creations only, no later event: land these first and the full world later, so updates and deletes
+    #: reach records already settled (held and orphan tasks)
+    creations_only: bool = False
 
     def __post_init__(self) -> None:
         if self.persons < 0 or self.organisations < 0:
             raise ValueError("counts must not be negative")
         if not (0.0 <= self.updates <= 1.0 and 0.0 <= self.deletes <= 1.0):
             raise ValueError("updates and deletes are shares between 0 and 1")
+        if not 0.0 <= self.hard_cases <= 1.0:
+            raise ValueError("hard cases are a share between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,9 +529,9 @@ def _sample(rng: random.Random, population: int, share: float) -> Iterator[int]:
     return iter(rng.sample(range(population), count)) if count else iter(())
 
 
-def _later_events(world: _World, employers: list[str]) -> None:
+def _later_events(world: _World, employers: list[str], records: list[_Record]) -> None:
+    """Updates, then deletes, of the regular `records` (never of a hard case)."""
     config = world.config
-    records = list(world.records)
     updates = random.Random(config.seed * 1_000_003 + _UPDATE_STREAM)
     for n, index in enumerate(_sample(updates, len(records), config.updates)):
         record = records[index]
@@ -535,13 +558,153 @@ def _later_events(world: _World, employers: list[str]) -> None:
 # ---------------------------------------------------------------------------------------------- the world
 
 
+# ---------------------------------------------------------------------------------------------- hard cases
+
+
+def _other_postcode(rng: random.Random, taken: set[str], like: str) -> str:
+    """A postcode of the same area as `like` (its two letters) whose first three characters differ from every
+    postcode in `taken`, so the postcode comparison reads "else", never "same prefix"."""
+    prefixes = {code[:3] for code in taken}
+    for _ in range(1_000):
+        digit = rng.randrange(1, 10)
+        code = (
+            f"{like[:2]}{digit} {rng.randrange(1, 10)}{rng.choice(_POSTCODE_LETTERS)}"
+            f"{rng.choice(_POSTCODE_LETTERS)}"
+        )
+        if code[:3] not in prefixes:
+            return code
+    raise RuntimeError("no postcode left in the area")
+
+
+def _one_digit_off(day: date) -> date:
+    """The date with one digit of its day changed, in the same month and year: the units digit up or down,
+    else the tens digit."""
+    tens, units = divmod(day.day, 10)
+    for candidate in (
+        tens * 10 + units + 1,
+        tens * 10 + units - 1,
+        (tens - 1) * 10 + units,
+        (tens + 1) * 10 + units,
+    ):
+        if units == 9 and candidate == day.day + 1 or units == 0 and candidate == day.day - 1:
+            continue  # 19 -> 20 or 20 -> 19 would change both digits
+        try:
+            return day.replace(day=candidate)
+        except ValueError:
+            continue
+    raise ValueError("no date one digit off")  # pragma: no cover - every day has one
+
+
+@dataclass(slots=True)
+class _Namesake:
+    original: _Org
+    name: str
+    postcodes: set[str]
+
+
+def _namesakes(world: _World, orgs: list[_Org], rng: random.Random) -> list[_Namesake]:
+    """For the share of organisations with a finance record whose crm record, when there is one, carries the
+    registered ID and a postcode, a second finance organisation with the same name and city: another postcode,
+    a new valid registered ID, no website or phone. The cannot-link rule keeps it a golden record of its own."""
+    crm = {r.key: r.payload for r in world.records if r.entity == ORGANISATION and r.system == "crm"}
+    eligible = [
+        org
+        for org in orgs
+        if org.finance
+        and (
+            org.crm is None
+            or (crm[org.crm].get("registered_id") == org.registered_id and crm[org.crm].get("postcode"))
+        )
+    ]
+    chosen = _sample(rng, len(eligible), world.config.hard_cases)
+    out: list[_Namesake] = []
+    for number, index in enumerate(sorted(chosen)):
+        org = eligible[index]
+        name = f"{org.words} {org.legal}"
+        postcode = _other_postcode(rng, {org.address.postcode}, org.address.postcode)
+        base = world.unique("org_reg", lambda: str(rng.randrange(10**7, 10**8)))
+        world.create(
+            ORGANISATION,
+            "finance",
+            world.key("finance"),
+            f"O{world.config.organisations + number + 1:07d}",
+            {
+                "name": name,
+                "registered_id": base + mod97_digits(base),
+                "postcode": postcode,
+                "city": org.address.city,
+                "country": org.address.country,
+            },
+        )
+        out.append(_Namesake(org, name, {org.address.postcode, postcode}))
+    return out
+
+
+def _close_calls(world: _World, namesakes: list[_Namesake], rng: random.Random, at: datetime) -> datetime:
+    """For each namesake pair, a new crm record with the name in other capitals and punctuation ("BRINDLE WORKS
+    ltd." for "Brindle Works Ltd"), the same city, a third postcode, and no registered ID, phone or website."""
+    for pair in namesakes:
+        org = pair.original
+        record = _Record(
+            ORGANISATION,
+            "crm",
+            world.key("crm"),
+            {
+                "name": f"{org.words.upper()} {org.legal.lower()}.",
+                "postcode": _other_postcode(rng, pair.postcodes, org.address.postcode),
+                "city": org.address.city,
+                "country": org.address.country,
+            },
+            None,
+        )
+        world.truth[(ORGANISATION, SourceKey("crm", record.key))] = org.truth
+        at += timedelta(seconds=30)
+        world.emit(record, "upsert", at, initial=False)
+    return at
+
+
+def _reviews(world: _World, persons: list[_Person], rng: random.Random, at: datetime) -> None:
+    """For the share of persons with a real birth date, a new crm record with the names as held, the birth
+    date one digit different in the same year, and no postcode, e-mail, phone or person reference."""
+    eligible = [p for p in persons if p.birth != UNKNOWN_BIRTH_DATE]
+    for index in sorted(_sample(rng, len(eligible), world.config.hard_cases)):
+        person = eligible[index]
+        record = _Record(
+            PERSON,
+            "crm",
+            world.key("crm"),
+            {
+                "given_name": person.given,
+                "family_name": person.family,
+                "birth_date": _one_digit_off(person.birth).isoformat(),
+                "city": person.address.city,
+                "country": person.address.country,
+            },
+            None,
+        )
+        world.truth[(PERSON, SourceKey("crm", record.key))] = person.truth
+        at += timedelta(seconds=30)
+        world.emit(record, "upsert", at, initial=False)
+
+
+# ---------------------------------------------------------------------------------------------- the world
+
+
 def generate(config: DemoConfig) -> DemoWorld:
-    """The world of `config`: landing rows in landing order (organisations, persons, updates, deletes) and
-    the truth, which is never landed."""
+    """The world of `config`: landing rows in landing order (organisations, persons, hard-case namesakes,
+    updates, deletes, hard-case close calls and reviews) and the truth, which is never landed."""
     world = _World(config)
     orgs = _organisations(world)
     _emit_organisations(world, orgs)
     employers = [org.finance for org in orgs if org.finance]
-    _emit_persons(world, _persons(world, employers))
-    _later_events(world, employers)
+    persons = _persons(world, employers)
+    _emit_persons(world, persons)
+    regular = list(world.records)
+    hard = random.Random(config.seed * 1_000_003 + _HARD_STREAM)
+    namesakes = _namesakes(world, orgs, hard) if config.hard_cases > 0 else []
+    if not config.creations_only:
+        _later_events(world, employers, regular)
+        if config.hard_cases > 0:
+            at = _close_calls(world, namesakes, hard, config.start + _HARD_AFTER)
+            _reviews(world, persons, hard, at)
     return DemoWorld(rows=tuple(world.rows), truth=dict(world.truth))

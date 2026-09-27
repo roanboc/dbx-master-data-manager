@@ -250,8 +250,11 @@ def check_html(html_file: Path) -> list[str]:
 # every element being defined twice, or as a built page with links written
 # for a rendered site. `.docs` is where the pre-reset tooling staged the same
 # things, kept so a stale local copy never fails a fresh checkout's checks.
+# `.venv` holds installed packages, whose own HTML pages (a browser driver's
+# bundled viewers, for one) link to files served beside them, never to this
+# repository's.
 EXCLUDED_DIRS = {".git", ".claude", ".agents", ".gemini", ".codex", ".copilot",
-                 ".aip", ".docs", ".archreator", ".model"}
+                 ".aip", ".docs", ".archreator", ".model", ".venv"}
 
 
 def _excluded(path: Path) -> bool:

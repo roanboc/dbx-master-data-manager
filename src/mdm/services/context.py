@@ -1,4 +1,4 @@
-"""The hub: every service wired over one store, for one actor (owner: SERVICES, B.10)."""
+"""The hub: every service wired over one store, for one actor (owner: SERVICES, B.10, B.6.1)."""
 
 from __future__ import annotations
 
@@ -12,17 +12,25 @@ from mdm.config import Settings
 from mdm.models.authority import Actor
 from mdm.models.canonical import utcnow
 from mdm.models.errors import PlatformRefused
+from mdm.models.workbench import HubBadges, ServiceLevels
 from mdm.services.arrival import ArrivalService
 from mdm.services.authority import AuthorityService
 from mdm.services.codelists import CodeListService
 from mdm.services.commit import CommitService
+from mdm.services.decisions import DecisionService
 from mdm.services.estimation import EstimationService
 from mdm.services.feed import FeedReader
+from mdm.services.inbox import InboxService
 from mdm.services.lifecycle import LifecycleService
+from mdm.services.lookup import LookupService
 from mdm.services.matching import MatchService
 from mdm.services.privacy import PrivacyService, Vault
 from mdm.services.profiling import ProfileService
 from mdm.services.registry import ModelRegistry
+from mdm.services.tray import TrayService
+
+#: how the workbench names each engine; Lakebase is Postgres behind a Lakebase endpoint
+_ENGINE_BADGES = {"duckdb": "DuckDB", "postgres": "Postgres"}
 
 
 class Hub:
@@ -41,6 +49,10 @@ class Hub:
     estimation: EstimationService
     profiling: ProfileService
     feed: FeedReader
+    inbox: InboxService
+    decisions: DecisionService
+    tray: TrayService
+    lookup: LookupService
 
     def __init__(
         self,
@@ -70,7 +82,14 @@ class Hub:
         self.codelists = CodeListService(store)
         self.vault = Vault(store)
         self.privacy = PrivacyService(store, self.registry, self.vault)
-        self.commit = CommitService(store, self.registry, self.authority, self.vault, clock)
+        self.commit = CommitService(
+            store,
+            self.registry,
+            self.authority,
+            self.vault,
+            clock,
+            service_levels=ServiceLevels(settings.sla_hours),
+        )
         self.lifecycle = LifecycleService(store, self.registry, self.commit, clock)
         self.matching = MatchService(store, self.registry)
         self.arrival = ArrivalService(
@@ -84,9 +103,34 @@ class Hub:
             self.matching,
             clock=clock,
         )
+        self.inbox = InboxService(settings, store, self.registry, self.privacy, clock)
+        self.decisions = DecisionService(
+            settings, store, self.registry, self.matching, self.lifecycle, self.privacy, clock
+        )
+        self.tray = TrayService(settings, store, self.decisions, self.inbox, self.arrival, clock)
+        self.lookup = LookupService(settings, store, self.registry, self.privacy, clock)
         self.estimation = EstimationService(store, self.registry)
         self.profiling = ProfileService(store, self.registry)
         self.feed = FeedReader(store)
+
+    def badges(self) -> HubBadges:
+        """What the workbench's header says about this hub: the engine ("Lakebase" behind a Lakebase
+        endpoint), the assistant ("endpoint" only when a published model enables it and an endpoint is
+        named), whether the store is local, and the published entities. Reads the registry, so call it
+        after `mdm init`."""
+        entities = tuple(self.registry.published_entities())
+        engine = "Lakebase" if self.settings.lakebase_endpoint else _ENGINE_BADGES.get(self.store.engine, "")
+        endpoint = (
+            self.settings.agent_provider in ("auto", "endpoint")
+            and bool(self.settings.agent_endpoint)
+            and any(self.registry.published(entity).ai_enabled for entity in entities)
+        )
+        return HubBadges(
+            engine=engine or self.store.engine,
+            assistant="endpoint" if endpoint else "stub",
+            local=self.settings.local_mode,
+            entities=entities,
+        )
 
     @classmethod
     def open(

@@ -17,6 +17,8 @@ from mdm.models.authority import Actor
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Forbidden, NotFound
 from mdm.models.records import SourceKey
+from mdm.models.workbench import REVEAL_REASONS
+from mdm.services import display
 from mdm.services.authority import require
 from mdm.services.registry import ModelRegistry
 from mdm.services.support import VAULT_REF, token
@@ -176,6 +178,96 @@ class PrivacyService:
             name: mask_value(personal[name], value) if name in personal else value
             for name, value in values.items()
         }
+
+    def masked_text(self, model: EntityModel, attribute: str, value: Any) -> str | None:
+        """A value's display form as a person reads it without a reveal: a personal text value -> its first
+        character and "***"; any other personal value -> "hidden"; other values in clear."""
+        if is_vault_ref(value):
+            return None if value.get(VAULT_REF) is None else display.HIDDEN
+        return display.masked_form(model, attribute, value)
+
+    def clear_text(self, model: EntityModel, attribute: str, value: Any) -> str | None:
+        """A value's display form in clear (vault references resolved): only after `reveal_values` logged it."""
+        if is_vault_ref(value):
+            value = self.vault.resolve(value)
+        return display.value_text(model, attribute, value)
+
+    def reveal_values(
+        self,
+        entity: str,
+        subjects: Sequence[tuple[str, Mapping[str, Any]]],
+        attributes: Sequence[str],
+        *,
+        actor: Actor,
+        reason: str,
+        master_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Personal values in clear for a reveal on screen (decision 20): `reveal` needed; `reason` one of
+        `REVEAL_REASONS` (codes only, so no free text reaches the access log), else
+        `Forbidden(reason_required)`. `subjects` are (a source key or master ID, its values, which may hold
+        vault references), one per column shown; returns, per subject in order, attribute -> value in clear
+        for the personal `attributes` that hold a value. One access-log row per attribute per subject (a
+        subject shown in two columns, such as a held update's approved and new values, is logged once),
+        naming the reason code; a master ID subject is logged as the row's record, a source key under
+        `master_id` (the golden record it belongs to, when there is one)."""
+        require(actor, "reveal")
+        if reason not in REVEAL_REASONS:
+            raise Forbidden("reason_required", action="reveal")
+        model = self.registry.published(entity)
+        personal = set(model.personal_attributes())
+        wanted = [a for a in dict.fromkeys(attributes) if a in personal]
+        out: list[dict[str, Any]] = []
+        logged: set[tuple[str, str]] = set()
+        with self.store.transaction():
+            for subject, values in subjects:
+                shown: dict[str, Any] = {}
+                for name in wanted:
+                    value = values.get(name)
+                    if value is None or (is_vault_ref(value) and value.get(VAULT_REF) is None):
+                        continue
+                    shown[name] = self.vault.resolve(value) if is_vault_ref(value) else value
+                    if (subject, name) in logged:
+                        continue
+                    logged.add((subject, name))
+                    record = subject if ":" not in subject else master_id
+                    self.store.append_access(
+                        actor,
+                        "reveal",
+                        entity,
+                        record,
+                        name,
+                        reason,
+                        {"attribute": token(name), "subject": token(subject)},
+                    )
+                out.append(shown)
+        return out
+
+    def masked_provenance(
+        self, model: EntityModel, attribute: str, entry: Mapping[str, Any], *, reveal: bool
+    ) -> dict[str, Any]:
+        """A provenance entry with each value in its display form: masked, or in clear when `reveal` (the
+        caller logged the reveal); not-personal values always in clear."""
+        personal = attribute in set(model.personal_attributes())
+
+        def shown(value: Any) -> str | None:
+            if not personal:
+                return display.value_text(model, attribute, value)
+            if reveal:
+                return self.clear_text(model, attribute, value)
+            return self.masked_text(model, attribute, value)
+
+        out = {k: v for k, v in entry.items() if k not in ("winner", "runners_up")}
+        winner = entry.get("winner")
+        if isinstance(winner, Mapping):
+            out["winner"] = {"source": winner.get("source"), "value": shown(winner.get("value"))}
+        runners = entry.get("runners_up")
+        if isinstance(runners, list):
+            out["runners_up"] = [
+                {"source": r.get("source"), "value": shown(r.get("value"))}
+                for r in runners
+                if isinstance(r, Mapping)
+            ]
+        return out
 
     def record_view(
         self, entity: str, master_id: str, *, actor: Actor, reveal: Sequence[str] = (), reason: str = ""

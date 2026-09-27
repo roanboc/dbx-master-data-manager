@@ -17,6 +17,15 @@ from typing import Any
 
 #: attribute names, codes, identifiers, source keys; no space, no "@", at most 120 characters
 SAFE_TEXT_RE = re.compile(r"^[A-Za-z0-9_.:=/+\-]{0,120}\Z")
+#: a master ID ("ORG-000123"): what a notice, a link or a log line may echo back of a reference
+MASTER_ID_RE = re.compile(r"^[A-Z][A-Z0-9]{0,9}-[0-9]{1,12}\Z")
+#: a source key ("crm:C000123")
+SOURCE_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}:[A-Za-z0-9_.\-]{1,80}\Z")
+#: a task ID ("TSK-5cfa2e93a4720ad3")
+TASK_ID_RE = re.compile(r"^TSK-[A-Za-z0-9]{1,40}\Z")
+#: a comparison signature (`mdm.engine.score.signature`): comparison names, each with its agreement mark,
+#: joined by " · " ("given_name= · phone∅"); the one text with spaces a staged decision or a label holds
+SIGNATURE_RE = re.compile(r"^(?:[a-z][a-z0-9_]{0,40}[=≈≠∅](?: · [a-z][a-z0-9_]{0,40}[=≈≠∅]){0,63})?\Z")
 
 
 def safe(value: Any) -> Any:
@@ -41,6 +50,14 @@ def safe(value: Any) -> Any:
                 raise ValueError("free text in a detail")
             out[safe(key)] = safe(item)
         return out
+    raise ValueError("free text in a detail")
+
+
+def safe_signature(value: str | None) -> str | None:
+    """`value` if it is None or a comparison signature (SIGNATURE_RE), else ValueError("free text in a
+    detail"): a label and a staged decision keep one, and it must never carry a value."""
+    if value is None or (isinstance(value, str) and SIGNATURE_RE.match(value)):
+        return value
     raise ValueError("free text in a detail")
 
 

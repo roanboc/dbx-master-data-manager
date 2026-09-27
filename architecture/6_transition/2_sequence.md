@@ -4,14 +4,14 @@ _[← Roadmap](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Implementation & Migration: the order of the initiatives that close the gaps.
 
-**Status:** ◐ Draft catalogue — written for initiative 2, Foundations; not yet validated.
+**Status:** ● Validated, 2026-09-27.
 
 ## Sequence
 
 ```mermaid
 flowchart LR
   i2["Initiative 2 — Foundations"]:::done
-  i3["Initiative 3 — Steward workbench"]:::planned
+  i3["Initiative 3 — Steward workbench"]:::progress
   i4["Initiative 4 — Tune, govern and deploy"]:::planned
   i5["Initiative 5 — Release 2"]:::planned
   i6["Initiative 6 — Migration from the incumbent hub"]:::planned
@@ -25,15 +25,16 @@ flowchart LR
   i5 -->|comes before| i7
 
   classDef done fill:#ffe8e8,stroke:#d99b9b,color:#333
+  classDef progress fill:#fff3f3,stroke:#d99b9b,color:#333
   classDef planned fill:#ffffff,stroke:#d99b9b,color:#333,stroke-dasharray: 4 3
 ```
 
-Each initiative starts once the ones before it are delivered. Dependencies order the work, not dates, so a late initiative moves those after it and nothing else. Release 2 and the migration both need the hub deployed and governed, and may run side by side.
+Initiative 3 is in progress, and its stories merge one by one. Each initiative starts once the ones before it are delivered. Dependencies order the work, not dates, so a late initiative moves those after it and nothing else. Release 2 and the migration both need the hub deployed and governed, and may run side by side.
 
 | Initiative | Name | Closes | Moves toward | Depends on | Status | Source |
 | ---------- | ---- | ------ | ------------ | ---------- | ------ | ------ |
 | 2 | Foundations | [Gap [`GAP1`] No arrival, matching or commit path](./1_target-state.md#gaps) | [Plateau [`PLAT2`] Release 1 serves Person and Organisation on the platform](./1_target-state.md#plateaus) | — | Delivered | [Answer 4](../reference/2026-09-26-request-and-answers.md#answers) |
-| 3 | Steward workbench | Gap [`GAP3`] No steward workbench | Plateau [`PLAT2`] Release 1 serves Person and Organisation on the platform | 2 | Planned | Answer 4 |
+| 3 | Steward workbench | Gap [`GAP3`] No steward workbench | Plateau [`PLAT2`] Release 1 serves Person and Organisation on the platform | 2 | In progress — story 3.1 delivered | Answer 4; [scope document 3](../scope/3_steward-workbench.md) |
 | 4 | Tune, govern and deploy | Gap [`GAP2`] The landing and listener contracts are written, not agreed<br>gap [`GAP4`] Rule changes are not proven before publication<br>gap [`GAP5`] Quality is measured on arrival but not reported or acted on<br>gap [`GAP6`] The hub is not deployed<br>gap [`GAP7`] Erasure and retention are not settled<br>gap [`GAP8`] Throughput is unproven on the platform<br>gap [`GAP9`] Governed code lists are not read from the Reference Data Manager | Plateau [`PLAT2`] Release 1 serves Person and Organisation on the platform | 2, 3 | Planned | Answer 4 |
 | 5 | Release 2 | Gap [`GAP10`] No language-model assistance<br>gap [`GAP11`] No hierarchies, trends, label tuning or automation grants | [Plateau [`PLAT3`] One assisted hub for parties](./1_target-state.md#plateaus) | 4 | Planned | adopted — [Blueprint](../reference/README.md#founding-material) §7 |
 | 6 | Migration from the incumbent hub | Gap [`GAP12`] The incumbent hub still masters parties | Plateau [`PLAT3`] One assisted hub for parties | 4 | Planned | adopted — Blueprint §7 |

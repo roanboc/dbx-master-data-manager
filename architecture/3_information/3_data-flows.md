@@ -4,9 +4,9 @@ _[← Information layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Information: Data Object and the flows between data objects, with the parties outside the hub that write and read them, and Representation.
 
-**Status:** ◐ Draft catalogue — written for initiative 2, Foundations; not yet validated.
+**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
 
-A flow between two data objects runs inside the hub. A flow to or from a party outside the hub crosses the landing interface, the listener interface or an optional copy for analytics.
+A flow between two data objects runs inside the hub. A flow to or from a party outside the hub crosses the landing interface, the listener interface, the workbench's screens or an optional copy for analytics.
 
 ## Arrival flows
 
@@ -109,6 +109,45 @@ Grey with a dashed border marks the change notifier, the integration platform, t
 | data object [`DOBJ4.1`] Golden record<br>data object [`DOBJ4.2`] Cross-reference<br>data object [`DOBJ4.3`] Retired ID map<br>data object [`DOBJ4.4`] Record relationship<br>data object [`DOBJ4.5`] Change feed | Listening systems, through the integration platform (External) | The changes since the consumer's own watermark | Notified, then queried: the change rows in version order, then the current rows of those master IDs | stakeholder [`STK5`] Integration team |
 | data object [`DOBJ4.1`] Golden record<br>data object [`DOBJ4.2`] Cross-reference<br>data object [`DOBJ4.3`] Retired ID map<br>data object [`DOBJ4.4`] Record relationship | An analytics copy in the lakehouse (External, optional) | A copy for analytics and history | A sync to the lakehouse, which is never the route to listening systems | No owner named; the copy is optional |
 
+## Stewardship flows
+
+```mermaid
+flowchart LR
+  dobj3_1["▦ Candidate pair [DOBJ3.1]"]:::object
+  dobj3_2["▦ Steward task [DOBJ3.2]"]:::object
+  dobj3_5["▦ Staged decision [DOBJ3.5]"]:::object
+  dobj3_6["▦ Steward match label [DOBJ3.6]"]:::object
+  dobj3_4["▦ Arrival position [DOBJ3.4]"]:::object
+  dobj5_1["▦ Change set record [DOBJ5.1]"]:::object
+  dobj4_1["▦ Golden record [DOBJ4.1]"]:::object
+  dobj5_4["▦ Access log entry [DOBJ5.4]"]:::object
+  asvc6(["⬮ Privacy protection [ASVC6]"]):::appservice
+  screens["Workbench screens, masked by role"]:::representation
+
+  dobj3_2 -->|flows to| dobj3_5
+  dobj3_5 -->|flows to| dobj5_1
+  dobj3_5 -->|flows to| dobj3_6
+  dobj3_5 -->|flows to| dobj3_4
+  dobj3_6 -->|flows to| dobj3_1
+  dobj4_1 -->|flows to| screens
+  asvc6 -->|accesses| dobj5_4
+
+  classDef object fill:#c2f0ff,stroke:#0288d1,color:#333
+  classDef appservice fill:#c2f0ff,stroke:#0288d1,color:#333
+  classDef representation fill:#ffffff,stroke:#0288d1,color:#333,stroke-dasharray: 2 2
+```
+
+A steward's decision waits as a staged decision, then commits through the same path as every other change set. The dotted box is the [workbench screens](#representations), where people read records masked by role. [Application service [`ASVC6`] Privacy protection](../4_application/1_application-services.md#application-services) visits from the application layer: it writes one access log entry for each value it reveals, with the reason code. A declined record goes back to the arrival queue, and its label keeps the declined golden records out of its candidates ([decision 22](../decisions/22_labels-bind-the-matcher.md)).
+
+| From | To | What moves | How | Owner |
+| ---- | -- | ---------- | --- | ----- |
+| [data object [`DOBJ3.2`] Steward task](./2_data-objects.md#resolution-work) | [data object [`DOBJ3.5`] Staged decision](./2_data-objects.md#resolution-work) | A steward's decision | The workbench stages it, one per task and record, for the undo window | [business process [`BPROC3`] Decide a steward task](../2_business/3_business-processes.md#business-processes) |
+| data object [`DOBJ3.5`] Staged decision | [data object [`DOBJ5.1`] Change set record](./2_data-objects.md#audit-and-privacy) | The decision, as a change set under the steward's role | After the deadline, the tray's flush commits it through the commit path. The commit checks the record and the task, and settles the staged decision, in the same transaction; it is audited even when nothing is published | business process [`BPROC3`] Decide a steward task<br>[business process [`BPROC2`] Commit a change set](../2_business/3_business-processes.md#business-processes) |
+| data object [`DOBJ3.5`] Staged decision | [data object [`DOBJ3.6`] Steward match label](./2_data-objects.md#resolution-work) | The match decision | The same transaction | business process [`BPROC3`] Decide a steward task |
+| data object [`DOBJ3.5`] Staged decision | [data object [`DOBJ3.4`] Arrival position](./2_data-objects.md#resolution-work) | A declined record, queued again | The same transaction; arrival settles it under its source's policy | [business process [`BPROC1`] Resolve an arrival](../2_business/3_business-processes.md#business-processes) |
+| data object [`DOBJ3.6`] Steward match label | [data object [`DOBJ3.1`] Candidate pair](./2_data-objects.md#resolution-work) | The golden records a record must not join | Arrival drops a declined golden record's members from the record's candidates before it clusters, and names the staged decision in its evidence | business process [`BPROC1`] Resolve an arrival |
+| [data object [`DOBJ4.1`] Golden record](./2_data-objects.md#published-master-data), and the source states, provenance and relationships behind it | The [workbench screens](#representations) | Values | Masked by role; the workbench shows what the services return, and a revealed value lives only in the rendered page | [application service [`ASVC10`] Record lookup](../4_application/1_application-services.md#application-services) |
+
 ## Representations
 
 | Representation | What it carries | Format | Read by |
@@ -120,3 +159,4 @@ Grey with a dashed border marks the change notifier, the integration platform, t
 | Entity model file | An entity model and its first rule sets, in `models/person.yaml` and `models/organisation.yaml` | YAML, a plain-text format | Technical stewards; `mdm model load` reads it into the store |
 | Code-list file | A governed code list for the local mode, in `models/codelists/country.yaml` | YAML | `mdm codelists load` reads it into the store |
 | Command-line output | Records, match explanations, tasks and feed pages, masked unless a value is revealed | Text | People at the command line |
+| Workbench screens | The inbox, the decide pane, the undo tray, and the record and source record views, masked by role | HyperText Markup Language (HTML) pages in a browser; addresses and stored browser state carry IDs and codes only, and no response is cached | People, by role: stewards decide, and every role reads records |

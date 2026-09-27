@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Touches:** [technology service [`TSVC1`] Python runtime and packaging](../5_technology/1_technology-services.md#technology-services)
 

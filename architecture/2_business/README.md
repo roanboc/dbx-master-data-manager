@@ -66,6 +66,7 @@ flowchart TB
   bsvc7("⬭ Published golden records and change feed [BSVC7]"):::service
   bproc1{{"⚙ Resolve an arrival [BPROC1]"}}:::process
   bproc2{{"⚙ Commit a change set [BPROC2]"}}:::process
+  bproc3{{"⚙ Decide a steward task [BPROC3]"}}:::process
   ctr1[/"❒ Landing contract [CTR1]"/]:::contract
   ctr2[/"❒ Listener contract [CTR2]"/]:::contract
   rule6[/"※ Some actions are never automatic [RULE6]"\]:::rule
@@ -76,10 +77,13 @@ flowchart TB
   act6 -->|escalates to| role2
   act6 -->|assigned to| bproc1
   bproc1 -->|triggers| bproc2
+  role2 -->|assigned to| bproc3
+  bproc3 -->|triggers| bproc2
+  bproc3 -->|realizes| bsvc3
   bproc1 -->|realizes| bsvc2
   bproc2 -->|realizes| bsvc7
   bsvc2 -->|serves| role2
-  bsvc3 -.->|serves| role2
+  bsvc3 -->|serves| role2
   bsvc7 -->|serves| role5
   bsvc2 -->|governed by| ctr1
   bsvc7 -->|governed by| ctr2
@@ -95,4 +99,4 @@ flowchart TB
   classDef rule fill:#e5d95f,stroke:#8a7a00,color:#333
 ```
 
-Cyan marks an automated actor, never a person. Solid edges are true: the automated matcher resolves arrivals, and the commit path publishes golden records and the change feed. The dashed edge waits for the steward workbench.
+Cyan marks an automated actor, never a person. Solid edges are true: the automated matcher resolves arrivals, stewards decide the tasks it leaves, and the commit path publishes golden records and the change feed.

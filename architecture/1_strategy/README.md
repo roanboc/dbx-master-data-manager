@@ -87,9 +87,9 @@ flowchart TB
   p2 -->|realizes| g2
   vs1 -.->|realizes| g2
   vs1_3 -->|flows to| vs1_4
-  cap5 -.->|serves| vs1_3
+  cap5 -->|serves| vs1_3
   cap7 -->|serves| vs1_4
-  res3 -.->|assigned to| cap5
+  res3 -->|assigned to| cap5
 
   classDef stakeholder fill:#f4ecfc,stroke:#9575cd,color:#333
   classDef driver fill:#e6d6f5,stroke:#7e57c2,color:#333
@@ -101,4 +101,4 @@ flowchart TB
   style vs1 fill:#fbf4e2,stroke:#b08a3a,color:#333
 ```
 
-Solid edges are true: resolved arrivals reach Commit, which the sharing capability serves. Dashed edges wait for the steward workbench and the platform deployment.
+Solid edges are true: stewards give their time to resolving what the rules leave, and resolved arrivals reach Commit, which the sharing capability serves. The dashed edge waits for the rest of the steward workbench and the platform deployment.

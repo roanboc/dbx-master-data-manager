@@ -4,7 +4,8 @@ A later event for the same record and kind updates that task's suggestion,
 evidence, event and `updated_at` instead of opening another
 (`mdm_work.open_task`). `reason` is a code (`critical_update_held`,
 `review_band`, `cannot_link_conflict`, …); suggestion and evidence are safe
-details only.
+details only. The workbench's columns (due time, claim, snooze, escalation)
+default to none, so a task built before initiative 3 reads as before.
 """
 
 from __future__ import annotations
@@ -19,6 +20,15 @@ from mdm.models.records import SourceKey
 
 TASK_KINDS = ("review", "possible_duplicate", "held", "exception", "orphan", "unresolved_reference")
 TASK_STATUSES = ("open", "closed")
+#: what a steward reads for each kind
+KIND_LABELS: Mapping[str, str] = {
+    "review": "Review",
+    "possible_duplicate": "Possible duplicate",
+    "held": "Held",
+    "exception": "Exception",
+    "orphan": "Orphan",
+    "unresolved_reference": "Unresolved reference",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +46,16 @@ class Task:
     event_id: str | None
     created_at: datetime
     updated_at: datetime
+    # The workbench's columns (initiative 3). A task opened again under its old ID starts afresh: a new
+    # due time, and no claim, snooze or escalation. Actor names here are workbench actors, never values.
+    due_at: datetime | None = None  # stamped by the commit path from the service level of its kind
+    claimed_by: str | None = None
+    claimed_at: datetime | None = None  # a claim lapses `Settings.claim_minutes` after this
+    snoozed_until: datetime | None = None
+    snoozed_by: str | None = None
+    escalated_at: datetime | None = None
+    escalated_by: str | None = None
+    escalation: str | None = None  # a code of models.workbench.ESCALATION_REASONS
 
 
 def task_key(kind: str, entity: str, source: SourceKey | None, master_ids: Sequence[str] = ()) -> str:

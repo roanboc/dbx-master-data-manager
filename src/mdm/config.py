@@ -19,12 +19,25 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mdm.models.errors import ConfigError
+from mdm.models.tasks import TASK_KINDS
+from mdm.models.workbench import FALLBACK_SERVICE_HOURS
 
 #: variables a Databricks App or runtime sets; any of them present makes the store shared.
 #: DATABRICKS_CLIENT_ID is not one: it is the normal way to run a service principal from a laptop.
 PLATFORM_VARIABLES = ("DATABRICKS_APP_NAME", "DATABRICKS_APP_PORT", "DATABRICKS_RUNTIME_VERSION")
 BACKENDS = ("duckdb", "postgres")
 AGENT_PROVIDERS = ("auto", "endpoint", "stub")
+#: whether the workbench's process flushes the undo tray itself: auto = on a local store only
+TRAY_WORKER_MODES = ("auto", "on", "off")
+#: hours to decide a task, per kind, until the governance policy of initiative 4 sets them (adopted)
+DEFAULT_SLA_HOURS: tuple[tuple[str, int], ...] = (
+    ("review", 8),
+    ("possible_duplicate", 24),
+    ("held", 8),
+    ("exception", 24),
+    ("orphan", 72),
+    ("unresolved_reference", 72),
+)
 SCHEMA_PREFIX_RE = re.compile(r"[a-z][a-z0-9_]{0,30}")  # matched whole (fullmatch): no trailing newline
 #: the TLS modes a connection that carries a Lakebase token over a network may use: none sends it in clear
 SAFE_SSLMODES = ("require", "verify-ca", "verify-full")
@@ -59,6 +72,13 @@ class Settings:
     agent_endpoint: str = ""  # MDM_AGENT_ENDPOINT
     throttle_rows_per_hour: int = 0  # MDM_THROTTLE_ROWS_PER_HOUR; 0 = off (bulk commits)
     gap_timeout_seconds: int = 600  # MDM_GAP_TIMEOUT_SECONDS
+    undo_seconds: int = 60  # MDM_UNDO_SECONDS: how long a staged decision waits in the undo tray
+    claim_minutes: int = 10  # MDM_CLAIM_MINUTES: a claim lapses by itself after this
+    sla_hours: tuple[tuple[str, int], ...] = DEFAULT_SLA_HOURS  # MDM_SLA_HOURS "review=8,held=8,…"
+    close_call_points: float = 10.0  # MDM_CLOSE_CALL_POINTS: the top two candidates this close need a choice
+    tray_worker: str = "auto"  # MDM_TRAY_WORKER: auto (on a local store) | on | off
+    ui_port: int = 8050  # MDM_UI_PORT
+    app_port: int = 0  # DATABRICKS_APP_PORT: the platform's own, read and never set; 0 = not in an App
     platform_signals: tuple[str, ...] = ()  # set by from_env: the PLATFORM_VARIABLES present
 
     @property
@@ -73,6 +93,23 @@ class Settings:
         On Postgres, `MDM_ALLOW_PERSONAS=1` is honoured only for a server on this machine: the store
         refuses to open otherwise (`PostgresStore`, `personas_need_a_local_postgres`)."""
         return not self.shared_store and (self.backend == "duckdb" or self.allow_personas)
+
+    @property
+    def in_databricks_app(self) -> bool:
+        """A Databricks App runs this process: the one test for listening beyond loopback and for reading
+        the user the platform forwards (decision 21)."""
+        return (
+            "DATABRICKS_APP_NAME" in self.platform_signals or "DATABRICKS_APP_PORT" in self.platform_signals
+        )
+
+    @property
+    def tray_worker_on(self) -> bool:
+        """The workbench's process flushes the undo tray itself: `on`, or `auto` on a local store."""
+        return self.tray_worker == "on" or (self.tray_worker == "auto" and self.local_mode)
+
+    def service_level_hours(self, kind: str) -> int:
+        """Hours to decide a task of `kind`; a kind the service levels do not name gets 24."""
+        return dict(self.sla_hours).get(kind, FALLBACK_SERVICE_HOURS)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -95,6 +132,18 @@ class Settings:
             except ValueError:
                 raise ConfigError("bad_setting", variable=name) from None
             if value < minimum:
+                raise ConfigError("bad_setting", variable=name)
+            return value
+
+        def number(name: str, default: float, minimum: float, maximum: float) -> float:
+            raw = text(name)
+            if not raw:
+                return default
+            try:
+                value = float(raw)
+            except ValueError:
+                raise ConfigError("bad_setting", variable=name) from None
+            if not minimum <= value <= maximum:  # also refuses nan
                 raise ConfigError("bad_setting", variable=name)
             return value
 
@@ -131,6 +180,13 @@ class Settings:
             "agent_endpoint": text("MDM_AGENT_ENDPOINT"),
             "throttle_rows_per_hour": integer("MDM_THROTTLE_ROWS_PER_HOUR", cls.throttle_rows_per_hour),
             "gap_timeout_seconds": integer("MDM_GAP_TIMEOUT_SECONDS", cls.gap_timeout_seconds, minimum=1),
+            "undo_seconds": integer("MDM_UNDO_SECONDS", cls.undo_seconds, minimum=1),
+            "claim_minutes": integer("MDM_CLAIM_MINUTES", cls.claim_minutes, minimum=1),
+            "sla_hours": _sla_hours(text("MDM_SLA_HOURS")),
+            "close_call_points": number("MDM_CLOSE_CALL_POINTS", cls.close_call_points, 0.0, 100.0),
+            "tray_worker": text("MDM_TRAY_WORKER", cls.tray_worker).lower() or cls.tray_worker,
+            "ui_port": integer("MDM_UI_PORT", cls.ui_port, minimum=1),
+            "app_port": integer("DATABRICKS_APP_PORT", cls.app_port),
             "platform_signals": tuple(name for name in PLATFORM_VARIABLES if name in env),
         }
         settings = cls(**values)
@@ -148,9 +204,55 @@ class Settings:
             raise ConfigError("bad_setting", variable="MDM_AGENT_PROVIDER")
         if self.pool_max < POOL_MIN:
             raise ConfigError("bad_setting", variable="MDM_POOL_MAX")
+        if self.undo_seconds < 1:
+            raise ConfigError("bad_setting", variable="MDM_UNDO_SECONDS")
+        if self.claim_minutes < 1:
+            raise ConfigError("bad_setting", variable="MDM_CLAIM_MINUTES")
+        if not _sla_complete(self.sla_hours):
+            raise ConfigError("bad_setting", variable="MDM_SLA_HOURS")
+        if not 0.0 <= self.close_call_points <= 100.0:
+            raise ConfigError("bad_setting", variable="MDM_CLOSE_CALL_POINTS")
+        if self.tray_worker not in TRAY_WORKER_MODES:
+            raise ConfigError("bad_setting", variable="MDM_TRAY_WORKER")
+        if self.ui_port < 1:
+            raise ConfigError("bad_setting", variable="MDM_UI_PORT")
+        if self.app_port < 0:
+            raise ConfigError("bad_setting", variable="DATABRICKS_APP_PORT")
 
     def with_(self, **changes: Any) -> Settings:
         """A copy with `changes` applied and validated (`dataclasses.replace`)."""
         settings = dataclasses.replace(self, **changes)
         settings.validate()
         return settings
+
+
+def _sla_complete(hours: tuple[tuple[str, int], ...]) -> bool:
+    """Every task kind has a whole number of hours, at least 1, and no kind is named twice."""
+    kinds = [kind for kind, _ in hours]
+    return (
+        len(kinds) == len(set(kinds))
+        and set(kinds) >= set(TASK_KINDS)
+        and all(isinstance(h, int) and not isinstance(h, bool) and h >= 1 for _, h in hours)
+    )
+
+
+def _sla_hours(raw: str) -> tuple[tuple[str, int], ...]:
+    """`MDM_SLA_HOURS` ("review=4,orphan=48") merged over the defaults, in task-kind order.
+
+    A pair that is not `kind=hours`, a kind that is not a task kind, or hours below 1 is refused, naming
+    the variable only (the text could be anything)."""
+    merged = dict(DEFAULT_SLA_HOURS)
+    for part in (p.strip() for p in raw.split(",")) if raw else ():
+        if not part:
+            continue
+        kind, sep, hours = (s.strip() for s in part.partition("="))
+        if not sep or kind not in TASK_KINDS:
+            raise ConfigError("bad_setting", variable="MDM_SLA_HOURS")
+        try:
+            value = int(hours)
+        except ValueError:
+            raise ConfigError("bad_setting", variable="MDM_SLA_HOURS") from None
+        if value < 1:
+            raise ConfigError("bad_setting", variable="MDM_SLA_HOURS")
+        merged[kind] = value
+    return tuple((kind, merged[kind]) for kind in TASK_KINDS)

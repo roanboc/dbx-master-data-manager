@@ -13,6 +13,11 @@ dependencies = [
     "jellyfish>=1.2,<2",
     "pyyaml>=6.0",
     "typer>=0.27",
+    # The steward workbench (`mdm ui`). Mantine and AG Grid bundle their styles and themes, so the
+    # workbench loads nothing from a network at run time.
+    "dash>=4.4,<5",
+    "dash-mantine-components>=2.8,<3",
+    "dash-ag-grid>=35.3,<36",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +31,9 @@ dev = [
     "pytest-xdist>=3.8",
     "ruff>=0.16",
 ]
+# The browser checks, installed with `uv sync --group gui` (make test-gui; CI's browser job).
+# Pinned: the driver and its Chromium build ship as a pair (build 1194 for 1.56).
+gui = ["playwright>=1.56,<1.57", "axe-playwright-python>=0.1.8"]
 
 [project.scripts]
 mdm = "mdm.cli:main"
@@ -40,11 +48,12 @@ packages = ["src/mdm"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
-addopts = "-q -m 'not live'"
+addopts = "-q -m 'not live and not gui'"
 markers = [
   "postgres: runs on the Postgres engine",
   "live: runs against a Lakebase endpoint (MDM_LIVE_LAKEBASE=1)",
   "slow: over five seconds; runs in CI, skipped by make test-fast",
+  "gui: drives the workbench in a browser (make test-gui)",
 ]
 # a thread that raises inside a test fails the test, never passes with a warning
 filterwarnings = [
@@ -53,7 +62,8 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-# scripts/ holds archreator's validators verbatim, so they can be refreshed from upstream.
+# scripts/ holds archreator's validators as the scaffold ships them, so they can be refreshed from upstream
+# (check_links.py adds `.venv` to the folders it skips; keep that line on a refresh).
 extend-exclude = ["scripts", ".agents"]
 line-length = 110
 target-version = "py311"

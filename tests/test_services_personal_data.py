@@ -1,4 +1,5 @@
-"""The backstop for RULE10: no personal value outside the vault and the value columns (owner: SERVICES)."""
+"""The backstop for RULE10: no personal value outside the vault and the value columns, the workbench's tables
+included (owner: SERVICES)."""
 
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from tests.helpers import (
     mini_world,
     person_payload,
     row,
+    seen,
 )
 
 #: the value columns the classification names: they hold personal values by design
@@ -68,6 +70,51 @@ def _text_columns(hub) -> list[tuple[str, str, str]]:
     return out
 
 
+def _decide_everything(hub) -> None:
+    """The workbench over every open person task: cases, reveals with a reason, snoozes and escalations, a
+    decision staged on each and flushed, and the record reader's views, so the tray, the labels, the new task
+    columns and the access log are scanned too (initiative 3)."""
+    from mdm.models.canonical import utcnow
+    from mdm.models.errors import MdmError
+    from tests.helpers import STEWARD, open_tasks
+
+    tasks = open_tasks(hub, "person")
+    assert tasks
+    for number, task in enumerate(tasks):
+        case = hub.decisions.case(task.task_id, actor=STEWARD)
+        if case.masked:
+            hub.decisions.reveal(task.task_id, actor=STEWARD, reason="deciding_task")
+        offered = [
+            a for a in case.actions if a.enabled and a.decision in ("link", "not_a_match", "approve_update")
+        ]
+        if number % 2 == 1:
+            hub.inbox.snooze(task.task_id, actor=STEWARD, hours=1)
+        if offered:
+            chosen = offered[0]
+            try:
+                entry = hub.tray.stage(
+                    task.task_id,
+                    chosen.decision,
+                    actor=STEWARD,
+                    target=chosen.target,
+                    **seen(hub, task.task_id),
+                )
+            except MdmError:
+                entry = None
+            if entry is not None and number == 0:  # the first is taken back, and left open, escalated
+                hub.tray.undo(entry.entry_id, actor=STEWARD)
+                hub.inbox.escalate(task.task_id, actor=STEWARD, reason="second_opinion")
+        for candidate in case.candidates:
+            hub.lookup.golden("person", candidate.master_id, actor=STEWARD, reveal=True, reason="audit_check")
+            hub.lookup.why("person", candidate.master_id, "family_name", actor=STEWARD)
+            hub.lookup.timeline("person", candidate.master_id, actor=STEWARD)
+    moment = utcnow() + timedelta(seconds=hub.settings.undo_seconds + 1)
+    hub.tray.clock = lambda: moment
+    hub.tray.flush()
+    assert hub.store.staged_count(10) == 0
+    assert hub.tray.entries(actor=STEWARD)
+
+
 @pytest.mark.parametrize("which", ["mini", "demo"])
 def test_no_personal_value_outside_the_vault_and_the_value_columns(
     which, hub, small_world, caplog, monkeypatch
@@ -113,6 +160,7 @@ def test_no_personal_value_outside_the_vault_and_the_value_columns(
         ],
     )
     arrive(hub)
+    _decide_everything(hub)
     # a failed estimation
     original = estimation_module.em
     monkeypatch.setattr(estimation_module, "em", lambda *a, **k: original(*a, **{**k, "max_iter": 1}))

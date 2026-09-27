@@ -17,6 +17,8 @@ from typing import Any
 
 from mdm.backend import guard
 from mdm.engine.identifiers import luhn_digit, mod97_digits
+from mdm.models.authority import Actor
+from mdm.models.canonical import iso
 from mdm.models.changes import ChangeRow
 from mdm.models.records import LandingRow, SourceChange, SourceKey
 from mdm.models.tasks import Task
@@ -260,3 +262,151 @@ def all_changes(hub: Hub, entity: str | None = None, page_rows: int = 500) -> li
         if page.cursor is None:
             return out
         since, cursor = page.next_watermark, page.cursor
+
+
+# ------------------------------------------------------------------------------------------ crafted cases for the workbench
+
+#: the persona the workbench acts as by default, and a second steward for claims and staged decisions
+STEWARD = Actor("persona:data_steward", "person", "data_steward", persona=True)
+COORDINATOR = Actor("persona:coordinating_steward", "person", "coordinating_steward", persona=True)
+OWNER = Actor("persona:data_owner", "person", "data_owner", persona=True)
+CONSUMER = Actor("persona:consumer", "person", "consumer", persona=True)
+NAMESAKE = "Ossiver Instruments Ltd"
+
+
+def workbench_world(hub: Hub, persons: int = 8, organisations: int = 3) -> None:
+    """The mini world, landed and arrived: the golden records the crafted cases meet."""
+    land(hub, mini_world(persons=persons, organisations=organisations).rows)
+    arrive(hub)
+
+
+def organisation_close_call(hub: Hub, *, at: datetime | None = None, website: str | None = None) -> SourceKey:
+    """Two finance organisations of one name in one city (other postcodes, other registered IDs, no website),
+    kept apart by the registered-ID cannot-link rule; then a crm record with the name in other capitals and
+    punctuation, the same city, a third postcode and no registered ID, phone or website. It scores 79.19
+    against both: one review task naming both, a close call. Returns the crm record. A `website` on the crm
+    record leaves the score as it is (the namesakes hold none) and changes the golden website a link makes."""
+    when = at or T0 + timedelta(hours=1)
+    namesake = {"name": NAMESAKE, "city": "Norvale", "country": "XB"}
+    land(
+        hub,
+        [
+            row(
+                "finance",
+                "F900001",
+                "organisation",
+                {**namesake, "registered_id": org_reg(9001), "postcode": "XB1 1AA"},
+                at=when,
+                version=1,
+            ),
+            row(
+                "finance",
+                "F900002",
+                "organisation",
+                {**namesake, "registered_id": org_reg(9002), "postcode": "XB2 2BB"},
+                at=when,
+                version=1,
+            ),
+        ],
+    )
+    arrive(hub)
+    variant = {
+        "name": NAMESAKE.upper().replace(" LTD", " ltd."),
+        "city": "Norvale",
+        "country": "XB",
+        "postcode": "XB3 3CC",
+    }
+    if website:
+        variant["website"] = website
+    land(hub, [row("crm", "C0900003", "organisation", variant, at=when + timedelta(minutes=1))])
+    arrive(hub)
+    return SourceKey("crm", "C0900003")
+
+
+def person_review(hub: Hub, i: int = 4, *, at: datetime | None = None) -> SourceKey:
+    """A crm record with hr person `i`'s names, its birth date one digit different in the same year, and no
+    postcode, e-mail, phone or person reference: it scores 88.66 against that person, a review task."""
+    held = person_payload(i)
+    birth = held["birth_date"]
+    day = int(birth[-2:])
+    other = f"{birth[:-2]}{day + 1 if day % 10 != 9 else day - 1:02d}"
+    payload = {
+        "given_name": held["given_name"],
+        "family_name": held["family_name"],
+        "birth_date": other,
+        "city": held["city"],
+        "country": "XA",
+    }
+    land(hub, [row("crm", "C1900004", "person", payload, at=at or T0 + timedelta(hours=1))])
+    arrive(hub)
+    return SourceKey("crm", "C1900004")
+
+
+def standalone_organisation(
+    hub: Hub, key: str = "C0800001", name: str = "Quillmere Optics Ltd", *, at: datetime | None = None
+) -> SourceKey:
+    """A crm organisation no other record resembles: a golden record with this one member."""
+    land(
+        hub,
+        [
+            row(
+                "crm",
+                key,
+                "organisation",
+                {"name": name, "postcode": "XC1 1QQ", "city": "Easthollow", "country": "XB"},
+                at=at or T0 + timedelta(hours=1),
+            )
+        ],
+    )
+    arrive(hub)
+    return SourceKey("crm", key)
+
+
+def held_name_change(hub: Hub, source: SourceKey, name: str, *, at: datetime) -> None:
+    """A crm organisation renamed: `name` is critical and crm holds critical updates, so a held task."""
+    payload = (
+        org_payload(0, name=name)
+        if source.key == crm_org_key(0)
+        else {
+            "name": name,
+            "postcode": "XC1 1QQ",
+            "city": "Easthollow",
+            "country": "XB",
+        }
+    )
+    land(hub, [row("crm", source.key, "organisation", payload, at=at)])
+    arrive(hub)
+
+
+def golden_pair(hub: Hub, *, at: datetime | None = None) -> tuple[SourceKey, SourceKey]:
+    """Two crm organisations of one name landing together: two new golden records and one possible duplicate
+    naming both."""
+    when = at or T0 + timedelta(hours=1)
+    left = {"name": "Dovecote Joinery Ltd", "postcode": "XC2 2QQ", "city": "Silverwick", "country": "XB"}
+    right = {**left, "name": "DOVECOTE JOINERY ltd.", "postcode": "XC3 3QQ"}
+    land(
+        hub,
+        [
+            row("crm", "C0800002", "organisation", left, at=when),
+            row("crm", "C0800003", "organisation", right, at=when),
+        ],
+    )
+    arrive(hub)
+    return SourceKey("crm", "C0800002"), SourceKey("crm", "C0800003")
+
+
+def seen(hub: Hub, task_id: str) -> dict[str, str | None]:
+    """What a steward who opened the task's case now saw of it: the keywords `tray.stage` and
+    `decisions.check` take (the record's event for a task with a source record, else the task's version)."""
+    task = hub.store.tasks_by_id([task_id]).get(task_id)
+    if task is None:
+        return {}
+    state = hub.store.source_states(task.entity, [task.source]).get(task.source) if task.source else None
+    return {"seen_event": state.event_id if state is not None else None, "seen_task": iso(task.updated_at)}
+
+
+def task_of(hub: Hub, *, kind: str | None = None, source: SourceKey | None = None) -> Task:
+    """The one open task of this kind (and source record)."""
+    found = [t for t in open_tasks(hub, kind=kind) if source is None or t.source == source]
+    assert len(found) == 1, [(t.kind, t.reason, t.source) for t in found]
+    return found[0]

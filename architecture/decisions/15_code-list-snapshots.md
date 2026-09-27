@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Touches:** [master data configuration](../3_information/2_data-objects.md#master-data-configuration)
 
