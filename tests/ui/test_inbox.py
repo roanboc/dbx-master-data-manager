@@ -24,7 +24,7 @@ from mdm.models.records import SourceKey
 from mdm.models.workbench import TaskCase
 from mdm.ui import ids
 from tests.helpers import seen
-from tests.ui.harness import WAIT_MS, axe, open_inbox, press, requests_during, settle
+from tests.ui.harness import WAIT_MS, axe, navigate, open_inbox, press, requests_during, settle
 
 STEWARD = Actor("persona:data_steward", "person", "data_steward", persona=True)
 #: tasks a check has used, so the next check takes another
@@ -221,8 +221,7 @@ def test_n_and_l_stage_and_the_tray_commits_them_and_the_rows_leave(page: Page, 
     open_inbox(page, f"/?view=team&task={declined.row.task_id}")
     press(page, "n")
     expect(tray_button(page)).to_have_text(re.compile(r"^Tray 1"), timeout=WAIT_MS)
-    settle(page)  # leaving with a callback in flight would cut it off, and the browser logs that
-    page.goto(f"/?view=team&task={linked.row.task_id}")
+    navigate(page, f"/?view=team&task={linked.row.task_id}")
     expect(page.locator(f"#{ids.DECIDE_PANE} section.mdm-decide")).to_be_visible(timeout=WAIT_MS)
     settle(page)
     target = linked.candidates[0].master_id
@@ -243,8 +242,7 @@ def test_n_and_l_stage_and_the_tray_commits_them_and_the_rows_leave(page: Page, 
     assert hub.store.xrefs_for_sources(linked.row.entity, [source]).get(source) == target
     feed = hub.feed.read(before)
     assert target in {change.master_id for change in feed.changes}  # the change feed shows the commit
-    settle(page)
-    page.goto(f"/record/{target}?tab=sources")
+    navigate(page, f"/record/{target}?tab=sources")
     expect(page.locator(f"#{ids.MEMBERS_TABLE}")).to_contain_text(linked.row.subject, timeout=WAIT_MS)
 
 
@@ -274,7 +272,7 @@ def test_a_chosen_candidate_and_a_reveal_survive_another_tasks_settlement(page: 
 
     person = find(live, person_review)
     stage_quietly(live, seconds=10)
-    page.goto(f"/?view=team&task={person.row.task_id}")
+    navigate(page, f"/?view=team&task={person.row.task_id}")
     pane = page.locator(f"#{ids.DECIDE_PANE}")
     expect(pane.get_by_role("button", name="Show values")).to_be_visible(timeout=WAIT_MS)
     pane.get_by_role("button", name="Show values").click()
@@ -472,7 +470,7 @@ def test_axe_finds_nothing_serious_with_the_decide_pane_open(page: Page, live) -
         None,
     )
     if close:
-        page.goto(f"/?view=team&task={close}")
+        navigate(page, f"/?view=team&task={close}")
         expect(page.locator(f"#{ids.DECIDE_PANE} section.mdm-decide")).to_be_visible(timeout=WAIT_MS)
         settle(page)
         assert axe(page) == []

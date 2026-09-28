@@ -21,37 +21,24 @@ from mdm.ui import ids
 from mdm.ui.components import provenance, reveal
 from mdm.ui.pages import record, source
 from tests.helpers import golden_rows
-from tests.ui.harness import WAIT_MS, axe, data_attribute_values, storage_dump
+from tests.ui.harness import (
+    WAIT_MS,
+    axe,
+    count_requests,
+    data_attribute_values,
+    navigate,
+    settle,
+    storage_dump,
+)
 
 STEWARD = Actor("persona:data_steward", "person", "data_steward", persona=True)
 COORDINATOR = Actor("persona:coordinating_steward", "person", "coordinating_steward", persona=True)
 OWNER = Actor("persona:data_owner", "person", "data_owner", persona=True)
 
 
-#: counts the callback requests in flight, so a check leaves a page only once they have answered (a
-#: request cut off by a navigation is logged as a console error by Dash)
-_COUNT_REQUESTS = """(() => {
-    const original = window.fetch;
-    window.mdmPending = 0;
-    window.fetch = function (...args) {
-        const target = String((args[0] && args[0].url) || args[0]);
-        const counted = target.includes("_dash-update-component");
-        if (counted) { window.mdmPending += 1; }
-        return original.apply(this, args).finally(() => { if (counted) { window.mdmPending -= 1; } });
-    };
-})();"""
-
-
-def settle(page: Page) -> None:
-    """Waits until no callback request is in flight, twice over a short pause."""
-    for _ in range(2):
-        page.wait_for_function("() => window.mdmPending === 0", timeout=WAIT_MS)
-        page.wait_for_timeout(150)
-
-
 def open_page(page: Page, path: str, ready: str) -> None:
     """Opens `path` and waits until `ready` (a CSS selector) shows and every callback has answered."""
-    page.add_init_script(_COUNT_REQUESTS)
+    count_requests(page)
     page.goto(path)
     expect(page.locator(ready).first).to_be_visible(timeout=WAIT_MS)
     settle(page)
@@ -201,15 +188,13 @@ def test_a_source_key_and_a_source_record_open(page: Page, live, records: Record
     expect(page.get_by_role("link", name=records.person)).to_have_attribute(
         "href", f"/record/{records.person}"
     )
-    settle(page)
     assert records.unlinked is not None, "the seeded world has a review task on a record linked to nothing"
-    page.goto(f"/record/{records.unlinked}")
+    navigate(page, f"/record/{records.unlinked}")
     expect(page.get_by_text(f"{records.unlinked} is not linked to a golden record")).to_be_visible(
         timeout=WAIT_MS
     )
     expect(page.get_by_text("Not linked to a golden record.")).to_be_visible()
-    settle(page)
-    page.goto("/record/ORG-999999")
+    navigate(page, "/record/ORG-999999")
     expect(page.get_by_text("No record has the ID ORG-999999.")).to_be_visible(timeout=WAIT_MS)
     settle(page)
 
@@ -287,14 +272,14 @@ def test_axe_finds_nothing_serious_on_the_record_and_the_source_record(
     page.get_by_role("tab", name=re.compile(r"^Sources")).click()
     settle(page)
     assert axe(page) == []
-    page.goto(f"/record/{records.person}")
+    navigate(page, f"/record/{records.person}")
     expect(golden(page)).to_be_visible(timeout=WAIT_MS)
     settle(page)
     page.get_by_role("button", name="Show values").click()
     expect(page.get_by_role("dialog", name="Show personal values")).to_be_visible(timeout=WAIT_MS)
     assert axe(page) == []
     page.keyboard.press("Escape")
-    page.goto(f"/source/{records.linked.replace(':', '/', 1)}")
+    navigate(page, f"/source/{records.linked.replace(':', '/', 1)}")
     expect(page.locator(f"#{ids.SOURCE_VALUES} table")).to_be_visible(timeout=WAIT_MS)
     settle(page)
     assert axe(page) == []

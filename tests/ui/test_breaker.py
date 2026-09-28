@@ -20,7 +20,7 @@ from tools.workbench_live import LiveApp, copy_store, free_port, serve_in_thread
 from mdm.models.authority import Actor
 from mdm.ui import ids
 from tests.ui.conftest import workbench_settings
-from tests.ui.harness import WAIT_MS, axe, open_inbox, settle
+from tests.ui.harness import WAIT_MS, axe, navigate, open_inbox, settle
 
 STEWARD = Actor("persona:data_steward", "person", "data_steward", persona=True)
 LINE = re.compile(r"^Organisation: automatic linking paused since .+ UTC$")
@@ -85,8 +85,7 @@ def test_the_decide_pane_of_a_paused_entity_says_why_and_what_waits(page: Page, 
     expect(notice).to_contain_text("there is no button for it here")
     expect(pane.get_by_role("button", name=re.compile("restore", re.IGNORECASE))).to_have_count(0)
     person = task_of(live, "person")
-    settle(page)
-    page.goto(f"/?view=team&task={person}")
+    navigate(page, f"/?view=team&task={person}")
     expect(pane.locator(f"[data-task-id='{person}']")).to_be_visible(timeout=WAIT_MS)
     expect(pane.locator(".mdm-breaker-notice")).to_have_count(0)
 

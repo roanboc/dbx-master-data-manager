@@ -16,35 +16,13 @@ from playwright.sync_api import Page, expect
 from mdm.models.authority import Actor
 from mdm.ui import ids
 from tests.helpers import seen
-from tests.ui.harness import WAIT_MS, axe, press, requests_during
+from tests.ui.harness import WAIT_MS, axe, count_requests, navigate, press, requests_during, settle
 
 STEWARD = Actor("persona:data_steward", "person", "data_steward", persona=True)
 
 
-#: counts the callback requests in flight, so a check leaves a page only once they have answered (a
-#: request cut off by a navigation is logged as a console error by Dash)
-_COUNT_REQUESTS = """(() => {
-    const original = window.fetch;
-    window.mdmPending = 0;
-    window.fetch = function (...args) {
-        const target = String((args[0] && args[0].url) || args[0]);
-        const counted = target.includes("_dash-update-component");
-        if (counted) { window.mdmPending += 1; }
-        return original.apply(this, args).finally(() => { if (counted) { window.mdmPending -= 1; } });
-    };
-})();"""
-
-
-def settle(page: Page) -> None:
-    """Waits until no callback request is in flight, twice over a short pause (one answer can start the
-    next request)."""
-    for _ in range(2):
-        page.wait_for_function("() => window.mdmPending === 0", timeout=WAIT_MS)
-        page.wait_for_timeout(150)
-
-
 def open_inbox(page: Page, path: str = "/") -> None:
-    page.add_init_script(_COUNT_REQUESTS)
+    count_requests(page)
     page.goto(path)
     expect(page.locator(f"#{ids.ROLE_BADGE}")).to_have_text(re.compile(r"\w"), timeout=WAIT_MS)
     settle(page)
@@ -52,11 +30,7 @@ def open_inbox(page: Page, path: str = "/") -> None:
 
 def leave(page: Page, path: str | None = None) -> None:
     """Reloads, or goes to `path`, once every callback has answered."""
-    settle(page)
-    if path is None:
-        page.reload()
-    else:
-        page.goto(path)
+    navigate(page, path)
     expect(page.locator(f"#{ids.ROLE_BADGE}")).to_have_text(re.compile(r"\w"), timeout=WAIT_MS)
     settle(page)
 
