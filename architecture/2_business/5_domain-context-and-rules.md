@@ -4,14 +4,14 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Business layer: Business Rule, with the glossary of the domain.
 
-**Status:** ◐ Draft catalogue — written for story 3.2 of initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-28.
 
 ## Glossary
 
 | Term | Meaning | Source | Notes |
 | ---- | ------- | ------ | ----- |
 | Agent tools | Propose-only tools, from Release 3, through which external software agents suggest changes for a person to decide | [Blueprint](../reference/README.md#founding-material) §4 | |
-| Agreement | The share of blind reviews whose answer matches the first decision, kept per entity, signature and band; the breaker trips when agreement is confidently below its threshold | Blueprint §3, §4; adopted — measured against the first decision, with a one-sided upper bound | The threshold is proposed |
+| Agreement | The share of blind reviews whose answer matches the first decision, kept per entity, signature and band; the breaker trips when agreement is confidently below its threshold | Blueprint §3, §4; adopted — measured against the first decision, with a one-sided upper bound | |
 | Approval matrix | The owner-approved table of who may commit each action, by band and source policy; `RULE1`–`RULE3` are its defaults, and `RULE4`–`RULE6` bind the matrix itself | Blueprint §5.5 | |
 | Architecture style | How a master data domain's golden records relate to its sources: registry (cross-references only), consolidated (a golden copy in the hub), coexistence (the golden record flows back to sources through listening systems), authored (records created in the hub) | Blueprint §2; proposed by the Data Management Body of Knowledge (DAMA-DMBOK2 Revised) ch. 10 | |
 | Arrival | A source change read from the landing tables that the hub has not yet resolved; a held arrival waits for a reference or a decision | Blueprint §3; [Answer 5](../reference/2026-09-26-request-and-answers.md#answers) | |

@@ -4,7 +4,7 @@ _[← Information layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Information: where each Data Object is stored, how sensitive it is and how long it is kept, with the Application Components that write it.
 
-**Status:** ◐ Draft catalogue — written for story 3.2 of initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-28.
 
 ## Schema groups
 
