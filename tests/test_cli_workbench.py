@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -155,8 +156,10 @@ def test_the_command_line_starts_without_the_workbench() -> None:
     done = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120, check=True
     )
-    assert " ui " in done.stdout and " tray " in done.stdout
-    assert done.stdout.strip().splitlines()[-1] == "False"
+    # Under GitHub Actions the help is coloured, so strip the escape codes before matching.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
+    assert " ui " in plain and " tray " in plain
+    assert plain.strip().splitlines()[-1] == "False"
 
 
 # ---------------------------------------------------------------------------------------------- mdm tray flush
