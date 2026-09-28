@@ -35,16 +35,26 @@ if (
     # Deselecting by marker is not enough: pytest imports a module before it reads its markers.
     collect_ignore_glob = ["test_*.py"]
 else:
-    from tools.workbench_live import LiveApp, copy_store, free_port, launch_chromium, seed, serve_in_thread
+    from tools.workbench_live import (
+        SAMPLE_SHARE,
+        LiveApp,
+        copy_store,
+        free_port,
+        launch_chromium,
+        seed,
+        serve_in_thread,
+    )
 
     from mdm.config import Settings
     from tests.ui.harness import WAIT_MS, console_errors
 
     @pytest.fixture(scope="session")
     def store_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
-        """The invented demo world, seeded once per run through the command line."""
+        """The invented demo world, seeded once per run through the command line, with the default share
+        drawn for blind review named, so the quality samples a check meets are the same every run. No
+        breaker is tripped here: `test_breaker.py` trips one on a copy of its own."""
         path = tmp_path_factory.mktemp("workbench-template") / "mdm.duckdb"
-        seed(path)
+        seed(path, share=SAMPLE_SHARE)
         return path
 
     def workbench_settings(path: Path, **changes) -> Settings:

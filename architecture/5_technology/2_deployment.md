@@ -4,7 +4,7 @@ _[← Technology layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Technology layer: Artifact, Node. Where the hub lives, what runs on every change, and how a built artifact reaches the place it runs.
 
-**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-28.
 
 ## Where this project lives
 
@@ -77,14 +77,14 @@ The package realizes all fifteen existing [application components](../4_applicat
 
 | ID | Artifact | Path | Deployed on | Source | Notes |
 | -- | -------- | ---- | ----------- | ------ | ----- |
-| `ART1` | **Python package** | `src/mdm/`, built from `pyproject.toml` and `uv.lock`, with the `mdm` command line as its entry point, and the workbench's assets in `src/mdm/ui/assets/`<br>`app.py`, the workbench's entry point on the platform | [Node [`NODE1`] Workstation](./1_technology-services.md#nodes)<br>node [`NODE2`] CI runner<br>node [`NODE3`] Databricks workspace, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | [Decision 5](../decisions/5_python-dash-and-typer.md) | `app.py` serves the workbench from Dash's own threaded server, with its development tools and debugger off; a production web server in front of `create_app` comes with the packaging of [initiative 4](../6_transition/2_sequence.md#sequence) |
+| `ART1` | **Python package** | `src/mdm/`, built from `pyproject.toml` and `uv.lock`, with the `mdm` command line as its entry point, and the workbench's assets in `src/mdm/ui/assets/`<br>`app.py`, the workbench's entry point on the platform | [Node [`NODE1`] Workstation](./1_technology-services.md#nodes)<br>node [`NODE2`] CI runner<br>node [`NODE3`] Databricks workspace, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | [Decision 5](../decisions/5_python-dash-and-typer.md) | |
 | `ART2` | **Starter entity models** | `models/person.yaml`<br>`models/organisation.yaml`<br>`models/codelists/`<br>the invented starter Person and Organisation models, and the country code list | Loaded into the store by `mdm init --models models` | [Answer 1](../reference/2026-09-26-request-and-answers.md#answers); [decision 15](../decisions/15_code-list-snapshots.md) | |
 | `ART3` | **Store schemas** | The eight schema groups that `src/mdm/backend/ddl.py` creates: one file, `.mdm/mdm.duckdb`, locally, and schemas in the operational database on the platform | Node [`NODE1`] Workstation<br>node [`NODE4`] Lakebase project, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | [Decision 7](../decisions/7_schema-groups-and-one-published-schema.md) | |
 | `ART4` | **Checks workflow** | `.github/workflows/checks.yml` | Node [`NODE2`] CI runner | Blueprint §7 | |
 | `ART5` | **Developer tooling** | `Makefile`<br>`scripts/hooks/pre-push` | Node [`NODE1`] Workstation | Blueprint §7 | |
 | `ART6` | **Test suite** | `tests/`, which runs every store test on both engines<br>`tests/ui/`, the browser checks<br>`tools/workbench_live.py`, the seeded demo store they serve | Node [`NODE1`] Workstation<br>node [`NODE2`] CI runner | [Decision 6](../decisions/6_one-sql-store-two-engines.md) | |
 | `ART7` | **Throughput spike** | `tools/spike_throughput.py` | Node [`NODE1`] Workstation | [Decision 14](../decisions/14_declared-capacity.md) | |
-| `ART8` | **Workbench screenshots** | `tools/screenshots.py`<br>`tools/workbench_live.py`<br>`docs/screenshots/` | Node [`NODE1`] Workstation | [Decision 18](../decisions/18_workbench-shell-and-keys.md); they show the invented demo world only, taken with the stub | |
+| `ART8` | **Workbench screenshots** | `tools/screenshots.py`<br>`tools/workbench_live.py`<br>`docs/screenshots/`: `inbox-*.png`, `tray-*.png`, `record-*.png` and `sample-*.png`, each light and dark | Node [`NODE1`] Workstation | [Decision 18](../decisions/18_workbench-shell-and-keys.md); they show the invented demo world only, taken with the stub | |
 
 ## What is deployed by hand
 
@@ -96,3 +96,4 @@ Nothing is deployed yet: the hub and its workbench run on a workstation and in C
 | Grant the listener role its reads of `mdm_core`, with the default privileges, and the change-notifier role `SELECT` on `mdm_core.commit_log` only, with no default privileges, from `mdm ddl --grants --hub-role … --reader-role … --notifier-role …` | The roles belong to the platform, and the change notifier belongs to the data platform team | **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)): the data platform team |
 | Give the app's service principal what the hub needs and nothing more: ownership of `mdm_model`, `mdm_work`, `mdm_hub`, `mdm_vault`, `mdm_core` and `mdm_read`; `INSERT` and `SELECT` on `mdm_audit`, which another role owns; `USAGE` and `SELECT` on `mdm_landing` only; and, from Release 2, `CAN_QUERY` on the one serving endpoint | Least access, as [rule [`RULE11`] Least access by default](../2_business/5_domain-context-and-rules.md#business-rules) asks: the hub can neither write a landing row nor rewrite its own audit | **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)): the data platform team |
 | Create the Lakebase project, the app and the scheduled jobs | Workspace access and compute are spend the product owner grants | **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)): the data platform team, from the deployment bundle |
+| Give the app and the scheduled jobs `MDM_SAMPLE_KEY`, a secret of at least 16 characters from the workspace's secret store, the same for every process | It keys the draw of quality samples, so no steward can tell which decisions blind review will see; the repository never holds it, and without it arrival, the tray's flush and the workbench refuse to start on the shared store | **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)): the data platform team |

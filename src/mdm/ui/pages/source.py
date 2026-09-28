@@ -24,7 +24,7 @@ from dash.development.base_component import Component
 from mdm.models.canonical import utcnow
 from mdm.models.errors import NotFound
 from mdm.models.records import SourceKey
-from mdm.models.workbench import SourceView, ValueView
+from mdm.models.workbench import SAMPLES_VIEW, SourceView, TaskRow, ValueView
 from mdm.ui import context, ids, messages
 from mdm.ui.components import common, provenance, reveal
 from mdm.ui.context import UiContext
@@ -39,8 +39,6 @@ HELD = (
 )
 #: what the reveal button reads once the values are shown
 SHOWN = "Values shown"
-_MUTED = {"color": "var(--mdm-muted)"}
-_MONO = {"fontFamily": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"}
 
 
 def entity_label(entity: str) -> str:
@@ -53,23 +51,30 @@ def record_href(master_id: str) -> str:
     return f"/record/{quote(master_id, safe='')}"
 
 
-def task_href(task_id: str) -> str:
-    """The inbox with the task selected (every open task is in the team's view)."""
-    return f"/?view=team&task={quote(task_id, safe='')}"
+def task_href(task_id: str, kind: str | None = None) -> str:
+    """The inbox with the task selected: in Team, where every open task is, or in Quality samples for a
+    quality sample, which has a view of its own."""
+    view = SAMPLES_VIEW if kind == "quality_sample" else "team"
+    return f"/?view={view}&task={quote(task_id, safe='')}"
 
 
 #: at most this many open tasks are named by what they ask; the rest are counted
 TASKS_NAMED = 5
 
 
-def task_words(ctx: UiContext, task_id: str) -> str:
-    """What a task asks, as the inbox names it: "Review · choose among 2 records"; "Open task" when it
-    cannot be read."""
-    row, _failure = context.guarded(ctx.hub.inbox.row, task_id, actor=ctx.actor)
+def _words(row: TaskRow | None) -> str:
+    """What a task asks: "Review · choose among 2 records"; "Open task" for a row that cannot be read."""
     if row is None:
         return "Open task"
     suggestion = row.suggestion[:1].lower() + row.suggestion[1:] if row.suggestion else ""
     return f"{row.kind_label} · {suggestion}" if suggestion else row.kind_label
+
+
+def task_anchor(ctx: UiContext, task_id: str) -> Component:
+    """A link to the task in the inbox, named by what it asks, as the inbox names it: "Review · choose among
+    2 records"; "Open task" when its row cannot be read (one read of its row)."""
+    row, _failure = context.guarded(ctx.hub.inbox.row, task_id, actor=ctx.actor)
+    return dmc.Anchor(_words(row), href=task_href(task_id, row.kind if row is not None else None))
 
 
 def task_links(ctx: UiContext, task_ids: Sequence[str]) -> Component:
@@ -85,16 +90,17 @@ def task_links(ctx: UiContext, task_ids: Sequence[str]) -> Component:
     for index, task_id in enumerate(task_ids[:TASKS_NAMED]):
         if index:
             links.append("; ")
-        links.append(dmc.Anchor(task_words(ctx, task_id), href=task_href(task_id)))
+        links.append(task_anchor(ctx, task_id))
     if count > TASKS_NAMED:
         links.append(f"; and {count - TASKS_NAMED} more")
     return dmc.Text(links, size="sm")
 
 
 def status_badge(status: str) -> Component:
-    """The record's status in words, coloured as well."""
-    color = "teal" if status == "active" else "gray"
-    return dmc.Badge(status, variant="light", color=color, size="md", tt="none")
+    """The record's status in words, the header's one chip: grey while active, amber otherwise (merged,
+    retired), since only a record that is not active needs a second look."""
+    color = "gray" if status == "active" else "yellow"
+    return dmc.Badge(status, variant="light", color=color, size="sm", tt="none")
 
 
 def unknown_page(ctx: UiContext, sentence: str) -> Component:
@@ -181,7 +187,7 @@ def header(ctx: UiContext, view: SourceView) -> Component:
     """The title (masked), the key, the entity, the status, held, the golden record it is linked to, the
     open tasks, "Show values" and the line on what comes later."""
     badges: list[Component] = [
-        html.Span(view.source, style=_MONO),
+        html.Span(view.source, className="mdm-record-id"),
         dmc.Text(entity_label(view.entity), size="sm", span=True),
         status_badge(view.status),
     ]
@@ -189,7 +195,7 @@ def header(ctx: UiContext, view: SourceView) -> Component:
         badges.append(dmc.Badge("held", variant="light", color="yellow", size="md", tt="none"))
     linked = (
         dmc.Text(
-            ["Linked to ", dmc.Anchor(view.linked_to, href=record_href(view.linked_to), style=_MONO), "."],
+            ["Linked to ", dmc.Anchor(view.linked_to, href=record_href(view.linked_to)), "."],
             size="sm",
         )
         if view.linked_to
@@ -198,7 +204,7 @@ def header(ctx: UiContext, view: SourceView) -> Component:
     actions: list[Component] = []
     if revealable(ctx, view.values):
         actions.append(reveal.open_button(PAGE))
-    actions.append(dmc.Text(LATER, size="sm", style=_MUTED))
+    actions.append(dmc.Text(LATER, size="xs", className="mdm-later"))
     return html.Div(
         [
             common.page_title(view.title),

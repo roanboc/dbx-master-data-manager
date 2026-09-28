@@ -61,6 +61,10 @@ class Plan:
     clause: str  # the clause that allowed or held it (decision 16)
     evidence: Mapping[str, Any] = field(default_factory=dict)  # safe_detail only
     hold: bool = False
+    # the best pair's comparison signature and rule version, for the quality samples (story 3.2); never in
+    # the evidence, since a task's evidence refuses a signature's spaces and marks
+    signature: str = ""
+    rule_version: int | None = None
 
 
 def rule1_clause(case: str) -> str:
@@ -186,12 +190,14 @@ def decide_new(
     record: SourceKey | None = None,
     hint_active: bool = False,
     hint_blocked: str | None = None,
+    breaker: str | None = None,
 ) -> Plan:
     """A record not linked yet, from its clustering resolution (never a cluster-pair resolution).
 
     `retired` maps retired master IDs to their survivors; `hint_active` says the hint names an active
     golden record of this entity, and `hint_blocked` names the cannot-link rule a valid strong ID of the
-    record breaks against that record's active members.
+    record breaks against that record's active members. `breaker` is the change set of the quality breaker's
+    trip while the entity's automatic band is demoted: a review it causes names it in its evidence.
     """
     key = _key(source, record or (resolution.sources[0] if resolution.sources else None))
     mode = model.match.mode
@@ -238,6 +244,9 @@ def decide_new(
             safe_detail(hint=token(hint), master_ids=[hint]),
         )
     evidence = _explained(resolution)
+    best = resolution.best
+    signature = best.signature if best is not None else ""
+    rule_version = best.rule_version if best is not None else None
     if resolution.kind == "link":
         kind = "link" if mode == "link" else "consolidate"
         return Plan(
@@ -248,6 +257,8 @@ def decide_new(
             resolution.reason or "auto_band",
             rule1_clause("auto_band"),
             evidence,
+            signature=signature,
+            rule_version=rule_version,
         )
     if resolution.kind == "ambiguous":
         return Plan(
@@ -258,8 +269,11 @@ def decide_new(
             resolution.reason or "ambiguous_auto",
             rule1_clause("auto_band"),
             {**evidence, **safe_detail(master_ids=list(resolution.master_ids))},
+            signature=signature,
+            rule_version=rule_version,
         )
     if resolution.kind == "review":
+        waits = safe_detail(breaker=breaker) if resolution.reason == "breaker_demoted" and breaker else {}
         return Plan(
             "task",
             key,
@@ -273,7 +287,10 @@ def decide_new(
                     master_ids=list(resolution.master_ids),
                     review_with=[source_token(s) for s in resolution.review_with],
                 ),
+                **waits,
             },
+            signature=signature,
+            rule_version=rule_version,
         )
     # a new cluster
     clause = policy_clause(source, "new")

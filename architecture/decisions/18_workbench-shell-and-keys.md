@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Touches:** [application component [`ACMP12`] Steward workbench](../4_application/2_application-components.md#application-components)
 

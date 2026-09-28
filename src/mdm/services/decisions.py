@@ -7,6 +7,12 @@ version, published rule versions and role. `reveal` shows values in clear once, 
 with a reason code, and never touches the cache. `check` fails fast when a decision cannot be staged;
 `execute` commits a staged decision through the commit path, always audited, with the checks that
 matter inside the commit's own transaction (decision 19).
+
+The matcher's checkpoint (story 3.2): a quality sample is a `blind` case (a pair kept apart, `blind_pair`),
+built with no score, band, suggestion, waterfall, preview or first decision; the golden record that holds the
+record shows only what its other members bring. A disagreement opens a `disputed` case (a pair, a
+`disputed_pair`), decided in the open. The steward who made the first decision never reviews it. A committed
+link, "not a match" or keep apart is drawn for blind review in its own transaction.
 """
 
 from __future__ import annotations
@@ -36,8 +42,9 @@ from mdm.models.changes import (
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Conflict, Forbidden, MdmError, NotFound, PlatformRefused
 from mdm.models.match import Band, GoldenCandidate
+from mdm.models.quality import NONE_ANSWER, QualitySample
 from mdm.models.records import GoldenRow, SourceKey, SourceState
-from mdm.models.safety import safe_detail
+from mdm.models.safety import MASTER_ID_RE, safe_detail
 from mdm.models.tasks import Task
 from mdm.models.wording import agreement_of as _agreement_of
 from mdm.models.wording import (
@@ -53,6 +60,7 @@ from mdm.models.workbench import (
     REVEAL_REASONS,
     Action,
     Candidate,
+    Choice,
     CompareRow,
     Impact,
     MatchLabel,
@@ -68,10 +76,12 @@ from mdm.models.workbench import (
 )
 from mdm.services import display
 from mdm.services.authority import require
+from mdm.services.breaker import BreakerService
 from mdm.services.inbox import TaskRows, task_lock
 from mdm.services.lifecycle import LifecycleService
 from mdm.services.matching import MatchService, strong_ids_of
 from mdm.services.privacy import PrivacyService
+from mdm.services.quality import QualityService
 from mdm.services.registry import ModelRegistry
 from mdm.services.support import source_token, token
 
@@ -100,7 +110,13 @@ OFFERED: Mapping[str, tuple[str, ...]] = {
     "held_new": (),
     "golden": ("keep_orphan",),
     "information": (),
+    "blind": ("blind_link", "blind_none"),
+    "blind_pair": ("blind_link", "blind_none"),
+    "disputed": ("keep_decision", "link"),  # the link only for an unlinked record, to the blind answer
+    "disputed_pair": ("keep_decision",),
 }
+#: shapes whose first decision a blind review measured or disputed: its maker never decides them
+_CHECKPOINT_SHAPES = frozenset({"blind", "blind_pair", "disputed", "disputed_pair"})
 _KEYS = {
     "link": "L",
     "not_a_match": "N",
@@ -112,6 +128,9 @@ _KEYS = {
     "snooze": "S",
     "escalate": "E",
     "undo": "U",
+    "blind_link": "L",
+    "blind_none": "N",
+    "keep_decision": "A",
 }
 _LEVEL_SHORT = {"exact": "the same", "else": "different", "null": "missing"}
 _MARKS = {"exact": "=", "else": "≠", "null": "∅"}
@@ -127,6 +146,37 @@ NOTICE_GONE = (
     "The source record is gone, so there is nothing to decide here; the task closes when arrival settles it."
 )
 NOTICE_NO_CANDIDATE = "No golden record scores against this record now. Not a match hands it back to arrival."
+NOTICE_BLIND_NONE = "No golden record comes near this record. Press N if it belongs to none."
+NOTICE_OWN_DECISION = "You made the first decision on this record, so another steward reviews it."
+NOTICE_OWN_ANSWER = "You gave the blind answer, so another steward decides whether to link to it."
+NOTICE_BREAKER_WAIT = (
+    "There is no golden record to decline: it waits until a data owner restores automatic linking, and "
+    "arrival then settles it."
+)
+NOTICE_DISPUTE_DETACH = (
+    "If this record belongs elsewhere, detaching it is not on screen yet. Keep the first decision, or "
+    "escalate the task."
+)
+NOTICE_PAIR_GONE = (
+    "One of these golden records was merged or retired after the first decision, so this sample no longer "
+    "counts. Either answer closes it without counting."
+)
+BLIND_SENTENCE = (
+    "Blind review: decide where this record belongs, as if it had just arrived. The first decision and its "
+    "score stay hidden."
+)
+BLIND_PAIR_SENTENCE = (
+    "Blind review: decide whether these two golden records are the same, as if they had just been found. The "
+    "first decision and its score stay hidden."
+)
+
+
+def notice_dispute_merge(answer: str) -> str:
+    """Why a disputed record alone in its golden record offers only Keep."""
+    return (
+        f"If its golden record and {answer} are the same, merging needs a second steward to check it; that is "
+        "not on screen yet."
+    )
 
 
 def blocked_sentence(blocked_by: str) -> str:
@@ -150,6 +200,17 @@ def why_blocked(blocked_by: str | None) -> str | None:
 
 def shape_of(task: Task) -> str:
     """The case's shape from the task's kind, reason and subject (`CASE_SHAPES`)."""
+    if task.kind == "quality_sample":
+        if task.source is not None:
+            return "blind"
+        if len(task.master_ids) == 2:
+            return "blind_pair"
+        return "information"
+    if task.reason == "blind_disagreement":
+        if task.kind == "review" and task.source is not None:
+            return "disputed"
+        if task.kind == "possible_duplicate" and task.source is None and len(task.master_ids) == 2:
+            return "disputed_pair"
     if task.kind in ("review", "possible_duplicate"):
         if task.source is not None:
             return "source"
@@ -196,6 +257,12 @@ class _Prepared:
     event_id: str | None
     held: bool  # held_update: the record is still linked and held
     master_ids: tuple[str, ...]  # the golden records a golden shape names
+    # the matcher's checkpoint (story 3.2)
+    choices: tuple[Choice, ...] = ()  # a blind case's golden records, in master-ID order
+    blind: bool = False
+    first_decider: str | None = None  # who made the decision a sample measures or a review disputes
+    answered_by: str | None = None  # who gave the blind answer a review disputes: never links to it
+    sample_id: str | None = None
 
 
 class DecisionService:
@@ -209,6 +276,9 @@ class DecisionService:
         privacy: PrivacyService,
         clock: Callable[[], datetime] = utcnow,
         cache_size: int = capacity.CASE_CACHE,
+        *,
+        quality: QualityService | None = None,
+        breaker: BreakerService | None = None,
     ) -> None:
         """Wires the service; reads nothing from the store (`mdm init` wires the hub before the schema)."""
         self.settings = settings
@@ -219,6 +289,8 @@ class DecisionService:
         self.privacy = privacy
         self.clock = clock
         self.cache_size = cache_size
+        self.quality = quality or QualityService(settings, store, registry, matching, lifecycle, clock)
+        self.breaker = breaker or BreakerService(settings, store, registry, clock)
         self.rows = TaskRows(settings, store, registry)
         self._cache: OrderedDict[tuple, _Prepared] = OrderedDict()
         self._lock = threading.Lock()
@@ -299,10 +371,30 @@ class DecisionService:
         shape = shape_of(task)
         if task.source is not None and (state is None or state.status != "active"):
             shape = "information"
+        sample = self.quality.sample_of(task) if shape in _CHECKPOINT_SHAPES else None
+        if shape in _CHECKPOINT_SHAPES and sample is None:
+            shape = "information"
+        if shape in ("blind", "blind_pair") and sample is not None:
+            return self._prepare_blind(task, actor, model, state, shape, sample)
+        if shape == "disputed" and sample is not None and state is not None:
+            return self._prepare_disputed(task, actor, model, state, sample)
+        prepared = self._prepare_shape(task, actor, model, state, shape)
+        if sample is not None:  # a disputed pair: the first decision's maker never decides it
+            prepared = replace(
+                prepared,
+                first_decider=sample.decided_by,
+                answered_by=sample.reviewed_by,
+                sample_id=sample.sample_id,
+            )
+        return prepared
+
+    def _prepare_shape(
+        self, task: Task, actor: Actor, model: EntityModel, state: SourceState | None, shape: str
+    ) -> _Prepared:
         columns, candidates_found = self._columns(task, model, state, shape)
         candidates = self._candidates(task, model, state, candidates_found, shape)
         pair_levels: Mapping[str, str] | None = None
-        if shape == "golden_pair":
+        if shape in ("golden_pair", "disputed_pair"):
             paired = self._pair(task, model)
             if paired is not None:
                 candidates, pair_levels = [paired[0]], paired[1]
@@ -314,7 +406,9 @@ class DecisionService:
             state,
             self._masked_text(model),
             pair_levels=pair_levels,
-            kept_apart=candidates[0].blocked_rule if shape == "golden_pair" and candidates else None,
+            kept_apart=candidates[0].blocked_rule
+            if shape in ("golden_pair", "disputed_pair") and candidates
+            else None,
         )
         # a candidate a cannot-link rule blocks is shown, never linked: it is neither the default nor half
         # of a close call
@@ -354,6 +448,309 @@ class DecisionService:
             event_id=state.event_id if state is not None and task.source is not None else None,
             held=bool(state is not None and state.held),
             master_ids=tuple(task.master_ids),
+        )
+
+    # ------------------------------------------------------------------ the matcher's checkpoint (story 3.2)
+
+    def _blind_columns(
+        self, task: Task, model: EntityModel, state: SourceState | None, shape: str, sample: QualitySample
+    ) -> tuple[list[_Column], list[Mapping[str, str]], tuple[Choice, ...]]:
+        """A blind case's columns (the record, then each golden record offered, in master-ID order; for a pair
+        the two golden records), the comparison levels behind each column's markers, and the choices with
+        their masked titles. The golden record that holds the record shows what its other members bring."""
+        masked = set(model.personal_attributes())
+        if shape == "blind_pair":
+            pair = list(sample.master_ids or task.master_ids)[:2]
+            golden = self.store.golden(task.entity, pair)
+            columns = [
+                _Column(f"{m} · golden record", m, golden[m].values if m in golden else {}) for m in pair
+            ]
+            return columns, [self._pair_levels(task.entity, sample.pair_sources)], ()
+        if state is None:
+            return [], [], ()
+        offered = self.quality.choices(sample, state)
+        columns = [_Column(f"Record · {state.source.text()}", state.source.text(), state.values)]
+        choices: list[Choice] = []
+        for index, found in enumerate(offered, start=1):
+            columns.append(_Column(f"{index} · {found.master_id}", found.master_id, found.values))
+            choices.append(
+                Choice(
+                    index=index,
+                    master_id=found.master_id,
+                    title=display.display_name(model, found.values, masked, found.master_id),
+                )
+            )
+        return columns, [dict(o.levels) for o in offered], tuple(choices)
+
+    def _pair_active(self, sample: QualitySample) -> bool:
+        """Whether both golden records a keep-apart sample names are still active: once either was merged or
+        retired, the sample can no longer measure the keep apart."""
+        pair = list(sample.master_ids)[:2]
+        rows = self.store.golden(sample.entity, pair) if len(pair) == 2 else {}
+        return len(pair) == 2 and all(m in rows and rows[m].status == "active" for m in pair)
+
+    def _pair_levels(self, entity: str, sources: Sequence[str]) -> Mapping[str, str]:
+        """The comparison levels of a pair of source records (a keep-apart pair's), {} when either is gone."""
+        try:
+            keys = [SourceKey.from_text(s) for s in sources[:2]]
+        except ValueError:
+            return {}
+        states = self.store.source_states(entity, keys) if len(keys) == 2 else {}
+        if len(states) != 2:
+            return {}
+        explanation = self.matching.explain_pair(entity, states[keys[0]], states[keys[1]])
+        return {c.comparison: c.label for c in explanation.contributions}
+
+    def _prepare_blind(
+        self,
+        task: Task,
+        actor: Actor,
+        model: EntityModel,
+        state: SourceState | None,
+        shape: str,
+        sample: QualitySample,
+    ) -> _Prepared:
+        """A quality sample, decided blind: no candidate, score, band, waterfall, flip, preview or first
+        decision; the compare markers describe values only."""
+        columns, levels, choices = self._blind_columns(task, model, state, shape, sample)
+        compare = self._compare(
+            model, columns, (), shape, state, self._masked_text(model), candidate_levels=levels
+        )
+        if shape == "blind_pair":
+            second = columns[1].ref if len(columns) > 1 else None
+            offered = (
+                Action("blind_link", "They are the same", _KEYS["blind_link"], True, None, target=second),
+                Action("blind_none", "They are not the same", _KEYS["blind_none"], True, None),
+            )
+            reason, notice = BLIND_PAIR_SENTENCE, None if self._pair_active(sample) else NOTICE_PAIR_GONE
+        else:
+            offered = (
+                *(
+                    Action(
+                        "blind_link",
+                        f"Belongs to {c.master_id}",
+                        _KEYS["blind_link"],
+                        True,
+                        None,
+                        target=c.master_id,
+                    )
+                    for c in choices
+                ),
+                Action("blind_none", "Belongs to none of these", _KEYS["blind_none"], True, None),
+            )
+            reason, notice = BLIND_SENTENCE, None if choices else NOTICE_BLIND_NONE
+        return self._checkpoint_prepared(
+            task,
+            actor,
+            model,
+            state,
+            shape,
+            sample,
+            columns=columns,
+            compare=compare,
+            candidates=(),
+            default=None,
+            offered=offered,
+            reason=reason,
+            notice=notice,
+            choices=choices,
+            blind=True,
+        )
+
+    def _disputed_columns(
+        self, task: Task, model: EntityModel, state: SourceState
+    ) -> tuple[
+        list[_Column],
+        list[Mapping[str, str]],
+        list[tuple[str, GoldenCandidate | None]],
+        str | None,
+        str | None,
+    ]:
+        """A disputed case's columns (the record, "Now · <its golden record>" while linked, "Blind review ·
+        <the answer>" when the answer is a golden record), the levels behind their markers, each golden
+        record's explanation (no declined filter), the answer and the record's golden record now."""
+        entity = task.entity
+        source = state.source
+        answer_found = (task.evidence or {}).get("answer")
+        answer = answer_found if isinstance(answer_found, str) and MASTER_ID_RE.match(answer_found) else None
+        current = self.store.xrefs_for_sources(entity, [source]).get(source)
+        named = list(dict.fromkeys(m for m in (current, answer) if m))
+        golden = self.store.golden(entity, named) if named else {}
+        rules = self.registry.compiled(entity)
+        search = self.matching.search(model, rules, [state], explain_all=True)
+        pairs = {source: [p for p in search.pairs.get(source, []) if p.right != source]}
+        by_master = {
+            g.master_id: g
+            for g in self.matching.golden_candidates(
+                entity, pairs, {source: strong_ids_of(model, state.ids)}, states=search.states
+            ).get(source, [])
+        }
+        columns = [_Column(f"Record · {source.text()}", source.text(), state.values)]
+        levels: list[Mapping[str, str]] = []
+        explained: list[tuple[str, GoldenCandidate | None]] = []
+        for master in named:
+            row = golden.get(master)
+            header = f"Now · {master}" if master == current else f"Blind review · {master}"
+            columns.append(_Column(header, master, row.values if row is not None else {}))
+            found = by_master.get(master) or self.matching.explain_against(
+                entity, state, master, exclude=source, rules=rules
+            )
+            levels.append(
+                {c.comparison: c.label for c in found.best.explanation.contributions} if found else {}
+            )
+            explained.append((master, found))
+        return columns, levels, explained, answer if answer in golden else None, current
+
+    def _prepare_disputed(
+        self, task: Task, actor: Actor, model: EntityModel, state: SourceState, sample: QualitySample
+    ) -> _Prepared:
+        """A blind review placed the record differently from the first decision: decided in the open. The
+        record, its golden record now and the one the blind review chose, each with its waterfall; Keep the
+        first decision, and Link to the answer while the record is unlinked."""
+        entity = task.entity
+        source = state.source
+        columns, levels, explained, answer, current = self._disputed_columns(task, model, state)
+        rules = self.registry.compiled(entity)
+        golden = self.store.golden(entity, [m for m, _ in explained])
+        candidates: list[Candidate] = []
+        link_offered = current is None and answer is not None
+        for master, found in explained:
+            row = golden.get(master)
+            if found is None:
+                continue
+            blocked = found.blocked_by or self.matching.blocked_by(entity, state, master)
+            preview = (
+                self._link_preview(task, model, state, master, row)
+                if link_offered and master == answer
+                else None
+            )
+            candidates.append(
+                self._candidate(
+                    model,
+                    rules,
+                    len(candidates) + 1,
+                    master,
+                    row,
+                    found.best.explanation,
+                    found.best.right.text(),
+                    blocked_rule=blocked,
+                    preview=preview,
+                )
+            )
+        compare = self._compare(
+            model, columns, (), "disputed", state, self._masked_text(model), candidate_levels=levels
+        )
+        if current is not None:
+            compare = self._own_values_agree(
+                model, columns, compare, 1 + [m for m, _ in explained].index(current)
+            )
+        offered: list[Action] = [
+            Action("keep_decision", "Keep the first decision", _KEYS["keep_decision"], True, None)
+        ]
+        notice: str | None = None
+        chosen = next((c for c in candidates if c.master_id == answer), None)
+        if link_offered and chosen is not None:
+            offered.append(
+                Action(
+                    "link",
+                    f"Link to {chosen.master_id}",
+                    _KEYS["link"],
+                    chosen.blocked_by is None,
+                    why_blocked(chosen.blocked_rule),
+                    target=chosen.master_id,
+                )
+            )
+        elif current is not None:
+            others = [m for m in self.store.members(entity, [current], 2).get(current, []) if m != source]
+            if others:
+                notice = NOTICE_DISPUTE_DETACH
+            elif answer is not None:
+                notice = notice_dispute_merge(answer)
+        return self._checkpoint_prepared(
+            task,
+            actor,
+            model,
+            state,
+            "disputed",
+            sample,
+            columns=columns,
+            compare=compare,
+            candidates=tuple(candidates),
+            default=answer if link_offered and chosen is not None and chosen.blocked_by is None else None,
+            offered=tuple(offered),
+            reason=display.reason_sentence(task),
+            notice=notice,
+            choices=(),
+            blind=False,
+        )
+
+    @staticmethod
+    def _own_values_agree(
+        model: EntityModel, columns: Sequence[_Column], compare: tuple[CompareRow, ...], at: int
+    ) -> tuple[CompareRow, ...]:
+        """The golden record that holds the record now: its markers come from its best other member, so a
+        value that only the record brings would read missing beside the very same value; it reads the same."""
+        out: list[CompareRow] = []
+        for row in compare:
+            mine = display.value_text(model, row.attribute, columns[0].values.get(row.attribute))
+            theirs = display.value_text(model, row.attribute, columns[at].values.get(row.attribute))
+            marks = list(row.agreement)
+            if len(marks) >= at and marks[at - 1] == "missing" and mine is not None and mine == theirs:
+                marks[at - 1] = "agree"
+            out.append(replace(row, agreement=tuple(marks)))
+        return tuple(out)
+
+    def _checkpoint_prepared(
+        self,
+        task: Task,
+        actor: Actor,
+        model: EntityModel,
+        state: SourceState | None,
+        shape: str,
+        sample: QualitySample,
+        *,
+        columns: Sequence[_Column],
+        compare: tuple[CompareRow, ...],
+        candidates: tuple[Candidate, ...],
+        default: str | None,
+        offered: tuple[Action, ...],
+        reason: str,
+        notice: str | None,
+        choices: tuple[Choice, ...],
+        blind: bool,
+    ) -> _Prepared:
+        personal = set(model.personal_attributes())
+        masked = any(column.values.get(name) is not None for column in columns for name in personal)
+        revealable = (
+            tuple(
+                a.name
+                for a in model.column_attributes()
+                if a.personal and any(column.values.get(a.name) is not None for column in columns)
+            )
+            if allowed(actor, "reveal")
+            else ()
+        )
+        return _Prepared(
+            shape=shape,
+            reason_text=reason,
+            columns=tuple(c.header for c in columns),
+            compare=compare,
+            candidates=candidates,
+            default_candidate=default,
+            close_call=False,
+            preview=None,
+            offered=offered,
+            notice=notice,
+            masked=masked,
+            revealable=revealable,
+            event_id=state.event_id if state is not None and task.source is not None else None,
+            held=bool(state is not None and state.held),
+            master_ids=tuple(task.master_ids),
+            choices=choices,
+            blind=blind,
+            first_decider=sample.decided_by,
+            answered_by=sample.reviewed_by if shape == "disputed" else None,
+            sample_id=sample.sample_id,
         )
 
     def _masked_text(self, model: EntityModel) -> Callable[[str, Any], str | None]:
@@ -582,12 +979,14 @@ class DecisionService:
         *,
         pair_levels: Mapping[str, str] | None = None,
         kept_apart: str | None = None,
+        candidate_levels: Sequence[Mapping[str, str]] | None = None,
     ) -> tuple[CompareRow, ...]:
         """Every column attribute in model order: each column's value through `text`, and each candidate's
         agreement with the subject from its best member's level on the comparison naming the attribute. Two
         golden records compare by the levels of the pair that raised the task (`pair_levels`), the first
         the reference; the attribute a cannot-link rule keeps them apart on (`kept_apart`,
-        "cannot_link:<attribute>") reads different when their values differ."""
+        "cannot_link:<attribute>") reads different when their values differ. `candidate_levels` gives each
+        column after the first its levels directly (the blind and disputed cases)."""
         if not columns:
             return ()
         by_attribute: dict[str, str] = {}
@@ -600,11 +999,16 @@ class DecisionService:
             name = attribute.name
             values = tuple(text(name, column.values.get(name)) for column in columns)
             comparison = by_attribute.get(name)
-            if shape in ("source", "held_new") and found:
+            if candidate_levels is not None:
+                agreement = tuple(
+                    _agreement_of(lv[comparison]) if comparison and comparison in lv else ""
+                    for lv in candidate_levels
+                )
+            elif shape in ("source", "held_new") and found:
                 agreement = tuple(
                     _agreement_of(lv[comparison]) if comparison and comparison in lv else "" for lv in levels
                 )
-            elif shape == "golden_pair" and pair_levels is not None and len(columns) == 2:
+            elif shape in ("golden_pair", "disputed_pair") and pair_levels is not None and len(columns) == 2:
                 mark = _agreement_of(pair_levels[comparison]) if comparison in pair_levels else ""
                 if kept_apart == f"cannot_link:{name}":
                     first, second = (display.value_text(model, name, c.values.get(name)) for c in columns)
@@ -709,7 +1113,7 @@ class DecisionService:
                 return None
             golden = self.store.golden(task.entity, [master]).get(master)
             return self._impact(model, items, work, master, golden)
-        if shape in ("golden_pair", "golden"):
+        if shape in ("golden_pair", "disputed_pair", "golden"):
             return Preview(
                 master_id=task.master_ids[0] if task.master_ids else None, rows=(), impact=Impact()
             )
@@ -720,9 +1124,11 @@ class DecisionService:
     ) -> str | None:
         if task.source is not None and (state is None or state.status != "active"):
             return NOTICE_GONE
+        if shape == "source" and task.reason == "breaker_demoted" and not candidates:
+            return NOTICE_BREAKER_WAIT
         if shape == "source" and not candidates:
             return NOTICE_NO_CANDIDATE
-        if shape == "golden_pair":
+        if shape in ("golden_pair", "disputed_pair"):
             blocked = candidates[0].blocked_by if candidates else None
             return f"{blocked} {NOTICE_MERGE}" if blocked else NOTICE_MERGE
         if shape == "golden":
@@ -762,6 +1168,10 @@ class DecisionService:
                 )
             elif decision == "reject_update":
                 out.append(Action("reject_update", "Reject the update", _KEYS["reject_update"], True, None))
+            elif decision == "keep_decision":
+                out.append(
+                    Action("keep_decision", "Keep the first decision", _KEYS["keep_decision"], True, None)
+                )
             elif decision == "keep_orphan":
                 target = task.master_ids[0] if task.master_ids else None
                 out.append(
@@ -784,9 +1194,15 @@ class DecisionService:
         staged = row.staged
         can_decide = allowed(actor, "work_tasks")
         role = ROLE_LABELS.get(actor.role, actor.role).lower()
+        # the steward whose decision a blind review measures, or a review disputes, never decides it; the
+        # steward who gave the disputed blind answer may keep the first decision, never link to their answer
+        own = prepared.first_decider is not None and prepared.first_decider == actor.name
+        answered = prepared.answered_by is not None and prepared.answered_by == actor.name
         blocked: str | None = None
         if not can_decide:
             blocked = f"Your role, {role}, can see tasks but not decide them."
+        elif own:
+            blocked = NOTICE_OWN_DECISION
         elif staged is not None:
             blocked = (
                 "Your decision on this task is in the tray. Undo it there to change it."
@@ -798,14 +1214,25 @@ class DecisionService:
         actions: list[Action] = []
         for action in prepared.offered:
             why = blocked
+            if why is None and answered and action.decision == "link":
+                why = NOTICE_OWN_ANSWER
             if why is None and not action.enabled:
                 why = action.why_not  # a candidate a cannot-link rule blocks
             if why is None and not allowed(actor, action.decision):
                 why = f"Your role, {role}, cannot take this decision."
             if why is None and prepared.shape == "held_update" and not prepared.held:
                 why = "This record's update is no longer held."
+            if (
+                why is None
+                and action.decision == "not_a_match"
+                and task.reason == "breaker_demoted"
+                and not prepared.candidates
+            ):
+                why = NOTICE_BREAKER_WAIT  # no golden record to decline: it would only wait here again
             actions.append(replace(action, enabled=why is None, why_not=why))
         work_blocked = None if can_decide else f"Your role, {role}, can see tasks but not work on them."
+        if work_blocked is None and own:
+            work_blocked = NOTICE_OWN_DECISION
         # while a decision on the task waits in the tray, nobody claims, snoozes or escalates it: the flush
         # would close it under them
         claim_blocked = work_blocked or (blocked if staged is not None else None)
@@ -844,6 +1271,9 @@ class DecisionService:
             claimed_by=display.claimant_text(holder, actor),
             event_id=prepared.event_id,
             task_version=iso(task.updated_at),
+            choices=prepared.choices,
+            blind=prepared.blind,
+            paused=next(iter(self.breaker.paused([task.entity])), None),
         )
 
     # ------------------------------------------------------------------ reveal
@@ -862,7 +1292,18 @@ class DecisionService:
         shape = shape_of(task)
         if task.source is not None and (state is None or state.status != "active"):
             shape = "information"
-        columns, found = self._columns(task, model, state, shape)
+        sample = self.quality.sample_of(task) if shape in _CHECKPOINT_SHAPES else None
+        if shape in _CHECKPOINT_SHAPES and sample is None:
+            shape = "information"
+        # the same columns as the case, the blind review's values-without column included
+        levels: list[Mapping[str, str]] | None = None
+        found: Sequence[GoldenCandidate] = ()
+        if shape in ("blind", "blind_pair") and sample is not None:
+            columns, levels, _ = self._blind_columns(task, model, state, shape, sample)
+        elif shape == "disputed" and state is not None:
+            columns, levels, _, _, _ = self._disputed_columns(task, model, state)
+        else:
+            columns, found = self._columns(task, model, state, shape)
         master = None
         if state is not None:
             master = self.store.xrefs_for_sources(task.entity, [state.source]).get(state.source)
@@ -885,7 +1326,7 @@ class DecisionService:
                 return self.privacy.clear_text(model, name, value)
             return display.value_text(model, name, value)
 
-        paired = self._pair(task, model) if shape == "golden_pair" else None
+        paired = self._pair(task, model) if shape in ("golden_pair", "disputed_pair") else None
         compare = self._compare(
             model,
             shown,
@@ -893,6 +1334,7 @@ class DecisionService:
             shape,
             state,
             text,
+            candidate_levels=levels,
             pair_levels=paired[1] if paired is not None else None,
             kept_apart=paired[0].blocked_rule if paired is not None else None,
         )
@@ -928,6 +1370,13 @@ class DecisionService:
         prepared = self._prepared(task, actor)
         if decision not in OFFERED.get(prepared.shape, ()):
             raise Forbidden("decision_not_offered", decision=decision)
+        if prepared.shape in _CHECKPOINT_SHAPES:
+            if prepared.first_decider == actor.name:
+                raise Forbidden("own_decision")
+            if decision == "link" and prepared.answered_by == actor.name:
+                raise Forbidden("own_answer")
+            if decision not in {a.decision for a in prepared.offered}:
+                raise Forbidden("decision_not_offered", decision=decision)
         held = self.store.staged_by_locks([task_lock(task_id)]).get(task_lock(task_id))
         if held is not None:
             raise Conflict([token(task_id)], code="already_staged", mine=held.actor == actor.name)
@@ -943,6 +1392,8 @@ class DecisionService:
                 raise Conflict([source_token(task.source)], code="record_changed")
         elif seen_task is None or seen_task != iso(task.updated_at):
             raise Conflict([token(task_id)], code="task_changed")
+        if decision in ("blind_link", "blind_none", "keep_decision"):
+            return self._checkpoint_staging(task, decision, prepared, state, target)
         chosen = None
         score = band = signature = None
         rule_version = None
@@ -1024,6 +1475,57 @@ class DecisionService:
             locks=tuple(dict.fromkeys(locks)),
         )
 
+    @staticmethod
+    def _locks(task: Task) -> list[str]:
+        locks = [task_lock(task.task_id)]
+        if task.source is not None:
+            locks.append(f"source:{task.entity}:{task.source.system}:{task.source.key}")
+        else:
+            locks.extend(f"golden:{m}" for m in task.master_ids)
+        return list(dict.fromkeys(locks))
+
+    def _checkpoint_staging(
+        self,
+        task: Task,
+        decision: str,
+        prepared: _Prepared,
+        state: SourceState | None,
+        target: str | None,
+    ) -> Staging:
+        """What the tray keeps of a blind answer, or of keeping a first decision: the golden records shown and
+        the sample, never the expected answer, a score or a signature. A blind answer on a record names a
+        choice explicitly (`Forbidden(choose_first)`); on a pair, "the same" names the second golden record."""
+        if decision == "blind_link":
+            if prepared.shape == "blind":
+                if target is None or target not in {c.master_id for c in prepared.choices}:
+                    raise Forbidden("choose_first")
+            else:
+                target = next((a.target for a in prepared.offered if a.decision == "blind_link"), None)
+                if target is None:
+                    raise Forbidden("decision_not_offered", decision=decision)
+        else:
+            target = None
+        shown = (
+            [c.master_id for c in prepared.choices] if prepared.shape == "blind" else list(task.master_ids)
+        )
+        subject = safe_detail(
+            source=source_token(task.source) if task.source else None,
+            shown=shown,
+            master_ids=list(task.master_ids) if task.source is None else [],
+            sample_id=prepared.sample_id,
+            kind=task.kind,
+        )
+        return Staging(
+            task_id=task.task_id,
+            entity=task.entity,
+            decision=decision,
+            target=target,
+            subject=subject,
+            signature=None,
+            event_id=state.event_id if state is not None and task.source is not None else None,
+            locks=tuple(self._locks(task)),
+        )
+
     # ------------------------------------------------------------------ the commit at flush
 
     def execute(self, entry: TrayEntry, *, now: datetime) -> tuple[CommitResult, tuple[SourceKey, ...]]:
@@ -1036,6 +1538,12 @@ class DecisionService:
             raise PlatformRefused("persona_refused", role=token(actor.role))
         if entry.decision not in DECISIONS:
             raise Forbidden("decision_not_offered", decision=token(entry.decision))
+        if entry.decision in ("blind_link", "blind_none"):
+            # the sample first: a record deleted at its source voids its sample (and closes its task)
+            named = (entry.subject or {}).get("sample_id")
+            found = self.store.samples_by_id([named]).get(named) if isinstance(named, str) else None
+            if found is not None and found.status == "void":
+                raise Conflict([token(found.sample_id)], code="sample_void")
         task = self.store.tasks_by_id([entry.task_id]).get(entry.task_id)
         if task is None or task.status != "open":
             raise Conflict([token(entry.task_id)], code="task_closed")
@@ -1046,6 +1554,10 @@ class DecisionService:
             if state is None or state.status != "active" or state.event_id != entry.event_id:
                 raise Conflict([source_token(source)], code="record_changed")
         subject = entry.subject or {}
+        if entry.decision in ("blind_link", "blind_none"):
+            return self._execute_blind(entry, task, actor, now)
+        if entry.decision == "keep_decision":
+            return self._execute_keep(entry, task, actor)
         holds = (
             entry.decision == "link"
             and source is not None
@@ -1095,6 +1607,8 @@ class DecisionService:
             labels.append(label(lower, higher, "keep_apart"))
         elif entry.decision == "reject_update" and source is not None:
             release.append(source)
+        # a share of a steward's link, "not a match" and keep apart drawn for blind review, in this transaction
+        drawn = self.quality.steward(entry, task, state, subject, now)
         work = WorkWrites(
             entity,
             release=tuple(release),
@@ -1103,6 +1617,8 @@ class DecisionService:
             tray=(TraySettlement(entry.entry_id, "committed", None, "committed"),),
             expect_events=((source, entry.event_id),) if source is not None and entry.event_id else (),
             close_task_ids=(entry.task_id,),
+            samples=(drawn[0],) if drawn is not None else (),
+            tasks=(drawn[1],) if drawn is not None else (),
         )
         reason = f"workbench:{entry.decision}"
         evidence = safe_detail(
@@ -1148,6 +1664,101 @@ class DecisionService:
                 entity, entry.decision, actor=actor, reason=reason, work=work, evidence=evidence
             )
         return result, tuple(s for s, _, _ in requeue)
+
+    def _execute_blind(
+        self, entry: TrayEntry, task: Task, actor: Actor, now: datetime
+    ) -> tuple[CommitResult, tuple[SourceKey, ...]]:
+        """A blind answer: the sample still open (`Conflict(sample_void)` once its record was deleted,
+        `Conflict(sample_settled)` once answered), compared with the first decision; the answer, its agreement
+        and any review it opens written with an audited decision that publishes nothing and no label."""
+        sample = self.quality.sample_of(task)
+        if sample is None:
+            raise Conflict([token(entry.task_id)], code="sample_settled")
+        if sample.status == "void":
+            raise Conflict([token(sample.sample_id)], code="sample_void")
+        if sample.status != "open":
+            raise Conflict([token(sample.sample_id)], code="sample_settled")
+        if sample.source is None and not self._pair_active(sample):
+            # a keep-apart pair merged or retired since: the sample no longer measures anything
+            self.store.void_samples([(sample.sample_id, sample.task_id, None)])
+            raise Conflict([token(sample.sample_id)], code="sample_void")
+        if entry.decision == "blind_link" and not entry.target:
+            raise Forbidden("choose_first")
+        answer = entry.target if entry.decision == "blind_link" and entry.target else NONE_ANSWER
+        subject = entry.subject or {}
+        shown = [m for m in subject.get("shown") or [] if isinstance(m, str)]
+        source = task.source
+        if source is not None and not entry.event_id:
+            raise Conflict([source_token(source)], code="record_changed")
+        review, dispute = self.quality.review(
+            sample, answer, shown, actor, entry_id=entry.entry_id, event_id=entry.event_id, now=now
+        )
+        work = WorkWrites(
+            entry.entity,
+            tasks=(dispute,) if dispute is not None else (),
+            reviews=(review,),
+            tray=(
+                TraySettlement(entry.entry_id, "committed", None, "agreed" if review.agreed else "disagreed"),
+            ),
+            expect_events=((source, entry.event_id),) if source is not None and entry.event_id else (),
+            close_task_ids=(entry.task_id,),
+        )
+        if source is None:
+            about = list(sample.master_ids or task.master_ids)[:2]
+        else:
+            about = [m for m in (self.quality.target_survivor(sample), answer) if m and m != NONE_ANSWER]
+        evidence = safe_detail(
+            task_id=entry.task_id,
+            entry_id=entry.entry_id,
+            decision=entry.decision,
+            sample_id=sample.sample_id,
+            answer=token(answer),
+            agreed=review.agreed,
+            kind=task.kind,
+            source=source_token(source) if source is not None else None,
+            master_ids=list(dict.fromkeys(m for m in about if MASTER_ID_RE.match(m))),
+        )
+        result = self.lifecycle.decide_only(
+            entry.entity,
+            entry.decision,
+            actor=actor,
+            reason=f"workbench:{entry.decision}",
+            work=work,
+            evidence=evidence,
+        )
+        return result, ()
+
+    def _execute_keep(
+        self, entry: TrayEntry, task: Task, actor: Actor
+    ) -> tuple[CommitResult, tuple[SourceKey, ...]]:
+        """The first decision a blind review disputed is kept: the review closes with an audited decision that
+        publishes nothing, writes no label and draws no sample."""
+        source = task.source
+        sample = self.quality.sample_of(task)
+        work = WorkWrites(
+            entry.entity,
+            tray=(TraySettlement(entry.entry_id, "committed", None, "committed"),),
+            expect_events=((source, entry.event_id),) if source is not None and entry.event_id else (),
+            close_task_ids=(entry.task_id,),
+        )
+        evidence = safe_detail(
+            task_id=entry.task_id,
+            entry_id=entry.entry_id,
+            decision=entry.decision,
+            sample_id=sample.sample_id if sample is not None else None,
+            kind=task.kind,
+            source=source_token(source) if source is not None else None,
+            master_ids=list(task.master_ids),
+        )
+        result = self.lifecycle.decide_only(
+            entry.entity,
+            entry.decision,
+            actor=actor,
+            reason=f"workbench:{entry.decision}",
+            work=work,
+            evidence=evidence,
+        )
+        return result, ()
 
     @staticmethod
     def _decided_about(entry: TrayEntry, task: Task, subject: Mapping[str, Any]) -> list[str]:

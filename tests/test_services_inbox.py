@@ -102,7 +102,14 @@ def test_rows_carry_the_stored_evidence_and_masked_titles(world: Hub) -> None:
 
 def test_views_and_capped_counts(world: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
     counts = world.inbox.counts(actor=STEWARD)
-    assert counts.views == {"mine": 4, "team": 4, "breaching": 0, "snoozed": 0, "escalated": 0}
+    assert counts.views == {
+        "mine": 4,
+        "team": 4,
+        "breaching": 0,
+        "snoozed": 0,
+        "escalated": 0,
+        "samples": 0,
+    }
     assert counts.kinds == {
         "review": 2,
         "possible_duplicate": 1,
@@ -110,7 +117,9 @@ def test_views_and_capped_counts(world: Hub, monkeypatch: pytest.MonkeyPatch) ->
         "exception": 0,
         "orphan": 0,
         "unresolved_reference": 0,
+        "quality_sample": 0,
     }
+    assert counts.samples_breaching == 0
     assert world.inbox.counts(actor=STEWARD, entity="person").views["team"] == 1
     # nine hours on, the reviews and the held update are past their service level
     at(world, hours=9)

@@ -30,6 +30,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from mdm.models.entity_model import EntityModel
+from mdm.models.quality import BREAKER_STATES, SAMPLE_STATUSES
 from mdm.models.workbench import LABELS, TRAY_STATUSES
 
 GROUPS = ("model", "landing", "work", "hub", "vault", "core", "read", "audit")
@@ -303,6 +304,8 @@ TABLES: tuple[Table, ...] = (
             ("status", "due_at", "task_id"),  # the inbox's pages and capped counts
             ("source_system", "source_key"),
             ("claimed_by", "claimed_at"),  # "3 claimed by you" under My queue
+            # the records the quality breaker held, handed back on a restore, paged in task-ID order
+            ("entity", "reason", "status", "task_id"),
         ),
     ),
     Table("work", "open_task", (_n("task_key", "text"), _n("task_id", "text")), ("task_key",)),
@@ -365,6 +368,97 @@ TABLES: tuple[Table, ...] = (
         ),
         ("entity", "left_ref", "right_ref"),
         indexes=(("entity", "right_ref"),),
+    ),
+    # the matcher's checkpoint (story 3.2): a committed decision drawn for blind review, and its answer
+    Table(
+        "work",
+        "quality_sample",
+        (
+            _n("sample_id", "text"),
+            _n("entity", "text"),
+            _n("origin", "text"),  # checked by the service: the lists grow story by story
+            _n("decision", "text"),
+            _c("source_system", "text"),
+            _c("source_key", "text"),
+            _n("master_ids", "json"),  # a keep-apart pair
+            _c("event_id", "text"),
+            _c("target", "text"),
+            _n("declined", "json"),
+            _n("band", "text", default="''"),  # '' when there is none
+            _n("signature", "text", default="''"),
+            _c("score", "numeric"),
+            _c("rule_version", "int"),
+            _n("decided_by", "text"),
+            _n("decided_role", "text"),
+            _n("decided_at", "timestamptz"),
+            _c("entry_id", "text"),
+            _n("task_id", "text"),
+            _n("drawn_at", "timestamptz"),
+            _n("pair_sources", "json"),
+            _n("status", "text", default="'open'", check=_in("status", SAMPLE_STATUSES)),
+            _c("answer", "text"),
+            _c("reviewed_by", "text"),
+            _c("reviewed_role", "text"),
+            _c("reviewed_at", "timestamptz"),
+            _c("review_entry_id", "text"),
+            _c("dispute_task_id", "text"),
+        ),
+        ("sample_id",),
+        indexes=(
+            ("entity", "origin", "band", "reviewed_at", "sample_id"),  # the breaker's window
+            ("entity", "source_system", "source_key", "status"),  # voids and the blind case
+            ("task_id",),
+            ("entity", "origin", "status"),  # the open-sample cap
+        ),
+    ),
+    # running counts of blind reviews per entity, origin, band and signature ('' when there is none)
+    Table(
+        "work",
+        "quality_agreement",
+        (
+            _n("entity", "text"),
+            _n("origin", "text"),
+            _n("band", "text"),
+            _n("signature", "text"),
+            _n("reviewed", "bigint"),
+            _n("agreed", "bigint"),
+            _n("updated_at", "timestamptz"),
+        ),
+        ("entity", "origin", "band", "signature"),
+    ),
+    # each entity's automatic band, normal or demoted by the quality breaker (decision 3)
+    Table(
+        "work",
+        "breaker_state",
+        (
+            _n("entity", "text"),
+            _n("band", "text"),
+            _n("state", "text", check=_in("state", BREAKER_STATES)),
+            _n("watch_since", "timestamptz"),
+            _c("trigger", "text"),  # checked by the service
+            _n("figures", "json"),
+            _c("tripped_at", "timestamptz"),
+            _c("trip_change_set", "text"),
+            _c("restored_at", "timestamptz"),
+            _c("restored_by", "text"),
+            _c("restored_role", "text"),
+            _c("restore_reason", "text"),
+            _c("restore_change_set", "text"),
+            _n("updated_at", "timestamptz"),
+        ),
+        ("entity", "band"),
+    ),
+    # arrivals per entity and clock hour of the hub, for the breaker's volume trigger; kept 8 days
+    Table(
+        "work",
+        "arrival_hour",
+        (
+            _n("entity", "text"),
+            _n("hour_start", "timestamptz"),
+            _n("arrivals", "bigint"),
+            _n("updated_at", "timestamptz"),
+        ),
+        ("entity", "hour_start"),
     ),
     Table(
         "work",

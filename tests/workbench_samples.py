@@ -10,12 +10,15 @@ the bands are the starter models' (lower 60, upper 90).
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from mdm import capacity
 from mdm.models.workbench import (
     Action,
+    BreakerView,
     Candidate,
+    Choice,
     CompareRow,
     FlushReport,
     Health,
@@ -47,6 +50,15 @@ from mdm.models.workbench import (
     ValueWhy,
     ViewCounts,
     WaterfallStep,
+)
+from mdm.services.decisions import (
+    BLIND_PAIR_SENTENCE,
+    BLIND_SENTENCE,
+    NOTICE_BLIND_NONE,
+    NOTICE_BREAKER_WAIT,
+    NOTICE_DISPUTE_DETACH,
+    NOTICE_MERGE,
+    NOTICE_OWN_DECISION,
 )
 
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
@@ -693,6 +705,398 @@ CASES = (
     CASE_INFORMATION,
 )
 
+# ---------------------------------------------------------------------------------------------- the checkpoint
+
+#: the quality breaker paused Organisation's automatic linking: 30 of the last 40 automatic links confirmed
+BREAKER_AGREEMENT = BreakerView(
+    entity="organisation",
+    trigger="agreement",
+    since=datetime(2026, 9, 27, 11, 2, tzinfo=UTC),
+    figures={"agreed": 30, "reviewed": 40, "threshold": 0.95, "window": 100},
+)
+#: and Person's, on a spike of arrivals in the hour from 11:00
+BREAKER_VOLUME = BreakerView(
+    entity="person",
+    trigger="volume",
+    since=datetime(2026, 9, 26, 23, 5, tzinfo=UTC),
+    figures={
+        "arrivals": 12400,
+        "mean": 1100.0,
+        "multiple": 5,
+        "days": 7,
+        "hour": "2026-09-26T23:00:00+00:00",
+    },
+)
+HEALTH_PAUSED = Health(
+    open_tasks=31,
+    breaching=3,
+    staged=1,
+    last_commit_version=6,
+    last_commit_at=NOW - timedelta(minutes=4),
+    last_arrival_at=NOW - timedelta(minutes=5),
+    arrival_read=291,
+    arrival_tasks=12,
+    arrival_automatic=0.96,
+    paused=(BREAKER_AGREEMENT, BREAKER_VOLUME),
+)
+COUNTS_SAMPLES = ViewCounts(
+    views={"mine": 31, "team": 44, "breaching": 3, "snoozed": 1, "escalated": 1, "samples": 12},
+    kinds={**COUNTS_UNDER_CAP.kinds, "quality_sample": 12},
+    claimed=2,
+    samples_breaching=1,
+)
+
+ROW_SAMPLE = TaskRow(
+    task_id="TSK-8091021324354657",
+    entity="organisation",
+    kind="quality_sample",
+    kind_label="Quality sample",
+    title="Quorane Works",
+    subject="crm:C001409",
+    score=None,
+    band=None,
+    suggestion="Decide blind",
+    reason="",
+    due_at=NOW + timedelta(hours=48),
+    breaching=False,
+    claimed_by=None,
+    claim_expires=None,
+    snoozed_until=None,
+    escalated=False,
+    staged=None,
+)
+CHOICES = (
+    Choice(index=1, master_id="ORG-000123", title="Quorane Works Ltd"),
+    Choice(index=2, master_id="ORG-000871", title="Quorane Textiles"),
+    Choice(index=3, master_id="ORG-004410", title="Quorane Works Ltd"),
+)
+COMPARE_BLIND = (
+    CompareRow(
+        attribute="name",
+        label="Name",
+        values=("Quorane Works", "Quorane Works Ltd", "Quorane Textiles", "Quorane Works Ltd"),
+        agreement=("partial", "partial", "partial"),
+        critical=True,
+        personal=False,
+    ),
+    CompareRow(
+        attribute="city",
+        label="City",
+        values=("Varnmouth", "Varnmouth", "Kelborough", "Varnmouth"),
+        agreement=("agree", "disagree", "agree"),
+        critical=False,
+        personal=False,
+    ),
+    CompareRow(
+        attribute="postcode",
+        label="Postcode",
+        values=("LF4 5JB", "LF4 5JB", "KB2 8RT", "LF7 1DA"),
+        agreement=("agree", "disagree", "disagree"),
+        critical=False,
+        personal=False,
+    ),
+)
+
+
+def _work(*, why: str | None = None) -> tuple[Action, ...]:
+    return (
+        Action("claim", "Claim", "C", why is None, why),
+        Action("snooze", "Snooze", "S", why is None, why),
+        Action("escalate", "Escalate", "E", why is None, why),
+    )
+
+
+def _blind_actions(choices: tuple[Choice, ...], *, why: str | None = None) -> tuple[Action, ...]:
+    return (
+        *(
+            Action("blind_link", f"Belongs to {c.master_id}", "L", why is None, why, target=c.master_id)
+            for c in choices
+        ),
+        Action("blind_none", "Belongs to none of these", "N", why is None, why),
+        *_work(why=why),
+    )
+
+
+#: a quality sample of a record, decided blind: three golden records offered, no score, band or first decision
+CASE_BLIND = TaskCase(
+    row=ROW_SAMPLE,
+    reason_text=BLIND_SENTENCE,
+    shape="blind",
+    columns=("Record · crm:C001409", "1 · ORG-000123", "2 · ORG-000871", "3 · ORG-004410"),
+    compare=COMPARE_BLIND,
+    candidates=(),
+    default_candidate=None,
+    close_call=False,
+    preview=None,
+    actions=_blind_actions(CHOICES),
+    notice=None,
+    masked=False,
+    revealable=(),
+    staged=None,
+    claimed_by=None,
+    event_id="crm-7-00007141",
+    choices=CHOICES,
+    blind=True,
+)
+#: the same sample as the steward who made the first decision reads it: nothing to do but wait for another
+CASE_BLIND_OWN = TaskCase(
+    row=ROW_SAMPLE,
+    reason_text=BLIND_SENTENCE,
+    shape="blind",
+    columns=CASE_BLIND.columns,
+    compare=COMPARE_BLIND,
+    candidates=(),
+    default_candidate=None,
+    close_call=False,
+    preview=None,
+    actions=_blind_actions(CHOICES, why=NOTICE_OWN_DECISION),
+    notice=None,
+    masked=False,
+    revealable=(),
+    staged=None,
+    claimed_by=None,
+    event_id="crm-7-00007141",
+    choices=CHOICES,
+    blind=True,
+)
+#: a sample with no golden record near: only "Belongs to none of these"
+CASE_BLIND_NONE = TaskCase(
+    row=TaskRow(
+        task_id="TSK-9102132435465768",
+        entity="person",
+        kind="quality_sample",
+        kind_label="Quality sample",
+        title="Y*** T***",
+        subject="hr:H000998",
+        score=None,
+        band=None,
+        suggestion="Decide blind",
+        reason="",
+        due_at=NOW + timedelta(hours=70),
+        breaching=False,
+        claimed_by=None,
+        claim_expires=None,
+        snoozed_until=None,
+        escalated=False,
+        staged=None,
+    ),
+    reason_text=BLIND_SENTENCE,
+    shape="blind",
+    columns=("Record · hr:H000998",),
+    compare=(CompareRow("given_name", "Given name", ("Y***",), (), critical=True, personal=True),),
+    candidates=(),
+    default_candidate=None,
+    close_call=False,
+    preview=None,
+    actions=_blind_actions(()),
+    notice=NOTICE_BLIND_NONE,
+    masked=True,
+    revealable=("given_name",),
+    staged=None,
+    claimed_by=None,
+    event_id="hr-7-00000998",
+    blind=True,
+)
+#: a sample of two golden records a steward kept apart
+CASE_BLIND_PAIR = TaskCase(
+    row=TaskRow(
+        task_id="TSK-a213243546576879",
+        entity="organisation",
+        kind="quality_sample",
+        kind_label="Quality sample",
+        title="Tessova Labs",
+        subject="ORG-000211 · ORG-000388",
+        score=None,
+        band=None,
+        suggestion="Decide blind",
+        reason="",
+        due_at=NOW + timedelta(hours=60),
+        breaching=False,
+        claimed_by=None,
+        claim_expires=None,
+        snoozed_until=None,
+        escalated=False,
+        staged=None,
+    ),
+    reason_text=BLIND_PAIR_SENTENCE,
+    shape="blind_pair",
+    columns=("ORG-000211 · golden record", "ORG-000388 · golden record"),
+    compare=(
+        CompareRow(
+            "name", "Name", ("Tessova Labs", "Tessova Labs Ltd"), ("partial",), critical=True, personal=False
+        ),
+    ),
+    candidates=(),
+    default_candidate=None,
+    close_call=False,
+    preview=None,
+    actions=(
+        Action("blind_link", "They are the same", "L", True, None, target="ORG-000388"),
+        Action("blind_none", "They are not the same", "N", True, None),
+        *_work(),
+    ),
+    notice=None,
+    masked=False,
+    revealable=(),
+    staged=None,
+    claimed_by=None,
+    event_id=None,
+    task_version="2026-09-27T09:00:00+00:00",
+    blind=True,
+)
+ROW_DISPUTED = TaskRow(
+    task_id="TSK-b32435465768798a",
+    entity="organisation",
+    kind="review",
+    kind_label="Review",
+    title="Quorane Works",
+    subject="crm:C000957",
+    score=79.19,
+    band="review",
+    suggestion="Keep or correct the first decision",
+    reason="a blind review disagreed",
+    due_at=NOW + timedelta(hours=6),
+    breaching=False,
+    claimed_by=None,
+    claim_expires=None,
+    snoozed_until=None,
+    escalated=False,
+    staged=None,
+)
+DISPUTE_SENTENCE = "A blind review placed this record differently from the first decision."
+#: a blind review placed an unlinked record in a golden record: Keep the first decision, or link it there
+CASE_DISPUTED_LINK = TaskCase(
+    row=ROW_DISPUTED,
+    reason_text=DISPUTE_SENTENCE,
+    shape="disputed",
+    columns=("Record · crm:C000957", "Blind review · ORG-000123"),
+    compare=tuple(replace(r, values=r.values[:2], agreement=r.agreement[:1]) for r in COMPARE_CLOSE_CALL),
+    candidates=(CANDIDATE_1,),
+    default_candidate="ORG-000123",
+    close_call=False,
+    preview=None,
+    actions=(
+        Action("keep_decision", "Keep the first decision", "A", True, None),
+        Action("link", "Link to ORG-000123", "L", True, None, target="ORG-000123"),
+        *_work(),
+    ),
+    notice=None,
+    masked=False,
+    revealable=(),
+    staged=None,
+    claimed_by=None,
+    event_id="crm-7-00004457",
+)
+#: the record is linked and shares its golden record: only Keep, and why
+CASE_DISPUTED = TaskCase(
+    row=ROW_DISPUTED,
+    reason_text=DISPUTE_SENTENCE,
+    shape="disputed",
+    columns=("Record · crm:C000957", "Now · ORG-000123", "Blind review · ORG-004410"),
+    compare=tuple(replace(r, values=r.values[:3], agreement=r.agreement[:2]) for r in COMPARE_CLOSE_CALL),
+    candidates=(CANDIDATE_1, replace(CANDIDATE_2, preview=None)),
+    default_candidate=None,
+    close_call=False,
+    preview=None,
+    actions=(Action("keep_decision", "Keep the first decision", "A", True, None), *_work()),
+    notice=NOTICE_DISPUTE_DETACH,
+    masked=False,
+    revealable=(),
+    staged=None,
+    claimed_by=None,
+    event_id="crm-7-00004457",
+)
+#: a blind review found two golden records kept apart the same
+CASE_DISPUTED_PAIR = TaskCase(
+    row=replace(
+        ROW_GOLDEN_PAIR,
+        task_id="TSK-c435465768798a9b",
+        suggestion="Keep or correct the first decision",
+        reason="a blind review disagreed",
+        escalated=False,
+    ),
+    reason_text=DISPUTE_SENTENCE,
+    shape="disputed_pair",
+    columns=("ORG-000211", "ORG-000388"),
+    compare=CASE_GOLDEN_PAIR.compare,
+    candidates=(),
+    default_candidate=None,
+    close_call=False,
+    preview=None,
+    actions=(Action("keep_decision", "Keep the first decision", "A", True, None), *_work()),
+    notice=NOTICE_MERGE,
+    masked=False,
+    revealable=(),
+    staged=None,
+    claimed_by=None,
+    event_id=None,
+    task_version="2026-09-27T10:00:00+00:00",
+)
+#: a review the breaker opened while automatic linking is paused: two new records, no golden record yet
+CASE_PAUSED = TaskCase(
+    row=replace(
+        ROW_CLOSE_CALL,
+        task_id="TSK-d5465768798a9bac",
+        subject="crm:C001502",
+        score=96.2,
+        band="auto",
+        suggestion="Wait for automatic linking",
+        reason="paused by the breaker",
+    ),
+    reason_text=(
+        "This record would have linked automatically, but the quality breaker has paused automatic linking "
+        "for this entity."
+    ),
+    shape="source",
+    columns=("Arriving · crm:C001502",),
+    compare=(CompareRow("name", "Name", ("Quorane Works Ltd",), (), critical=True, personal=False),),
+    candidates=(),
+    default_candidate=None,
+    close_call=False,
+    preview=None,
+    actions=(Action("not_a_match", "Not a match", "N", False, NOTICE_BREAKER_WAIT), *_work()),
+    notice=NOTICE_BREAKER_WAIT,
+    masked=False,
+    revealable=(),
+    staged=None,
+    claimed_by=None,
+    event_id="crm-7-00007302",
+    paused=BREAKER_AGREEMENT,
+)
+CHECKPOINT_CASES = (
+    CASE_BLIND,
+    CASE_BLIND_OWN,
+    CASE_BLIND_NONE,
+    CASE_BLIND_PAIR,
+    CASE_DISPUTED_LINK,
+    CASE_DISPUTED,
+    CASE_DISPUTED_PAIR,
+    CASE_PAUSED,
+)
+#: a blind answer committed: it matched the first decision, or differed and opened a review
+TRAY_VIEWS_BLIND = (
+    TrayView(
+        entry_id="TR-3d4e5f60718293041526",
+        task_id=ROW_SAMPLE.task_id,
+        decision="blind_link",
+        label="Quality sample: crm:C001409 belongs to ORG-000123",
+        deadline=NOW - timedelta(minutes=3),
+        status="committed",
+        outcome="agreed",
+        commit_version=None,
+    ),
+    TrayView(
+        entry_id="TR-4e5f6071829304152637",
+        task_id=CASE_BLIND_PAIR.row.task_id,
+        decision="blind_none",
+        label="Quality sample: ORG-000211 and ORG-000388 are not the same",
+        deadline=NOW - timedelta(minutes=2),
+        status="committed",
+        outcome="disagreed",
+        commit_version=None,
+    ),
+)
+
 # ---------------------------------------------------------------------------------------------- the tray
 
 STAGING = Staging(
@@ -1075,6 +1479,13 @@ ALL = (
     *COMPARE_CLOSE_CALL,
     *CASES,
     *CASE_HELD_UPDATE.actions,
+    BREAKER_AGREEMENT,
+    BREAKER_VOLUME,
+    HEALTH_PAUSED,
+    COUNTS_SAMPLES,
+    *CHOICES,
+    *CHECKPOINT_CASES,
+    *TRAY_VIEWS_BLIND,
     REVEALED_PERSON,
     STAGING,
     TRAY_ENTRY_STAGED,

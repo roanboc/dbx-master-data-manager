@@ -51,11 +51,13 @@ def checked_reason(value: object) -> str | None:
 
 
 def open_button(page: str) -> Component:
-    """ "Show values" (`ids.reveal(REVEAL_OPEN, page)`)."""
+    """ "Show values" (`ids.reveal(REVEAL_OPEN, page)`): a quiet grey button with the eye, like the pane's
+    work actions, since it changes no record."""
     return dmc.Button(
         "Show values",
         id=ids.reveal(ids.REVEAL_OPEN, page),
-        variant="light",
+        variant="subtle",
+        color="gray",
         size="xs",
         leftSection=icon("eye"),
         className="mdm-reveal-open",

@@ -17,7 +17,7 @@ from mdm.models.authority import ROLE_LABELS, Actor
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import NotFound
 from mdm.models.records import SourceKey
-from mdm.models.tasks import KIND_LABELS, Task
+from mdm.models.tasks import KIND_LABELS, WAITS_TEXT, Task, waits_for_restore
 from mdm.models.wording import attribute_label as _attribute_words
 from mdm.models.wording import comparison_name
 
@@ -132,6 +132,21 @@ REASONS: Mapping[str, tuple[str, str]] = {
     "last_member_moved": (
         "last member moved",
         "A steward linked the last source record of this golden record elsewhere, so it has no member.",
+    ),
+    # the matcher's checkpoint (story 3.2)
+    "breaker_demoted": (
+        "paused by the breaker",
+        "This record would have linked automatically, but the quality breaker has paused automatic linking "
+        "for this entity.",
+    ),
+    "blind_sample": (
+        "blind review",
+        "Blind review: decide where this record belongs, as if it had just arrived. The first decision and "
+        "its score stay hidden.",
+    ),
+    "blind_disagreement": (
+        "a blind review disagreed",
+        "A blind review placed this record differently from the first decision.",
     ),
     # unresolved references (opened from initiative 4)
     "reference_unresolved": (
@@ -252,9 +267,23 @@ def _masters_of(subject: Mapping[str, Any]) -> list[str]:
 
 def tray_label(decision: str, subject: Mapping[str, Any], target: str | None) -> str:
     """One tray line, from IDs and source keys only: "Link crm:C000123 to ORG-000123", "Not a match:
-    crm:C000123", "Approve the update of crm:C000123", "Keep ORG-000123 and ORG-004410 apart"."""
+    crm:C000123", "Approve the update of crm:C000123", "Keep ORG-000123 and ORG-004410 apart", "Quality
+    sample: crm:C000123 belongs to ORG-000123"."""
     source = _source_of(subject)
     masters = _masters_of(subject)
+    pair = f"{masters[0]} and {masters[1]}" if len(masters) >= 2 else "the golden records"
+    if decision == "blind_link":
+        if subject.get("source") is None and len(masters) >= 2:
+            return f"Quality sample: {pair} are the same"
+        return f"Quality sample: {source} belongs to {target or 'a golden record'}"
+    if decision == "blind_none":
+        if subject.get("source") is None and len(masters) >= 2:
+            return f"Quality sample: {pair} are not the same"
+        return f"Quality sample: {source} belongs to none shown"
+    if decision == "keep_decision":
+        if subject.get("source") is None and len(masters) >= 2:
+            return f"Keep the first decision on {pair}"
+        return f"Keep the first decision on {source}"
     if decision == "link":
         return f"Link {source} to {target or 'a golden record'}"
     if decision == "not_a_match":
@@ -289,10 +318,13 @@ def _filled(template: str, evidence: Mapping[str, Any]) -> str:
 
 def reason_chip(task: Task) -> str:
     """The inbox's reason chip: "hinges on registered ID" when the stored evidence names the comparison a
-    decision hinges on, else the reason in a few words ("critical: family name")."""
+    decision hinges on, else the reason in a few words ("critical: family name"); none on a quality sample,
+    whose suggestion ("Decide blind") says it all."""
+    if task.kind == "quality_sample":
+        return ""
     evidence = task.evidence or {}
     hinge = evidence.get("hinge")
-    if isinstance(hinge, str) and hinge and task.kind in ("review", "possible_duplicate"):
+    if _hinges(task) and isinstance(hinge, str) and hinge:
         return f"hinges on {comparison_name(hinge)}"
     found = REASONS.get(task.reason)
     if found is None:
@@ -300,15 +332,82 @@ def reason_chip(task: Task) -> str:
     return _filled(found[0], evidence)
 
 
+#: what the first decision a blind review disputes did, by its code
+_FIRST_DECISIONS = {
+    "auto_link": ("The matcher linked it to {target}", "The matcher linked it automatically"),
+    "hint_link": (
+        "The matcher linked it to {target}, as its source named",
+        "The matcher linked it as its source named",
+    ),
+    "auto_create": ("The matcher created {target} for it", "The matcher created a golden record for it"),
+    "link": ("A steward linked it to {target}", "A steward linked it"),
+    "not_a_match": ("A steward said it is not {declined}", "A steward said it is not a match"),
+}
+
+
+def dispute_sentence(task: Task) -> str:
+    """What the first decision did and what the blind review answered, from the dispute's codes and IDs:
+    "The matcher created ORG-000164 for it; a blind review placed it in none of the golden records shown.";
+    for a pair kept apart, "A steward kept ORG-000211 and ORG-000388 apart; a blind review found them the
+    same."."""
+    evidence = task.evidence or {}
+    answer = evidence.get("answer")
+    if task.source is None:
+        pair = " and ".join(m for m in task.master_ids[:2] if isinstance(m, str)) or "them"
+        return f"A steward kept {pair} apart; a blind review found them the same."
+    target = evidence.get("target")
+    declined = [m for m in evidence.get("declined") or () if isinstance(m, str)]
+    first = _FIRST_DECISIONS.get(str(evidence.get("first") or ""))
+    if first is None:
+        lead = "The first decision placed it differently"
+    elif "{declined}" in first[0]:
+        lead = first[0].format(declined=" or ".join(declined)) if declined else first[1]
+    else:
+        lead = first[0].format(target=target) if isinstance(target, str) and target else first[1]
+    if isinstance(answer, str) and answer and answer != "none":
+        placed = f"a blind review placed it in {answer}"
+    else:
+        placed = "a blind review placed it in none of the golden records shown"
+    return f"{lead}; {placed}."
+
+
+def breaker_wait_sentence(task: Task) -> str:
+    """A record the quality breaker holds with no golden record to decide on, naming the records it would
+    have formed one with: "This record would have formed a golden record with crm:C000251 (and 1 other)
+    automatically, but the quality breaker has paused automatic linking for this entity."."""
+    partners = [s for s in (task.evidence or {}).get("review_with") or () if isinstance(s, str)]
+    if not partners:
+        return REASONS["breaker_demoted"][1]
+    more = len(partners) - 1
+    others = f" (and {more} other{'s' if more > 1 else ''})" if more else ""
+    return (
+        f"This record would have formed a golden record with {partners[0]}{others} automatically, but the "
+        "quality breaker has paused automatic linking for this entity."
+    )
+
+
 def reason_sentence(task: Task) -> str:
     """The reason in a full sentence, for the decide pane."""
     evidence = task.evidence or {}
+    if task.reason == "blind_disagreement":
+        return dispute_sentence(task)
+    if task.reason == "breaker_demoted" and not task.master_ids:
+        return breaker_wait_sentence(task)
     found = REASONS.get(task.reason)
     sentence = _filled(found[1], evidence) if found else f"Reason: {task.reason.replace('_', ' ')}."
     hinge = evidence.get("hinge")
-    if isinstance(hinge, str) and hinge and task.kind in ("review", "possible_duplicate"):
+    if _hinges(task) and isinstance(hinge, str) and hinge:
         sentence += f" It hinges on the {comparison_name(hinge)}."
     return sentence
+
+
+def _hinges(task: Task) -> bool:
+    """Whether the comparison a decision hinges on is the task's story: a review or a possible duplicate,
+    unless the quality breaker or a blind review opened it (their reason says more)."""
+    return task.kind in ("review", "possible_duplicate") and task.reason not in (
+        "breaker_demoted",
+        "blind_disagreement",
+    )
 
 
 def kind_label(kind: str) -> str:
@@ -320,6 +419,10 @@ def suggestion_text(task: Task) -> str:
     """What the task asks, from its stored suggestion and evidence: "Link to ORG-000123", "Approve or
     reject", "Keep apart or merge", "Keep or retire", "Investigate"."""
     evidence = task.evidence or {}
+    if task.kind == "quality_sample":
+        return "Decide blind"
+    if task.reason == "blind_disagreement":
+        return "Keep or correct the first decision"
     if task.kind in ("review", "possible_duplicate") and task.source is not None:
         masters = [m for m in (evidence.get("master_ids") or task.master_ids or ()) if isinstance(m, str)]
         if len(masters) == 1:
@@ -339,9 +442,12 @@ def suggestion_text(task: Task) -> str:
 
 
 def due_text(due_at: datetime | None, now: datetime) -> str:
-    """ "due in 3 h", "due in 25 min", "overdue by 2 d"; "" without a due time."""
+    """ "due in 3 h", "due in 25 min", "overdue by 2 d"; "waits for a data owner" for a record the quality
+    breaker holds with nothing to decide; "" without a due time."""
     if due_at is None:
         return ""
+    if waits_for_restore(due_at):
+        return WAITS_TEXT.lower()
     delta = due_at - now
     late = delta < timedelta(0)
     span = _span(-delta if late else delta)

@@ -48,6 +48,7 @@ from mdm.models.changes import ChangeRow, ChangeSet, CommitLogRow, WorkWrites
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Conflict, GuardError, MdmError, NotFound, PlatformRefused
 from mdm.models.match import PairScore
+from mdm.models.quality import AgreementRow, BreakerState, QualitySample, SampleReview
 from mdm.models.records import (
     Gap,
     GoldenRow,
@@ -1445,7 +1446,10 @@ class SqlStore(ABC):
         The workbench's writes (initiative 3): first, before any other write, `expect_events` (each record
         still at the event the steward saw, else `Conflict(record_changed)`) and `close_task_ids` (each task
         still open, else `Conflict(task_closed)`), by conditional statements that also hold those rows until
-        the transaction ends; last, the labels, the records queued again, and each tray settlement (an entry
+        the transaction ends; then the labels and the records queued again; then the matcher's checkpoint (story
+        3.2): quality samples inserted once each, a deleted record's open samples voided with their tasks
+        closed (never raising), and each blind answer on a sample still open (`Conflict(sample_void)` or
+        `Conflict(sample_settled)` otherwise) with its agreement counted; last, each tray settlement (an entry
         no longer staged is `Conflict(tray_entry_settled)`). A `Conflict` rolls back everything the
         transaction wrote.
         """
@@ -1489,6 +1493,9 @@ class SqlStore(ABC):
             self.put_labels(work.labels)
             if work.requeue:
                 self.queue_put([(entity, s, ev, seq) for s, ev, seq in work.requeue])
+            self.put_samples(work.samples)
+            self._void_samples(work.void_samples)
+            self._write_reviews(work.reviews)
             for settlement in work.tray:
                 if not self.settle_tray(
                     settlement.entry_id,
@@ -1848,6 +1855,16 @@ class SqlStore(ABC):
             sql += " AND escalated_at IS NOT NULL"
         elif query.escalated is False:
             sql += " AND escalated_at IS NULL"
+        if query.exclude_kind is not None:
+            sql += " AND kind <> ?"
+            params.append(query.exclude_kind)
+        if query.not_first_decider is not None:
+            # keyed by the sample table's (task_id) index: the samples this actor decided first stay out
+            sql += (
+                f" AND NOT EXISTS (SELECT 1 FROM {self.t('work', 'quality_sample')} AS qs "
+                f"WHERE qs.task_id = {self.t('work', 'task')}.task_id AND qs.decided_by = ?)"
+            )
+            params.append(query.not_first_decider)
         return sql, params
 
     def task_page(self, query: TaskQuery, after: tuple[datetime, str] | None, limit: int) -> list[Task]:
@@ -1894,6 +1911,22 @@ class SqlStore(ABC):
             [(task_id, due) for task_id, due in dict(rows).items()],
             where="t.due_at IS NULL",
         )
+
+    def open_tasks_by_reason(
+        self, entity: str, kind: str, reason: str, after: str | None, limit: int
+    ) -> list[Task]:
+        """Open tasks of one entity, kind and reason by task ID after `after`, at most `limit`: the records the
+        quality breaker held, on the (entity, reason, status) index."""
+        sql = (
+            f"/*mdm:paged*/ SELECT {', '.join(self._TASK_COLUMNS)} FROM {self.t('work', 'task')} "
+            "WHERE entity = ? AND reason = ? AND status = 'open' AND kind = ?"
+        )
+        params: list[Any] = [entity, reason, kind]
+        if after is not None:
+            sql += " AND task_id > ?"
+            params.append(after)
+        rows = self._fetch_all(sql + " ORDER BY task_id LIMIT ?", [*params, int(limit)])
+        return [self._task_of(r) for r in rows]
 
     def tasks_by_id(self, task_ids: Sequence[str]) -> dict[str, Task]:
         """Tasks by ID, in any status."""
@@ -2288,6 +2321,476 @@ class SqlStore(ABC):
         )
         out = [(SourceKey(s, k), ev, int(seq)) for s, k, ev, seq in rows]
         return sorted(out, key=lambda r: (r[2], r[0]))
+
+    # ------------------------------------------------------------------ work group: the matcher's checkpoint (story 3.2)
+
+    _SAMPLE_COLUMNS = (
+        "sample_id",
+        "entity",
+        "origin",
+        "decision",
+        "source_system",
+        "source_key",
+        "master_ids",
+        "event_id",
+        "target",
+        "declined",
+        "band",
+        "signature",
+        "score",
+        "rule_version",
+        "decided_by",
+        "decided_role",
+        "decided_at",
+        "entry_id",
+        "task_id",
+        "drawn_at",
+        "pair_sources",
+        "status",
+        "answer",
+        "reviewed_by",
+        "reviewed_role",
+        "reviewed_at",
+        "review_entry_id",
+        "dispute_task_id",
+    )
+
+    @staticmethod
+    def _sample_row(sample: QualitySample) -> dict[str, Any]:
+        """A sample as a row; codes, IDs and source keys checked by `safe`, the signature by `safe_signature`
+        (whatever built them: no value reaches a sample)."""
+        return {
+            "sample_id": safe(sample.sample_id),
+            "entity": safe(sample.entity),
+            "origin": safe(sample.origin),
+            "decision": safe(sample.decision),
+            "source_system": sample.source.system if sample.source else None,
+            "source_key": sample.source.key if sample.source else None,
+            "master_ids": safe(list(sample.master_ids)),
+            "event_id": sample.event_id,
+            "target": safe(sample.target),
+            "declined": safe(list(sample.declined)),
+            "band": safe(sample.band or ""),
+            "signature": safe_signature(sample.signature or "") or "",
+            "score": sample.score,
+            "rule_version": sample.rule_version,
+            "decided_by": sample.decided_by,
+            "decided_role": safe(sample.decided_role),
+            "decided_at": sample.decided_at,
+            "entry_id": safe(sample.entry_id),
+            "task_id": safe(sample.task_id),
+            "drawn_at": sample.drawn_at,
+            "pair_sources": safe(list(sample.pair_sources)),
+            "status": safe(sample.status),
+            "answer": safe(sample.answer),
+            "reviewed_by": sample.reviewed_by,
+            "reviewed_role": safe(sample.reviewed_role),
+            "reviewed_at": sample.reviewed_at,
+            "review_entry_id": safe(sample.review_entry_id),
+            "dispute_task_id": safe(sample.dispute_task_id),
+        }
+
+    def _sample_of(self, row: Sequence[Any]) -> QualitySample:
+        d = self._decode_row(_T("work", "quality_sample"), self._SAMPLE_COLUMNS, row)
+        return QualitySample(
+            sample_id=d["sample_id"],
+            entity=d["entity"],
+            origin=d["origin"],
+            decision=d["decision"],
+            source=_source(d["source_system"], d["source_key"]),
+            master_ids=tuple(d["master_ids"] or ()),
+            event_id=d["event_id"],
+            target=d["target"],
+            declined=tuple(d["declined"] or ()),
+            band=d["band"] or "",
+            signature=d["signature"] or "",
+            score=float(d["score"]) if d["score"] is not None else None,
+            rule_version=int(d["rule_version"]) if d["rule_version"] is not None else None,
+            decided_by=d["decided_by"],
+            decided_role=d["decided_role"],
+            decided_at=d["decided_at"],
+            entry_id=d["entry_id"],
+            task_id=d["task_id"],
+            drawn_at=d["drawn_at"],
+            pair_sources=tuple(d["pair_sources"] or ()),
+            status=d["status"],
+            answer=d["answer"],
+            reviewed_by=d["reviewed_by"],
+            reviewed_role=d["reviewed_role"],
+            reviewed_at=d["reviewed_at"],
+            review_entry_id=d["review_entry_id"],
+            dispute_task_id=d["dispute_task_id"],
+        )
+
+    def put_samples(self, samples: Sequence[QualitySample]) -> int:
+        """Inserts each sample once: a sample ID drawn again (a page planned again) changes nothing."""
+        if not samples:
+            return 0
+        rows = _dedupe_last([self._sample_row(s) for s in samples], key=lambda r: r["sample_id"])
+        return self._insert(_T("work", "quality_sample"), rows, on_conflict_nothing=("sample_id",))
+
+    def samples_by_id(self, sample_ids: Sequence[str]) -> dict[str, QualitySample]:
+        """Samples by ID, in any status."""
+        rows = self._select_keyed(
+            _T("work", "quality_sample"),
+            self._SAMPLE_COLUMNS,
+            ("sample_id",),
+            [(i,) for i in sample_ids],
+            order_by=("sample_id",),
+        )
+        return {r[0]: self._sample_of(r) for r in rows}
+
+    def open_samples_for(self, entity: str, sources: Sequence[SourceKey]) -> list[QualitySample]:
+        """The open samples of these records, by sample ID."""
+        rows = self._select_keyed(
+            _T("work", "quality_sample"),
+            self._SAMPLE_COLUMNS,
+            ("entity", "source_system", "source_key"),
+            [(entity, s.system, s.key) for s in sources],
+            order_by=("sample_id",),
+            where="t.status = 'open'",
+        )
+        return sorted((self._sample_of(r) for r in rows), key=lambda s: s.sample_id)
+
+    def _capped_samples(self, where: str, params: Sequence[Any], cap: int) -> int:
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'quality_sample')} "
+            f"WHERE {where} LIMIT ?) AS capped",
+            [*params, int(cap)],
+        )
+        return int(rows[0][0])
+
+    def open_sample_count(self, entity: str, origin: str, cap: int) -> int:
+        """Open samples of one entity and origin, counted up to `cap` (the open-sample cap's index)."""
+        return self._capped_samples("entity = ? AND origin = ? AND status = 'open'", [entity, origin], cap)
+
+    def sample_counts(self, entity: str, cap: int) -> dict[str, int]:
+        """{"open": n, "void": n} of one entity's samples, each counted up to `cap`."""
+        return {
+            status: self._capped_samples("entity = ? AND status = ?", [entity, status], cap)
+            for status in ("open", "void")
+        }
+
+    def recent_reviews(
+        self, entity: str, origin: str, band: str, decided_after: datetime | None, limit: int
+    ) -> list[tuple[str, datetime, str]]:
+        """(status, reviewed_at, sample ID) of the latest reviewed samples of one entity, origin and band, newest
+        first, at most `limit`; with `decided_after`, only samples first decided after it. A walk of the
+        (entity, origin, band, reviewed_at, sample_id) index."""
+        sql = (
+            f"/*mdm:paged*/ SELECT status, reviewed_at, sample_id FROM {self.t('work', 'quality_sample')} "
+            "WHERE entity = ? AND origin = ? AND band = ? AND reviewed_at IS NOT NULL"
+        )
+        params: list[Any] = [entity, origin, band]
+        if decided_after is not None:
+            sql += " AND decided_at > ?"
+            params.append(decided_after)
+        rows = self._fetch_all(
+            sql + " ORDER BY reviewed_at DESC, sample_id DESC LIMIT ?", [*params, int(limit)]
+        )
+        return [(str(st), _utc(at), str(sid)) for st, at, sid in rows]
+
+    _AGREEMENT_COLUMNS = ("entity", "origin", "band", "signature", "reviewed", "agreed", "updated_at")
+
+    def agreement_rows(
+        self, entity: str, after: tuple[str, str, str] | None, limit: int
+    ) -> list[AgreementRow]:
+        """One entity's agreement counts by (origin, band, signature) after `after`, at most `limit`."""
+        sql = (
+            "/*mdm:paged*/ SELECT entity, origin, band, signature, reviewed, agreed "
+            f"FROM {self.t('work', 'quality_agreement')} WHERE entity = ?"
+        )
+        params: list[Any] = [entity]
+        if after is not None:
+            sql += " AND (origin, band, signature) > (?, ?, ?)"
+            params.extend(after)
+        rows = self._fetch_all(sql + " ORDER BY origin, band, signature LIMIT ?", [*params, int(limit)])
+        return [AgreementRow(e, o, b, sig, int(n), int(a)) for e, o, b, sig, n, a in rows]
+
+    def void_samples(self, voids: Sequence[tuple[str, str, SourceKey | None]]) -> None:
+        """(sample ID, task ID, record): each sample still open voided and each task still open closed, in a
+        transaction of its own (or the one open); never raises for one settled already."""
+        with self.transaction():
+            self._void_samples(voids)
+
+    def _void_samples(self, voids: Sequence[tuple[str, str, SourceKey | None]]) -> None:
+        """Each sample still open voided, and each task still open closed; never raises (a sample answered
+        or voided already stays as it is)."""
+        if not voids:
+            return
+        now = self.clock()
+        self._update_keyed(
+            _T("work", "quality_sample"),
+            ("status",),
+            ("sample_id",),
+            [(sid, "void") for sid in sorted({v[0] for v in voids})],
+            where="t.status = 'open'",
+        )
+        task_ids = sorted({v[1] for v in voids})
+        self._update_keyed(
+            _T("work", "task"),
+            ("status", "updated_at", "decided_at"),
+            ("task_id",),
+            [(i, "closed", now, now) for i in task_ids],
+            where="t.status = 'open'",
+        )
+        self._delete_keyed(_T("work", "open_task"), ("task_id",), [(i,) for i in task_ids])
+
+    def _write_reviews(self, reviews: Sequence[SampleReview]) -> None:
+        """Each blind answer on a sample still open, then its agreement counted: a sample voided meanwhile is
+        `Conflict(sample_void)`, one answered already `Conflict(sample_settled)`. The count is read and
+        written again in the tray's transaction, which the tray's lease serialises."""
+        if not reviews:
+            return
+        table = _T("work", "quality_sample")
+        for review in reviews:
+            changed = self._execute(
+                f"/*mdm:keyed*/ UPDATE {self._q(table)} SET status = ?, answer = ?, reviewed_by = ?, "
+                "reviewed_role = ?, reviewed_at = ?, review_entry_id = ?, dispute_task_id = ? "
+                "WHERE sample_id = ? AND status = 'open'",
+                [
+                    "agreed" if review.agreed else "disagreed",
+                    safe(review.answer),
+                    review.reviewed_by,
+                    safe(review.reviewed_role),
+                    review.reviewed_at,
+                    safe(review.review_entry_id),
+                    safe(review.dispute_task_id),
+                    safe(review.sample_id),
+                ],
+            )
+            if changed != 1:
+                found = self.samples_by_id([review.sample_id]).get(review.sample_id)
+                code = "sample_void" if found is not None and found.status == "void" else "sample_settled"
+                raise Conflict([_key_token(review.sample_id)], code=code)
+        totals: dict[tuple[str, str, str, str], list[int]] = {}
+        for review in reviews:
+            key = (
+                safe(review.entity),
+                safe(review.origin),
+                safe(review.band or ""),
+                safe_signature(review.signature or "") or "",
+            )
+            counted = totals.setdefault(key, [0, 0])
+            counted[0] += 1
+            counted[1] += 1 if review.agreed else 0
+        agreement = _T("work", "quality_agreement")
+        key_columns = ("entity", "origin", "band", "signature")
+        held = {
+            tuple(r[:4]): (int(r[4]), int(r[5]))
+            for r in self._select_keyed(
+                agreement,
+                ("entity", "origin", "band", "signature", "reviewed", "agreed"),
+                key_columns,
+                list(totals),
+                order_by=key_columns,
+            )
+        }
+        now = self.clock()
+        rows = []
+        for key, (reviewed, agreed) in sorted(totals.items()):
+            before = held.get(key, (0, 0))
+            rows.append(
+                {
+                    "entity": key[0],
+                    "origin": key[1],
+                    "band": key[2],
+                    "signature": key[3],
+                    "reviewed": before[0] + reviewed,
+                    "agreed": before[1] + agreed,
+                    "updated_at": now,
+                }
+            )
+        self._upsert(agreement, rows, conflict=key_columns, update=("reviewed", "agreed", "updated_at"))
+
+    # the quality breaker's state
+
+    _BREAKER_COLUMNS = (
+        "entity",
+        "band",
+        "state",
+        "watch_since",
+        "trigger",
+        "figures",
+        "tripped_at",
+        "trip_change_set",
+        "restored_at",
+        "restored_by",
+        "restored_role",
+        "restore_reason",
+        "restore_change_set",
+        "updated_at",
+    )
+
+    def _breaker_of(self, row: Sequence[Any]) -> BreakerState:
+        d = self._decode_row(_T("work", "breaker_state"), self._BREAKER_COLUMNS, row)
+        return BreakerState(**{**d, "figures": d["figures"] or {}})
+
+    def breaker_states(self, entities: Sequence[str]) -> dict[tuple[str, str], BreakerState]:
+        """(entity, band) -> its breaker state, for the entities that have a row."""
+        rows = self._select_keyed(
+            _T("work", "breaker_state"),
+            self._BREAKER_COLUMNS,
+            ("entity",),
+            [(e,) for e in entities],
+            order_by=("entity", "band"),
+        )
+        return {(r[0], r[1]): self._breaker_of(r) for r in rows}
+
+    def ensure_breaker_rows(self, entities: Sequence[str], at: datetime, band: str = "auto") -> int:
+        """A `normal` row for each entity that has none, watched from `at`; returns the rows written."""
+        wanted = sorted(set(entities))
+        if not wanted:
+            return 0
+        return self._insert(
+            _T("work", "breaker_state"),
+            [
+                {
+                    "entity": safe(e),
+                    "band": safe(band),
+                    "state": "normal",
+                    "watch_since": at,
+                    "figures": {},
+                    "updated_at": at,
+                }
+                for e in wanted
+            ],
+            on_conflict_nothing=("entity", "band"),
+        )
+
+    def trip_breaker(
+        self,
+        entity: str,
+        band: str,
+        trigger: str,
+        figures: Mapping[str, Any],
+        at: datetime,
+        change_set_id: str,
+    ) -> bool:
+        """Demotes a normal band, with the trigger, safe figures and the audit change set; False when the band
+        is demoted already (or has no row). Joins an open transaction."""
+        return (
+            self._update_keyed(
+                _T("work", "breaker_state"),
+                ("state", "trigger", "figures", "tripped_at", "trip_change_set", "updated_at"),
+                ("entity", "band"),
+                [(entity, band, "demoted", safe(trigger), safe(dict(figures)), at, safe(change_set_id), at)],
+                where="t.state = 'normal'",
+            )
+            == 1
+        )
+
+    def restore_breaker(
+        self,
+        entity: str,
+        band: str,
+        actor: str,
+        role: str,
+        reason: str,
+        at: datetime,
+        change_set_id: str,
+        *,
+        rewatch: bool = False,
+    ) -> bool:
+        """Restores a demoted band; with `rewatch`, its volume is watched afresh from `at` (the days of history
+        start again), else `watch_since` stays. False when it is not demoted."""
+        columns = ["state", "restored_at", "restored_by", "restored_role", "restore_reason"]
+        values: list[Any] = ["normal", at, actor, safe(role), safe(reason)]
+        columns += ["restore_change_set", "updated_at"]
+        values += [safe(change_set_id), at]
+        if rewatch:
+            columns.append("watch_since")
+            values.append(at)
+        return (
+            self._update_keyed(
+                _T("work", "breaker_state"),
+                tuple(columns),
+                ("entity", "band"),
+                [(entity, band, *values)],
+                where="t.state = 'demoted'",
+            )
+            == 1
+        )
+
+    def hold_band(self, entity: str, band: str) -> bool:
+        """Inside the commit's transaction: True while the band is normal, holding its row until the
+        transaction ends (Postgres by the row lock of a no-op update, DuckDB on the store lock), so a trip
+        waits for a commit in flight and a commit never outruns a trip; False when it is demoted. A band with
+        no row gets a normal one first, so there is always a row to hold."""
+        self.ensure_breaker_rows([entity], self.clock(), band)
+        held = self._update_keyed(
+            _T("work", "breaker_state"),
+            (),
+            ("entity", "band"),
+            [(entity, band)],
+            extra_set="state = t.state",
+            where="t.state = 'normal'",
+        )
+        if held == 1:
+            return True
+        found = self.breaker_states([entity]).get((entity, band))
+        return found is None or found.state != "demoted"
+
+    # arrivals per entity and clock hour, for the breaker's volume trigger
+
+    def add_arrivals(self, rows: Sequence[tuple[str, datetime, int]]) -> None:
+        """Adds (entity, hour start, arrivals) to the stored counts: a keyed read, then an upsert of the new
+        totals (only arrival writes these rows, under its lease)."""
+        totals: dict[tuple[str, datetime], int] = {}
+        for entity, hour, n in rows:
+            if n:
+                key = (entity, _utc(hour))
+                totals[key] = totals.get(key, 0) + int(n)
+        if not totals:
+            return
+        table = _T("work", "arrival_hour")
+        held = {
+            (e, _utc(h)): int(n)
+            for e, h, n in self._select_keyed(
+                table,
+                ("entity", "hour_start", "arrivals"),
+                ("entity", "hour_start"),
+                list(totals),
+                order_by=("entity", "hour_start"),
+            )
+        }
+        now = self.clock()
+        self._upsert(
+            table,
+            [
+                {"entity": e, "hour_start": h, "arrivals": held.get((e, h), 0) + n, "updated_at": now}
+                for (e, h), n in sorted(totals.items())
+            ],
+            conflict=("entity", "hour_start"),
+            update=("arrivals", "updated_at"),
+        )
+
+    def arrival_hours(self, entity: str, hour_starts: Sequence[datetime]) -> dict[datetime, int]:
+        """Hour start -> arrivals of one entity, for the hours that have a count."""
+        rows = self._select_keyed(
+            _T("work", "arrival_hour"),
+            ("hour_start", "arrivals"),
+            ("entity", "hour_start"),
+            [(entity, _utc(h)) for h in hour_starts],
+            order_by=("hour_start",),
+        )
+        return {_utc(h): int(n) for h, n in rows}
+
+    def arrivals_counted_by(self, entity: str, moment: datetime) -> bool:
+        """Whether one entity has a count for an hour that starts at or before `moment`: the volume trigger's
+        history is there only once arrivals were counted that long ago (an initial load counts none)."""
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ SELECT hour_start FROM {self.t('work', 'arrival_hour')} "
+            "WHERE entity = ? AND hour_start <= ? ORDER BY hour_start LIMIT 1",
+            [entity, _utc(moment)],
+        )
+        return bool(rows)
+
+    def prune_arrival_hours(self, before: datetime) -> int:
+        """Drops the counts of hours that start before `before` (a few hundred rows per entity at most)."""
+        return self._execute(
+            f"/*mdm:small*/ DELETE FROM {self.t('work', 'arrival_hour')} WHERE hour_start < ?", [before]
+        )
 
     # ------------------------------------------------------------------ work group: rule results, references, jobs
 

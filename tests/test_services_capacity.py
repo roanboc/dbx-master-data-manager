@@ -228,3 +228,49 @@ def test_the_paging_helpers() -> None:
             assert exc.code == "limit_out_of_range"
         else:  # pragma: no cover
             raise AssertionError("no refusal")
+
+
+def test_every_statement_of_the_checkpoint_is_tagged_and_reads_samples_keyed_or_paged(hub) -> None:
+    """A blind case, a blind stage and its flush, an arrival that counts and checks, a trip, the status, a
+    restore and the hand-back that follows it (story 3.2)."""
+    from datetime import timedelta
+
+    from mdm.models.canonical import utcnow
+    from mdm.services.context import Hub
+    from tests.helpers import COORDINATOR, OWNER, STEWARD, T0, crm_person_key, person_payload, row, seen
+
+    sampled = Hub.open(hub.settings.with_(sample_share=1.0), store=hub.store, as_role="data_owner")
+    statements: list[str] = []
+    remove = hub.store.add_listener(statements.append)
+    try:
+        land(sampled, mini_world(persons=8, organisations=3).rows)
+        arrive(sampled)
+        task = next(t for t in sampled.store.tasks("person", "quality_sample", "open", 100, None) if t.source)
+        case = sampled.decisions.case(task.task_id, actor=COORDINATOR)
+        sampled.decisions.reveal(task.task_id, actor=COORDINATOR, reason="deciding_task")
+        target = case.choices[0].master_id if case.choices else None
+        decision = "blind_link" if target else "blind_none"
+        sampled.tray.stage(
+            task.task_id, decision, actor=COORDINATOR, target=target, **seen(sampled, task.task_id)
+        )
+        moment = utcnow() + timedelta(seconds=sampled.settings.undo_seconds + 1)
+        sampled.tray.clock = lambda: moment
+        assert sampled.tray.flush().committed == 1
+        sampled.inbox.page("samples", actor=STEWARD)
+        sampled.inbox.counts(actor=STEWARD)
+        sampled.inbox.health(actor=STEWARD)
+        sampled.breaker.demo_trip("person", figures={"agreed": 30, "reviewed": 40, "threshold": 0.95})
+        land(
+            sampled, [row("crm", crm_person_key(1), "person", person_payload(1), at=T0 + timedelta(hours=2))]
+        )
+        arrive(sampled)
+        sampled.breaker.status(["person", "organisation"], actor=STEWARD)
+        sampled.breaker.restore("person", actor=OWNER, reason="cause_fixed")
+        assert arrive(sampled).handed_back == 1
+    finally:
+        remove()
+        sampled.close()
+    assert statements
+    assert _tag_problems(statements, hub.store.prefix) == []
+    on_samples = [s for s in statements if "_work.quality_sample" in s and "SELECT" in s.upper()]
+    assert on_samples and all(s.startswith(("/*mdm:keyed*/", "/*mdm:paged*/")) for s in on_samples)

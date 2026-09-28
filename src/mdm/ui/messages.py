@@ -50,6 +50,12 @@ ACTION_WORDS: Mapping[str, str] = {
     "approve_update": "approve held updates",
     "reject_update": "reject held updates",
     "flush_tray": "commit the tray",
+    "blind_link": "answer a quality sample",
+    "blind_none": "answer a quality sample",
+    "keep_decision": "keep a first decision",
+    "view_breaker": "see the quality breaker",
+    "restore_breaker": "restore automatic linking",
+    "trip_breaker": "pause automatic linking",
 }
 #: `record_changed` when a decision is staged rather than flushed: the case on screen was out of date
 STAGE_RECORD_CHANGED = (
@@ -106,6 +112,22 @@ _FIXED: Mapping[str, str] = {
         "(or as any persona on a local store)."
     ),
     "dev_needs_local_store": "Development mode works only on a local store.",
+    # the matcher's checkpoint (story 3.2)
+    "own_decision": "You made the first decision on this record, so another steward reviews it.",
+    "own_answer": "You gave the blind answer, so another steward decides whether to link to it.",
+    "choose_first": (
+        "Choose the golden record it belongs to with its number key, then press L; or press N if it "
+        "belongs to none of them."
+    ),
+    "sample_settled": "This sample has been answered already.",
+    "sample_void": (
+        "This quality sample no longer counts: its record was deleted at its source, or one of its golden "
+        "records was merged or retired."
+    ),
+    "breaker_demoted": (
+        "The quality breaker paused automatic linking while your decision waited. The task is back in your "
+        "queue; decide it again."
+    ),
 }
 _UNKNOWN_RECORD = ("unknown_master_id", "unknown_source_record", "unknown_ref")
 
@@ -215,6 +237,12 @@ _TITLES: Mapping[str, str] = {
     "bad_escalation": "Choose a reason",
     "persona_refused": "Personas are local only",
     "no_forwarded_user": "Who are you?",
+    "own_decision": "Your own decision",
+    "own_answer": "Your own answer",
+    "choose_first": "Choose first",
+    "sample_settled": "Already answered",
+    "sample_void": "No longer counts",
+    "breaker_demoted": "Automatic linking paused",
 }
 
 

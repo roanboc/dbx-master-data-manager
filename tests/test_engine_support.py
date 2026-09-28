@@ -130,6 +130,7 @@ ALLOWED_ROOTS = {
     "enum",
     "functools",
     "hashlib",
+    "hmac",
     "jellyfish",
     "math",
     "rapidfuzz",

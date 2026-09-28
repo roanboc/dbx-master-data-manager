@@ -1,5 +1,5 @@
-"""The provenance chip right after each golden value ("finance · source trust · 2 d"; "Steward pin · until
-30 Nov 2026") and the body of the Why it opens under the value: the sentence, the value used and the
+"""The provenance right after each golden value, small muted text ("finance · source trust · 2 d"; "Steward
+pin · until 30 Nov 2026", in the pin's colour), and the body of the Why it opens under the value: the sentence, the value used and the
 runners-up with their sources and ages (the date and time when their ages round alike); masked always
 (B.8.9).
 
@@ -92,8 +92,9 @@ def chip(value: ValueView) -> Component:
 
 
 def critical_mark() -> Component:
-    """The word "critical" beside an attribute a change of which needs a second pair of eyes."""
-    return dmc.Badge("critical", variant="outline", color="gray", size="xs", ml=6, tt="none")
+    """The word "critical" beside an attribute a change of which needs a second pair of eyes, as muted
+    text (" · critical"), the way the compare table marks it."""
+    return html.Span(" · critical", className="mdm-tag")
 
 
 def value_cell(text: str | None, *, masked: bool) -> Component:

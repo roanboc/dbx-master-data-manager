@@ -25,7 +25,7 @@ from mdm.models.records import SourceKey
 from mdm.models.workbench import Action, CompareRow, Preview
 from mdm.services.context import Hub
 from mdm.ui import context, ids, messages
-from mdm.ui.components import compare, decide, health, impact, reveal, waterfall
+from mdm.ui.components import breaker, compare, decide, health, impact, reveal, waterfall
 from mdm.ui.pages import inbox
 from tests import helpers
 from tests import workbench_samples as samples
@@ -153,10 +153,43 @@ def test_the_compare_table_marks_agreement_with_a_symbol_as_well_as_a_class() ->
     first = next(c for c in walk(table) if type(c).__name__ == "Thead")
     headers = [text_of(c) for c in walk(first) if type(c).__name__ == "Th"]
     assert headers == ["Attribute", *samples.CASE_CLOSE_CALL.columns]
-    assert f"Against {samples.CASE_CLOSE_CALL.columns[0]}" in text_of(table)
+    assert f"Against {compare.reference_words(samples.CASE_CLOSE_CALL.columns[0])}" in text_of(table)
+    assert compare.reference_words("Record · finance:F000160") == "the record · finance:F000160"
+    assert compare.reference_words("ORG-000211 · golden record") == "ORG-000211 · golden record"
     assert not by_id(table, ids.reveal(ids.REVEAL_OPEN, "decide"))  # nothing masked, nothing to show
     # every value names its column, which the stacked layout of a narrow screen shows beside it
     assert all(prop(c, "data-column") in samples.CASE_CLOSE_CALL.columns for c in cells)
+
+
+def test_only_a_disagreement_is_tinted() -> None:
+    # two candidates: the ≠ cells carry the tint (`mdm-compare-multi`), never a whole row, so a candidate
+    # that agrees is not painted as disagreeing
+    table = compare.render(samples.CASE_CLOSE_CALL.columns, samples.COMPARE_CLOSE_CALL)
+    rows = [c for c in walk(table) if type(c).__name__ == "Tr" and "mdm-compare-other" not in classes(c)]
+    assert not [r for r in rows if "mdm-row-disagree" in classes(r)]
+    multi = [c for c in walk(table) if "mdm-compare-multi" in classes(c)]
+    assert multi and all({"mdm-compare", "mdm-compare-wide"} <= classes(c) for c in multi)
+    assert [c for c in walk(table) if type(c).__name__ == "Td" and "mdm-disagree" in classes(c)]
+    # one record against the reference: its row is tinted where they disagree, and only there
+    single = [
+        replace(row, values=row.values[:2], agreement=row.agreement[:1]) for row in samples.COMPARE_CLOSE_CALL
+    ]
+    one_table = compare.render(samples.CASE_CLOSE_CALL.columns[:2], single)
+    body = [c for c in walk(one_table) if type(c).__name__ == "Tr" and "mdm-compare-other" not in classes(c)][
+        1:
+    ]
+    tinted = {text_of(r.children[0]) for r in body if "mdm-row-disagree" in classes(r)}
+    wanted = {
+        text_of(compare._label(row)) for row in compare.main_rows(single)[0] if "disagree" in row.agreement
+    }
+    assert tinted == wanted and tinted
+    assert not [c for c in walk(one_table) if "mdm-compare-multi" in classes(c)]
+    # the cells stay neutral: the class and the symbol carry the agreement, no cell is filled by markup
+    assert not [c for c in walk(table) if (getattr(c, "style", None) or {}).get("background")]
+    # a long value breaks at its parts, not inside one
+    address = compare.breakable("https://www.mondune-trading.example/")
+    assert "".join(p for p in address if isinstance(p, str)) == "https://www.mondune-trading.example/"
+    assert sum(1 for p in address if type(p).__name__ == "Wbr") >= 4
 
 
 def test_the_compare_table_leads_with_what_the_matcher_compared() -> None:
@@ -259,9 +292,13 @@ def test_the_waterfall_is_drawn_to_scale_within_its_axis() -> None:
     assert sum(_percent(r.style["width"]) for r in regions[:3]) == pytest.approx(100.0, abs=0.01)
     marker = next(c for c in walk(figure) if "mdm-wf-marker" in classes(c))
     assert _percent(marker.style["left"]) == pytest.approx(waterfall.position(candidate.total, low, high))
-    # the axis: its ends as weights, zero, and the band edges as the scores they stand for
+    # the axis: only the band edges, as the scores they stand for (each row keeps its signed weight)
     ticks = [text_of(c) for c in walk(figure) if "mdm-wf-tick" in classes(c)]
-    assert ticks == ["−10", "60", "90", "+8"]
+    assert ticks == ["60", "90"]
+    # a wide scale draws the edges close together: one centred tick, never "6090"
+    close = waterfall.axis_row(candidate, low - 200.0, high + 200.0)
+    assert [text_of(c) for c in walk(close) if "mdm-wf-tick" in classes(c)] == ["60–90"]
+    assert waterfall.AXIS_LABEL in text_of(figure) and "weight · score" not in text_of(figure)
     assert "Total +1.9 → score 79" in text_of(figure) and "Shading" not in text_of(figure)
     distinct = waterfall.render(samples.CANDIDATE_3)
     assert not [c for c in walk(distinct) if "mdm-wf-ghost" in classes(c)]
@@ -305,22 +342,18 @@ def test_the_preview_marks_what_changes_and_says_the_impact() -> None:
 
 def test_the_health_strip_reads_capped_counts_and_relative_times() -> None:
     strip = text_of(health.render(samples.HEALTH, NOW))
-    for part in (
-        "Last arrival 5 min ago · 291 read · 96% settled automatically",
-        "Open 31",
-        "Breaching 3",
-        "In the tray 1",
-        "Last commit 6 · 4 min ago",
-    ):
-        assert part in strip
+    assert strip == (
+        "Last arrival 5 min ago · 291 read · 96% settled automatically · Open 31 · Breaching 3 · "
+        "In the tray 1 · Last commit 6, 4 min ago"
+    )
     tree = health.render(samples.HEALTH, NOW)
     links = [c for c in walk(tree) if type(c).__name__ == "Anchor"]
     assert [prop(c, "href") for c in links] == ["/?view=breaching"]
     empty = health.render(samples.HEALTH_EMPTY, NOW)
-    assert "No arrival run yet" in text_of(empty) and "No commit yet" in text_of(empty)
+    assert text_of(empty) == "No arrival run yet · Open 0 · Breaching 0 · In the tray 0 · No commit yet"
     assert not [c for c in walk(empty) if type(c).__name__ == "Anchor"]
     capped = replace(samples.HEALTH, open_tasks=capacity.COUNT_CAP, breaching=capacity.COUNT_CAP)
-    assert "Open 999+" in text_of(health.render(capped, NOW))
+    assert "Open 999+ · Breaching 999+" in text_of(health.render(capped, NOW))
 
 
 # ---------------------------------------------------------------------------------------------- the decide pane
@@ -336,7 +369,11 @@ def _buttons(pane: Any) -> dict[str, Component]:
     return found
 
 
-@pytest.mark.parametrize("case", samples.CASES, ids=lambda case: f"{case.shape}-{case.row.task_id[-4:]}")
+@pytest.mark.parametrize(
+    "case",
+    samples.CASES + samples.CHECKPOINT_CASES,
+    ids=lambda case: f"{case.shape}-{case.row.task_id[-4:]}",
+)
 def test_the_decide_pane_renders_every_case_shape(case) -> None:
     pane = decide.render(case, now=NOW)
     one(pane, ids.DECIDE_COMPARE)
@@ -360,6 +397,41 @@ def test_the_decide_pane_renders_every_case_shape(case) -> None:
         if not action.enabled and action.why_not:
             assert action.why_not in reasons
     assert reasons.count("Your role") <= 1  # each reason once
+
+
+def test_the_pane_fills_one_button_and_keeps_the_work_actions_quiet() -> None:
+    pane = decide.render(samples.CASE_CLOSE_CALL, chosen="ORG-004410", now=NOW)
+    buttons = _buttons(pane)
+    assert buttons["link"].variant == "filled" and buttons["not_a_match"].variant == "default"
+    assert (buttons["claim"].variant, buttons["claim"].color) == ("subtle", "gray")
+    targets = [c for c in walk(pane) if "mdm-menu-target" in classes(c)]
+    assert len(targets) == 2 and all((t.variant, t.color) == ("subtle", "gray") for t in targets)
+    moves = [one(pane, ids.PREV_TASK), one(pane, ids.NEXT_TASK)]
+    assert all(m.variant == "subtle" for m in moves)
+    filled = [c for c in walk(pane) if getattr(c, "variant", None) == "filled"]
+    assert filled == [buttons["link"]], "the decision that changes records is the one filled button"
+    held = _buttons(decide.render(samples.CASE_HELD_UPDATE, now=NOW))
+    assert (held["approve_update"].variant, held["reject_update"].variant) == ("filled", "default")
+    # quiet: a measurement or a dispute nudges no answer, so no decision is filled
+    quiet = decide.actions(samples.CASE_CLOSE_CALL, "ORG-004410", quiet=True)
+    assert not [c for c in walk(quiet) if getattr(c, "variant", None) in ("filled", "light")]
+    assert _buttons(quiet)["claim"].variant == "subtle"
+    for shape in decide.QUIET_SHAPES:  # the pane says so, and the browser keeps the link outlined
+        shaped = decide.render(replace(samples.CASE_CLOSE_CALL, shape=shape), chosen="ORG-004410", now=NOW)
+        assert prop(shaped, "data-quiet") == "yes"
+        assert not [c for c in walk(shaped) if getattr(c, "variant", None) == "filled"]
+    assert prop(pane, "data-quiet") is None
+
+
+def test_the_header_is_the_title_with_its_band_and_one_muted_line() -> None:
+    head = decide.header(samples.CASE_CLOSE_CALL, NOW)
+    assert not [c for c in walk(head) if type(c).__name__ == "Badge"]  # plain words, no pills
+    headline = next(c for c in walk(head) if "mdm-decide-headline" in classes(c))
+    assert [type(c).__name__ for c in headline.children] == ["H2", "Span"]
+    assert classes(headline.children[1]) == {"mdm-band", "mdm-band-review"}
+    meta = next(c for c in walk(head) if "mdm-decide-meta" in classes(c))
+    row = samples.CASE_CLOSE_CALL.row
+    assert text_of(meta) == f"{row.kind_label} · crm:C000812 · Due in 7 h 40 min · Not claimed"
 
 
 def test_a_close_call_asks_for_a_choice_before_the_link() -> None:
@@ -495,6 +567,18 @@ def test_grid_rows_carry_codes_ids_and_masked_text_only() -> None:
         assert values["task_id"] == row.task_id
         assert all(isinstance(v, (str, bool, int, type(None))) for v in values.values())
         assert not any("<" in v for v in values.values() if isinstance(v, str))
+
+
+def test_a_row_names_its_kind_only_in_a_mixed_list_and_titles_its_second_line() -> None:
+    row = samples.ROW_CLOSE_CALL
+    mixed = inbox.grid_row(row, NOW)
+    assert mixed["kind_label"] == row.kind_label
+    assert inbox.grid_row(row, NOW, kind_shown=False)["kind_label"] == ""
+    assert mixed["second_title"] == f"79 review · {row.reason} · {row.suggestion} · Organisation"
+    alone = inbox.grid_row(row, NOW, entity_shown=False)
+    assert alone["second_title"] == f"79 review · {row.reason} · {row.suggestion}"
+    held = inbox.grid_row(samples.ROW_HELD_UPDATE, NOW)
+    assert not held["second_title"].startswith(" · ")
 
 
 def test_the_grid_neither_sorts_nor_filters_and_never_takes_cell_focus() -> None:
@@ -924,3 +1008,392 @@ def test_an_action_the_role_may_take_but_the_case_disables_still_says_why() -> N
     button = decide.action_button(action)
     assert prop(button, "disabled") is True and prop(button, "aria-describedby") == ids.ACTION_REASONS
     assert button.children == "Approve the update"
+
+
+# ---------------------------------------------------------------------------------------------- the checkpoint
+
+
+def _anchors(tree: Any) -> list[str]:
+    """Every link's address in a tree."""
+    return [str(prop(c, "href")) for c in walk(tree) if type(c).__name__ in ("Anchor", "A", "NavLink")]
+
+
+def _decision_buttons(pane: Any) -> dict[str, Component]:
+    return {name: button for name, button in _buttons(pane).items() if name in inbox.DIRECT}
+
+
+BLIND_CASES = (samples.CASE_BLIND, samples.CASE_BLIND_NONE, samples.CASE_BLIND_PAIR)
+
+
+@pytest.mark.parametrize("case", BLIND_CASES, ids=lambda case: f"{case.shape}-{case.row.task_id[-4:]}")
+def test_the_blind_pane_shows_nothing_of_the_first_decision(case) -> None:
+    # even a case that came with a score, a candidate, a preview and a paused band shows none of them blind
+    leaky = replace(
+        case,
+        row=replace(case.row, score=97.4, band="auto"),
+        candidates=samples.CANDIDATES,
+        preview=samples.PREVIEW_APPROVE,
+        paused=samples.BREAKER_AGREEMENT,
+    )
+    for shown in (case, leaky):
+        pane = decide.render(shown, now=NOW)
+        found = [
+            c for c in walk(pane) if classes(c) & {"mdm-band", "mdm-why", "mdm-flip", "mdm-candidate-impact"}
+        ]
+        assert found == []
+        assert panels_of(pane) == [] and by_id(pane, ids.WHY_SECTION) == []
+        assert not [c for c in walk(pane) if "mdm-shape-preview" in classes(c) or "mdm-impact" in classes(c)]
+        text = text_of(pane)
+        for hidden in ("97", "automatic", "review band", "What would flip it", "Candidate ", "paused"):
+            assert hidden not in text, hidden
+        assert _anchors(pane) == []  # no record or source view: either would show the placement
+        assert prop(pane, "data-open-record") is None  # Enter opens nothing
+        assert prop(pane, "data-blind") == "yes" and prop(pane, "data-quiet") == "yes"
+        meta = next(c for c in walk(pane) if "mdm-decide-meta" in classes(c))
+        assert text_of(meta).startswith(f"Quality sample · {decide.subject_text(case.row)} · Due in ")
+        assert case.reason_text in text
+        # no tooltip, title or data attribute says more than the IDs on screen
+        for c in walk(pane):
+            assert getattr(c, "title", None) is None or "97" not in str(c.title)
+
+
+def test_a_blind_review_asks_for_a_choice_and_never_chooses_by_default() -> None:
+    case = samples.CASE_BLIND
+    pane = decide.render(case, now=NOW)
+    choice = one(pane, ids.CANDIDATE_CHOICE)
+    assert choice.value is None and "mdm-blind-choice" in classes(choice)
+    options = [c for c in walk(choice) if type(c).__name__ == "Radio"]
+    assert [o.label for o in options] == ["1 · ORG-000123", "2 · ORG-000871", "3 · ORG-004410"]
+    assert [prop(o, "data-candidate-index") for o in options] == ["1", "2", "3"]
+    assert [prop(o, "data-master-id") for o in options] == ["ORG-000123", "ORG-000871", "ORG-004410"]
+    assert prop(pane, "data-needs-choice") == "yes"
+    buttons = _decision_buttons(pane)
+    assert set(buttons) == {"blind_link", "blind_none"}  # one button follows the choice
+    assert buttons["blind_link"].children == "Choose 1, 2 or 3 first"
+    assert prop(buttons["blind_link"], "aria-keyshortcuts") == "L"
+    assert prop(buttons["blind_link"], "disabled") is False  # L moves to the choice
+    assert buttons["blind_none"].children == "Belongs to none of these"
+    assert prop(buttons["blind_none"], "aria-keyshortcuts") == "N"
+    one_choice = replace(case, choices=case.choices[:1], actions=case.actions[:1] + case.actions[3:])
+    assert _decision_buttons(decide.render(one_choice, now=NOW))["blind_link"].children == "Choose 1 first"
+    assert prop(decide.render(one_choice, now=NOW), "data-needs-choice") == "yes"  # even one is chosen
+
+    chosen = decide.render(case, chosen="ORG-000871", now=NOW)
+    assert one(chosen, ids.CANDIDATE_CHOICE).value == "ORG-000871"
+    assert _decision_buttons(chosen)["blind_link"].children == "Belongs to ORG-000871"
+    assert prop(chosen, "data-needs-choice") is None
+    assert decide.link_target(case, "ORG-000871") == "ORG-000871"
+    assert decide.link_target(case, "ORG-999999") is None and decide.needs_choice(case, "ORG-999999")
+    assert one(decide.render(case, chosen="ORG-999999", now=NOW), ids.CANDIDATE_CHOICE).value is None
+
+
+def test_no_blind_or_disputed_decision_is_filled() -> None:
+    for case in samples.CHECKPOINT_CASES:
+        if case.shape not in decide.QUIET_SHAPES:
+            continue
+        for chosen in (None, *(c.master_id for c in case.choices), *(c.master_id for c in case.candidates)):
+            pane = decide.render(case, chosen=chosen, now=NOW)
+            looks = {name: b.variant for name, b in _decision_buttons(pane).items()}
+            assert looks and set(looks.values()) == {"default"}, (case.shape, looks)
+            actions = [c for c in walk(pane) if "mdm-action" in classes(c)]
+            assert not [c for c in actions if getattr(c, "variant", None) in ("filled", "light")]
+
+
+def test_a_blind_pair_needs_no_choice() -> None:
+    pane = decide.render(samples.CASE_BLIND_PAIR, now=NOW)
+    assert by_id(pane, ids.CANDIDATE_CHOICE) == [] and prop(pane, "data-needs-choice") is None
+    buttons = _decision_buttons(pane)
+    assert [(b.children, prop(b, "aria-keyshortcuts")) for b in buttons.values()] == [
+        ("They are the same", "L"),
+        ("They are not the same", "N"),
+    ]
+    assert prop(pane, "data-link") is None
+    assert "ORG-000211 · golden record" in text_of(one(pane, ids.DECIDE_COMPARE))
+
+
+def test_a_blind_review_with_nothing_near_offers_none_of_these_only() -> None:
+    pane = decide.render(samples.CASE_BLIND_NONE, now=NOW)
+    assert set(_decision_buttons(pane)) == {"blind_none"} and by_id(pane, ids.CANDIDATE_CHOICE) == []
+    assert prop(pane, "data-link") == "none"  # L does nothing; the notice says to press N
+    assert "Press N if it belongs to none." in text_of(pane)
+
+
+def test_the_first_decider_sees_the_sample_but_cannot_answer_it() -> None:
+    pane = decide.render(samples.CASE_BLIND_OWN, now=NOW)
+    for button in _buttons(pane).values():
+        assert prop(button, "disabled") is True
+    reasons = text_of(one(pane, ids.ACTION_REASONS))
+    assert reasons == "You made the first decision on this record, so another steward reviews it."
+    assert prop(pane, "data-locked") == "yes"  # choosing in the browser enables nothing
+    assert prop(decide.render(samples.CASE_BLIND, now=NOW), "data-locked") is None
+    assert prop(decide.render(samples.CASE_OWNER_VIEW, now=NOW), "data-locked") == "yes"
+
+
+def test_the_disputed_pane_offers_keep_the_first_decision() -> None:
+    open_link = decide.render(samples.CASE_DISPUTED_LINK, now=NOW)
+    buttons = _decision_buttons(open_link)
+    assert [(b.children, prop(b, "aria-keyshortcuts"), b.variant) for b in buttons.values()] == [
+        ("Keep the first decision", "A", "default"),
+        ("Link to ORG-000123", "L", "default"),
+    ]
+    assert len(panels_of(open_link)) == 1  # decided in the open: the waterfall is there
+    assert "/record/ORG-000123" in _anchors(open_link)
+    kept_only = decide.render(samples.CASE_DISPUTED, now=NOW)
+    assert list(_decision_buttons(kept_only)) == ["keep_decision"]
+    assert samples.CASE_DISPUTED.notice in text_of(kept_only)
+    assert [c.master_id for c in samples.CASE_DISPUTED.candidates] == [
+        p.id["master_id"] for p in panels_of(kept_only)
+    ]
+    pair = decide.render(samples.CASE_DISPUTED_PAIR, now=NOW)
+    assert list(_decision_buttons(pair)) == ["keep_decision"]
+    assert "Merging needs a second steward" in text_of(pair)
+
+
+def test_the_breaker_sentences_round_down_and_name_no_value() -> None:
+    assert breaker.sentence(samples.BREAKER_AGREEMENT) == (
+        "Automatic linking for Organisation is paused: blind review confirmed 30 of the last 40 automatic "
+        "links (75%), confidently below 95%."
+    )
+    near = replace(samples.BREAKER_AGREEMENT, figures={"agreed": 39, "reviewed": 41, "threshold": 0.95})
+    assert "(95%)" in breaker.sentence(near)  # 95.1% reads 95%, never rounded up
+    assert "(97%)" in breaker.sentence(replace(near, figures={**near.figures, "agreed": 40, "reviewed": 41}))
+    assert breaker.sentence(samples.BREAKER_VOLUME) == (
+        "Automatic linking for Person is paused: 12,400 records arrived in the hour from 23:00 UTC, more than "
+        "5 times the mean for that hour over the last 7 days (1,100)."
+    )
+    quiet = replace(samples.BREAKER_VOLUME, figures={**samples.BREAKER_VOLUME.figures, "mean": 0.0})
+    assert breaker.sentence(quiet) == (
+        "Automatic linking for Person is paused: 12,400 records arrived in the hour from 23:00 UTC; none "
+        "arrived in that hour over the last 7 days."
+    )
+    tenth = replace(samples.BREAKER_VOLUME, figures={**samples.BREAKER_VOLUME.figures, "mean": 12.5})
+    assert "(12.5)" in breaker.sentence(tenth)
+    assert breaker.line_text(samples.BREAKER_AGREEMENT, NOW) == (
+        "Organisation: automatic linking paused since 11:02 UTC"
+    )
+    assert "since 26 Sep, 23:05 UTC" in breaker.line_text(samples.BREAKER_VOLUME, NOW)  # another day
+
+
+def test_the_breaker_line_has_no_live_role_and_the_pane_explains_it() -> None:
+    strip = health.render(samples.HEALTH_PAUSED, NOW)
+    lines = [c for c in walk(strip) if "mdm-breaker-line" in classes(c)]
+    assert [text_of(line).strip() for line in lines] == [
+        breaker.line_text(samples.BREAKER_AGREEMENT, NOW),
+        breaker.line_text(samples.BREAKER_VOLUME, NOW),
+    ]
+    for line in lines:
+        assert prop(line, "role") is None and prop(line, "aria-live") is None  # drawn again every poll
+        icons = [c for c in walk(line) if "mdm-icon" in classes(c)]
+        assert icons and all(prop(i, "aria-hidden") == "true" for i in icons)
+    assert not [c for c in walk(health.render(samples.HEALTH, NOW)) if "mdm-breaker-line" in classes(c)]
+    pane = decide.render(samples.CASE_PAUSED, now=NOW)
+    notices = [c for c in walk(pane) if "mdm-breaker-notice" in classes(c)]
+    assert len(notices) == 1 and {"mdm-notice", "mdm-notice-warning"} <= classes(notices[0])
+    (details,) = [c for c in walk(notices[0]) if type(c).__name__ == "Details"]
+    assert details.open is True  # a record the breaker made wait: why, at once
+    assert text_of(notices[0]) == (
+        "Automatic linking for Organisation is paused.Blind review confirmed 30 of the last 40 automatic "
+        "links (75%), confidently below 95%."
+    )  # what waits and who restores it: the reason above and the footer say it, not a third time
+    other = decide.render(replace(samples.CASE_CLOSE_CALL, paused=samples.BREAKER_AGREEMENT), now=NOW)
+    (notice,) = [c for c in walk(other) if "mdm-breaker-notice" in classes(c)]
+    (quiet,) = [c for c in walk(notice) if type(c).__name__ == "Details"]
+    assert quiet.open is False  # any other task of the entity: one line, the rest behind it
+    assert "there is no button for it here" in text_of(notice)
+    for shape in ("golden", "golden_pair", "disputed", "information"):  # a record it could have linked only
+        away = decide.render(replace(samples.CASE_CLOSE_CALL, paused=samples.BREAKER_AGREEMENT, shape=shape))
+        assert not [c for c in walk(away) if "mdm-breaker-notice" in classes(c)]
+    assert not [c for c in walk(pane) if "restore" in str(getattr(c, "id", "")).lower()]
+    blocked = _decision_buttons(pane)["not_a_match"]
+    assert prop(blocked, "disabled") is True
+    assert samples.CASE_PAUSED.actions[0].why_not in text_of(one(pane, ids.ACTION_REASONS))
+    # the case's notice is also why Not a match is unavailable: said once, beside the action
+    assert text_of(pane).count(samples.CASE_PAUSED.notice) == 1
+
+
+def test_a_quality_sample_row_is_its_title_and_one_muted_line() -> None:
+    row = inbox.grid_row(samples.ROW_SAMPLE, NOW, kind_shown=False)
+    assert (row["title"], row["kind_label"], row["band_text"], row["band"]) == ("Quorane Works", "", "", "")
+    assert row["second_title"] == "Decide blind · Organisation"
+    assert row["due"] == "2 d"
+
+
+def test_the_samples_view_its_query_and_the_keys_it_maps() -> None:
+    entities = ("organisation", "person")
+    assert inbox.parse_query({"view": "samples", "kind": "review"}, entities)["view"] == "samples"
+    assert inbox.parse_query({"view": "samples", "kind": "review"}, entities)["kind"] is None
+    assert inbox.address_query({"search": "?view=samples", "entity": "", "path": "/"}, entities) == {
+        "view": "samples",
+        "kind": None,
+        "entity": "",
+    }
+    assert inbox.list_name({"view": "samples"}) == "Quality samples"
+    assert inbox.page_label({"view": "samples"}, 0, 12) == "Quality samples: 1–12"
+    assert inbox.mixed_kinds({"view": "team"}) and not inbox.mixed_kinds({"view": "samples"})
+    assert not inbox.mixed_kinds({"view": "team", "kind": "review"})
+    assert inbox.EMPTY_VIEWS["samples"] == "No quality sample waits for you."
+    assert inbox.decision_for("link", "blind") == "blind_link"
+    assert inbox.decision_for("link", "blind_pair") == "blind_link"
+    assert inbox.decision_for("not_a_match", "blind") == "blind_none"
+    assert inbox.decision_for("not_a_match", "blind_pair") == "blind_none"
+    assert inbox.decision_for("link", "disputed") == "link"
+    assert inbox.decision_for("approve", "disputed") == "keep_decision"
+    assert inbox.decision_for("approve", "disputed_pair") == "keep_decision"
+    assert inbox.decision_for("link", "source") == "link"
+    for action in ("blind_link", "blind_none", "keep_decision"):
+        assert inbox.requested_action({"action": action}) == action
+        assert inbox.decision_for(action, "blind") == action
+
+
+# ---------------------------------------------------------------------------------------------- on a sampled hub
+
+
+@pytest.fixture
+def sampled() -> Iterator[Hub]:
+    """The mini world with every automated decision drawn for blind review (a share of 1)."""
+    settings = base_settings().with_(sample_share=1.0)
+    store = open_store(settings)
+    store.init_schema(create_landing=True)
+    hub = open_hub(settings, store, "duckdb")
+    try:
+        helpers.workbench_world(hub)
+        yield hub
+    finally:
+        hub.close()
+        store.close()
+
+
+def a_sample(hub: Hub, ctx, *, choices: int = 1):
+    """An open quality sample of a record with at least `choices` golden records offered, and its case."""
+    for row in hub.inbox.page("samples", actor=ctx.actor).rows:
+        if ":" not in row.subject:
+            continue
+        case = hub.decisions.case(row.task_id, actor=ctx.actor)
+        if len(case.choices) >= choices:
+            return row, case
+    raise AssertionError("no sample with enough golden records offered")
+
+
+def test_the_quality_samples_view_lists_blind_rows_only(sampled: Hub) -> None:
+    ctx = context.for_test(sampled)
+    page = inbox.layout(ctx, {"view": "samples"})
+    grid = one(page, ids.INBOX_GRID)
+    assert grid.rowData and {row["kind"] for row in grid.rowData} == {"quality_sample"}
+    for row in grid.rowData:
+        assert row["kind_label"] == "" and row["band_text"] == ""  # one kind; no score to show
+        assert "Decide blind" in row["second_title"] and "blind review" not in row["second_title"]
+    assert one(page, ids.PAGE_LABEL).children == f"Quality samples: 1–{len(grid.rowData)}"
+    assert one(page, ids.INBOX_QUERY).data == {"view": "samples", "kind": None, "entity": ""}
+    team = one(inbox.layout(ctx, {"view": "team"}), ids.INBOX_GRID)
+    assert not [row for row in team.rowData if row["kind"] == "quality_sample"]
+
+
+def test_a_blind_answer_stages_through_the_tray_after_a_choice(sampled: Hub) -> None:
+    ctx = context.for_test(sampled)
+    row, case = a_sample(sampled, ctx)
+    pane, shown = inbox.case_view(ctx, row.task_id)
+    assert shown["shape"] == "blind" and shown["default"] is None
+    assert prop(pane, "data-blind") == "yes" and _anchors(pane) == []
+    unchosen = inbox.act(ctx, "link", task_id=row.task_id, stamp=shown)
+    assert unchosen.advance is False and unchosen.notices[0]["message"] == messages.sentence_for(
+        "choose_first"
+    )
+    assert staged_entries(sampled, ctx) == []
+
+    target = case.choices[0].master_id
+    staged = inbox.act(ctx, "link", task_id=row.task_id, candidate=target, stamp=shown)
+    label = f"Quality sample: {row.subject} belongs to {target}"
+    assert staged.advance is True and staged.row is not None and staged.row.staged.label == label
+    assert staged.notices[0]["message"].startswith(label)
+    assert [(e.decision, e.label) for e in staged_entries(sampled, ctx)] == [("blind_link", label)]
+    undone = inbox.act(ctx, "undo", task_id=row.task_id)
+    assert undone.touched == row.task_id and staged_entries(sampled, ctx) == []
+
+    clicked = inbox.act(ctx, "blind_link", task_id=row.task_id, candidate=target, stamp=shown)
+    assert clicked.advance and [e.decision for e in staged_entries(sampled, ctx)] == ["blind_link"]
+    inbox.act(ctx, "undo", task_id=row.task_id)
+    none = inbox.act(ctx, "not_a_match", task_id=row.task_id, stamp=shown)
+    assert none.row.staged.label == f"Quality sample: {row.subject} belongs to none shown"
+    assert [e.decision for e in staged_entries(sampled, ctx)] == ["blind_none"]
+
+
+def test_a_disagreement_opens_a_dispute_that_a_keeps(sampled: Hub) -> None:
+    ctx = context.for_test(sampled)
+    row, _case = a_sample(sampled, ctx)
+    inbox.act(ctx, "not_a_match", task_id=row.task_id, stamp=stamp(ctx, row.task_id))
+    window_passed(sampled)
+    assert sampled.tray.flush().committed == 1
+    (settled,) = [v for v in sampled.tray.entries(actor=ctx.actor) if v.task_id == row.task_id]
+    assert settled.outcome == "disagreed"
+    other = context.for_test(sampled, role="coordinating_steward")
+    disputes = [
+        r
+        for r in sampled.inbox.page("team", actor=other.actor).rows
+        if r.reason == "a blind review disagreed"
+    ]
+    assert len(disputes) == 1
+    dispute = disputes[0]
+    assert dispute.suggestion == "Keep or correct the first decision"
+    pane, shown = inbox.case_view(other, dispute.task_id)
+    assert shown["shape"] == "disputed" and prop(pane, "data-quiet") == "yes"
+    assert "keep_decision" in _decision_buttons(pane)
+    kept = inbox.act(other, "approve", task_id=dispute.task_id, stamp=shown)
+    assert kept.advance and kept.row.staged.label.startswith("Keep the first decision on ")
+
+
+def test_a_blind_pair_is_answered_without_a_choice(sampled: Hub) -> None:
+    helpers.golden_pair(sampled)
+    pair = helpers.task_of(sampled, kind="possible_duplicate")
+    steward = context.for_test(sampled)
+    inbox.act(steward, "not_a_match", task_id=pair.task_id, stamp=stamp(steward, pair.task_id))
+    window_passed(sampled)
+    assert sampled.tray.flush().committed == 1
+    other = context.for_test(sampled, role="coordinating_steward")
+    rows = [r for r in sampled.inbox.page("samples", actor=other.actor).rows if ":" not in r.subject]
+    assert len(rows) == 1
+    # the steward who kept them apart never sees the sample among theirs
+    assert rows[0].task_id not in {r.task_id for r in sampled.inbox.page("samples", actor=steward.actor).rows}
+    pane, shown = inbox.case_view(other, rows[0].task_id)
+    assert shown["shape"] == "blind_pair" and by_id(pane, ids.CANDIDATE_CHOICE) == []
+    same = inbox.act(other, "link", task_id=rows[0].task_id, stamp=shown)
+    first, second = rows[0].subject.split(" · ")
+    assert same.advance and same.row.staged.label == f"Quality sample: {first} and {second} are the same"
+    own = inbox.act(steward, "link", task_id=rows[0].task_id, stamp=stamp(steward, rows[0].task_id))
+    assert own.advance is False
+
+
+def test_an_empty_samples_view_says_so(world: Hub) -> None:
+    ctx = context.for_test(world)
+    nothing, _ = inbox.case_view(ctx, None, query={"view": "samples", "kind": None, "entity": ""})
+    assert text_of(nothing) == "No quality sample waits for you."
+
+
+def test_a_records_quality_sample_opens_in_its_own_view_and_four_records_fit_side_by_side() -> None:
+    from mdm.ui.pages import source as source_page
+
+    assert source_page.task_href("TSK-1a", "quality_sample") == "/?view=samples&task=TSK-1a"
+    assert (
+        source_page.task_href("TSK-1a", "review")
+        == source_page.task_href("TSK-1a")
+        == "/?view=team&task=TSK-1a"
+    )
+    wide = compare.render(samples.CASE_BLIND.columns, samples.CASE_BLIND.compare)
+    assert [classes(c) for c in walk(wide) if "mdm-compare" in classes(c)] == [
+        {"mdm-table", "mdm-compare", "mdm-compare-wide", "mdm-compare-multi"}
+    ]
+    two = compare.render(samples.CASE_PERSON_STAGED.columns, samples.CASE_PERSON_STAGED.compare)
+    assert [classes(c) for c in walk(two) if "mdm-compare" in classes(c)] == [{"mdm-table", "mdm-compare"}]
+
+
+def test_claim_snooze_and_escalate_wrap_as_one_group_after_the_decisions() -> None:
+    """A long answer ("Belongs to none of these") never leaves Escalate alone on a second line."""
+    for case in (samples.CASE_BLIND, samples.CASE_CLOSE_CALL):
+        (bar,) = [c for c in walk(decide.render(case, now=NOW)) if "mdm-actions" in classes(c)]
+        main, moving = bar.children  # the arrows stay beside the group, never wrapped onto a line alone
+        assert classes(main) == {"mdm-actions-main"} and classes(moving) == {"mdm-moving"}
+        *decisions, work = main.children
+        assert classes(work) == {"mdm-actions-work"}
+        grouped = [str(getattr(c, "id", "")) for c in walk(work)]
+        assert any("claim" in g for g in grouped) and not any("not_a_match" in g for g in grouped)
+        ids_before = [str(getattr(c, "id", "")) for d in decisions for c in walk(d)]
+        assert decisions and not any("claim" in i for i in ids_before)

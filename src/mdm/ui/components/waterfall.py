@@ -1,5 +1,5 @@
 """The match-weight waterfall, to scale: one row per step from the prior, on one axis of weights with a zero
-line and the band edges marked by the scores they stand for; a bar from the running total before the step
+line and the band edges marked by the scores they stand for (the only ticks, so the axis stays quiet); a bar from the running total before the step
 to after it, the signed weight; a total row with a marker, "Total +1.9 → score 79"; and a visually hidden
 table repeating the numbers. Pure HTML with inline percentages (B.8.7).
 
@@ -35,7 +35,7 @@ ROW_STYLE = {
     "gridTemplateColumns": "minmax(7rem, 10.5rem) 1fr 4.2rem",
     "alignItems": "center",
     "gap": "8px",
-    "minHeight": "17px",
+    "minHeight": "16px",
 }
 
 
@@ -163,29 +163,40 @@ def _row(
             ),
         ],
         className=classes,
-        style={**ROW_STYLE, "fontWeight": 650} if total else ROW_STYLE,
+        style={**ROW_STYLE, "fontWeight": 600} if total else ROW_STYLE,
         role="img",
         **{"aria-label": words},
     )
 
 
+#: what the axis's ticks are: the two band edges, labelled by the scores they stand for
+AXIS_LABEL = "band edges"
+#: how far apart (in % of the track) the two edges' labels must be to be drawn apart; closer, one tick
+TICKS_APART = 6.0
+
+
 def axis_row(candidate: Candidate, low: float, high: float) -> Component:
-    """The axis under the rows: its ends and zero as weights, the band edges as the scores they stand
-    for ("60", "90"). Hidden from screen readers: the rows and the table say the same."""
+    """The axis under the rows: the two band edges, as the scores they stand for ("60", "90"); each row
+    keeps its signed weight on the right. Hidden from screen readers: the rows and the table say the
+    same."""
     lower, upper = sorted(candidate.thresholds)
-    ticks = [
-        (low, wording.signed(low).replace(".0", ""), "mdm-wf-tick mdm-wf-tick-end mdm-wf-tick-low"),
-        (lower, wording.score_text(score_of(lower)), "mdm-wf-tick mdm-wf-tick-score"),
-        (upper, wording.score_text(score_of(upper)), "mdm-wf-tick mdm-wf-tick-score"),
-        (high, wording.signed(high).replace(".0", ""), "mdm-wf-tick mdm-wf-tick-end mdm-wf-tick-high"),
-    ]
+    low_at, high_at = position(lower, low, high), position(upper, low, high)
+    if high_at - low_at < TICKS_APART:
+        # a wide scale draws the two edges close: one centred tick, "60–90", never "6090"
+        both = f"{wording.score_text(score_of(lower))}–{wording.score_text(score_of(upper))}"
+        ticks = [((lower + upper) / 2, both, "mdm-wf-tick mdm-wf-tick-score")]
+    else:
+        ticks = [
+            (lower, wording.score_text(score_of(lower)), "mdm-wf-tick mdm-wf-tick-score"),
+            (upper, wording.score_text(score_of(upper)), "mdm-wf-tick mdm-wf-tick-score"),
+        ]
     marks = [
         html.Span(text, className=classes, style={"left": f"{position(at, low, high)}%"})
         for at, text, classes in ticks
     ]
     return html.Div(
         [
-            html.Span("weight · score", className="mdm-wf-label mdm-wf-axis-label"),
+            html.Span(AXIS_LABEL, className="mdm-wf-label mdm-wf-axis-label"),
             html.Div(marks, className="mdm-wf-axis"),
             html.Span(""),
         ],

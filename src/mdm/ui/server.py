@@ -18,9 +18,11 @@ ANY_ADDRESS = "0.0.0.0"  # chosen only when settings.in_databricks_app
 
 
 def serve(settings: Settings, *, host: str, port: int, dev: bool = False, worker: bool | None = None) -> None:
-    """Builds the app for `settings` and serves it on `host:port` until stopped (threaded, no reloader)."""
+    """Builds the app for `settings` and serves it on `host:port` until stopped (threaded, no reloader); on a
+    shared store only with the matcher's checkpoint in force, since its tray commits the stewards' decisions."""
     from mdm.ui.app import create_app
 
+    settings.validate_checkpoint_in_force()
     app = create_app(settings, worker=worker, listen=(host, port))
     app.run(
         host=host,

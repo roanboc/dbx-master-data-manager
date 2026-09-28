@@ -4,7 +4,9 @@ screenshots, and by hand.
 Only the invented demo world (`mdm demo land`), only on a DuckDB file this module is handed, never the
 local store under `.mdm/`, and always with the stub assistant and no platform variable. The command
 line runs as subprocesses (`python -m mdm …`), exactly as `make demo` runs it: creations and hard cases
-first, then the later events, so stewards get reviews, close calls, held updates and orphans.
+first, then the later events, so stewards get reviews, close calls, held updates and orphans, and a share
+of the matcher's decisions is drawn for blind review (quality samples). `trip_breaker` pauses an entity's
+automatic linking with the breaker's demo trip, on the local store only, for the checks of its notice.
 
     uv run --group gui python tools/workbench_live.py            # seed a temporary store and serve it
     uv run --group gui python tools/workbench_live.py --browser  # … and open Chromium on it
@@ -44,6 +46,10 @@ _PLATFORM = ("DATABRICKS_APP_NAME", "DATABRICKS_APP_PORT", "DATABRICKS_RUNTIME_V
 START_TIMEOUT = 60.0
 #: the world the browser checks use (plan B.9.3); the screenshots take a larger one
 WORLD = {"persons": 300, "organisations": 100, "hard_cases": 0.05}
+#: the share of decisions drawn for blind review: the default, named so the checks' samples never move with it
+SAMPLE_SHARE = 0.02
+#: what the breaker's demo trip says: blind review confirmed 30 of the last 40 automatic links
+TRIP_FIGURES = {"agreed": 30, "reviewed": 40, "threshold": 0.95, "window": 100}
 
 
 @dataclass(frozen=True)
@@ -101,17 +107,34 @@ def seed(
     seed: int = 7,
     updates: float = 0.3,
     deletes: float = 0.03,
+    share: float | None = None,
+    trip: str | None = None,
 ) -> None:
     """A fresh store at `path` with the invented world: creations and hard cases, arrival, then the later
-    events, arrival again."""
+    events, arrival again. `share` is the share drawn for blind review (`MDM_SAMPLE_SHARE`; the default when
+    None); `trip` names an entity whose automatic linking the breaker then pauses (`trip_breaker`)."""
     world = ("--persons", str(persons), "--organisations", str(organisations), "--seed", str(seed))
     cases = ("--hard-cases", str(hard_cases))
-    mdm(path, "demo", "reset", "--yes")
-    mdm(path, "init", "--models", str(MODELS))
-    mdm(path, "demo", "land", *world, *cases, "--creations-only")
-    mdm(path, "arrive")
-    mdm(path, "demo", "land", *world, *cases, "--updates", str(updates), "--deletes", str(deletes))
-    mdm(path, "arrive")
+    env = {"MDM_SAMPLE_SHARE": str(share)} if share is not None else {}
+    mdm(path, "demo", "reset", "--yes", env=env)
+    mdm(path, "init", "--models", str(MODELS), env=env)
+    mdm(path, "demo", "land", *world, *cases, "--creations-only", env=env)
+    mdm(path, "arrive", env=env)
+    mdm(path, "demo", "land", *world, *cases, "--updates", str(updates), "--deletes", str(deletes), env=env)
+    mdm(path, "arrive", env=env)
+    if trip is not None:
+        trip_breaker(path, trip)
+
+
+def trip_breaker(path: Path, entity: str, *, figures: Mapping[str, Any] | None = None) -> None:
+    """Pauses `entity`'s automatic linking on the DuckDB file `path` with the breaker's demo trip (local
+    stores only; the audit marks it `demo`): a hub opened in this process, then closed."""
+    from mdm.config import Settings
+    from mdm.services.context import Hub
+
+    settings = Settings(duckdb_path=str(_checked(path)), models_dir=str(MODELS), agent_provider="stub")
+    with Hub.open(settings, as_role="data_owner") as hub:
+        hub.breaker.demo_trip(entity, figures=dict(figures or TRIP_FIGURES))
 
 
 def copy_store(source: Path, target: Path) -> Path:

@@ -58,6 +58,7 @@ task_app = typer.Typer(help="Tasks for people.", no_args_is_help=True)
 record_app = typer.Typer(help="Golden records.", no_args_is_help=True)
 feed_app = typer.Typer(help="The change feed, as a consumer reads it.", no_args_is_help=True)
 tray_app = typer.Typer(help="The undo tray.", no_args_is_help=True)
+breaker_app = typer.Typer(help="The quality breaker.", no_args_is_help=True)
 app.add_typer(model_app, name="model")
 app.add_typer(rules_app, name="rules")
 app.add_typer(codelists_app, name="codelists")
@@ -66,6 +67,7 @@ app.add_typer(task_app, name="task")
 app.add_typer(record_app, name="record")
 app.add_typer(feed_app, name="feed")
 app.add_typer(tray_app, name="tray")
+app.add_typer(breaker_app, name="breaker")
 
 RULE_KINDS = ("match", "survivorship", "validation")
 ESTIMATION_METHODS = ("auto", "em", "identifier")
@@ -667,6 +669,9 @@ def _report_lines(label: str, report: Any) -> list[str]:
         f"  tasks: {_counts(dict(sorted(report.tasks.items())))}",
         f"  position: read up to {report.high_water}, complete up to {report.low_water}; "
         f"gaps open {report.gaps_open}, lost {report.gaps_lost}; records capped {report.candidates_capped}",
+        f"  checkpoint: quality samples drawn {report.samples}, skipped at the cap {report.samples_skipped}; "
+        f"sent to review by the breaker {report.demoted}, handed back after a restore {report.handed_back}; "
+        f"breaker tripped: {', '.join(report.tripped) or 'none'}",
         f"  {report.seconds:.1f} s, {report.records_per_second:.0f} records/s",
     ]
 
@@ -1144,6 +1149,151 @@ def tray_flush(
                 time.sleep(watch)
         except KeyboardInterrupt:  # --watch runs until stopped
             return
+
+
+# ---------------------------------------------------------------------------------------------- the quality breaker
+
+
+def _thousands(value: float) -> str:
+    """ "1,000"; "110.4" for a mean that is not whole."""
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.1f}"
+
+
+def _floor_percent(share: float) -> int:
+    """A share as a whole percentage rounded down, so 94.9% never prints as 95%."""
+    return int(share * 100 + 1e-9)
+
+
+def _breaker_trip_words(status: Any) -> str:
+    """Why the band is demoted, from the trip's safe figures."""
+    figures = status.figures or {}
+    if status.trigger == "volume":
+        arrivals = int(figures.get("arrivals") or 0)
+        mean = float(figures.get("mean") or 0)
+        days = int(figures.get("days") or status.days)
+        hour = str(figures.get("hour") or "")[11:16] or "?"
+        if mean <= 0:
+            return (
+                f"{_thousands(arrivals)} records arrived in the hour from {hour} UTC; none arrived in that hour "
+                f"over the last {days} days"
+            )
+        return (
+            f"{_thousands(arrivals)} records arrived in the hour from {hour} UTC, more than "
+            f"{_thousands(float(figures.get('multiple') or status.multiple))} times the mean for that hour over "
+            f"the last {days} days ({_thousands(mean)})"
+        )
+    agreed = int(figures.get("agreed") or 0)
+    reviewed = int(figures.get("reviewed") or 0)
+    threshold = float(figures.get("threshold") or status.threshold)
+    share = _floor_percent(agreed / reviewed) if reviewed else 0
+    return f"blind review agreed {agreed} of {reviewed} ({share}%), confidently below {_floor_percent(threshold)}%"
+
+
+def _breaker_line(status: Any) -> str:
+    """One line per entity: the band's state, the agreement of automatic links, the quality samples and the
+    volume against its trigger (`mdm breaker status`)."""
+    entity = status.entity
+    if status.state == "demoted":
+        since = status.tripped_at.strftime("%Y-%m-%d %H:%M UTC") if status.tripped_at else "a trip"
+        return (
+            f"{entity}: automatic band demoted since {since} by the quality breaker: {_breaker_trip_words(status)}. "
+            f"A data owner restores it: mdm breaker restore --entity {entity} --reason cause_fixed"
+        )
+    threshold = _floor_percent(status.threshold)
+    trips = f"it trips once {status.min_samples} are reviewed and it is confidently below {threshold}%"
+    if status.reviewed:
+        agreement = (
+            f"blind review agreed {status.agreed} of the last {status.reviewed} automatic links "
+            f"({_floor_percent(status.agreed / status.reviewed)}%); {trips}"
+        )
+    else:
+        agreement = f"no automatic link reviewed blind yet; {trips}"
+    samples = (
+        f"quality samples {status.samples_open} open, {status.samples_overdue} overdue, "
+        f"{status.samples_voided} voided"
+    )
+    if not status.history_ready:
+        since = status.watch_since
+        watched = f"{since.day} {since:%b %Y}" if since is not None else "its first arrival"
+        volume = f"volume watched from {watched}; {status.days} days of history are needed"
+    elif status.mean <= 0:
+        volume = (
+            f"{_thousands(status.arrivals)} arrivals this hour, none in this hour over the last {status.days} "
+            f"days; it trips at {_thousands(status.spike_min)}"
+        )
+    else:
+        volume = (
+            f"{_thousands(status.arrivals)} arrivals this hour, {_thousands(status.mean)} in this hour on "
+            f"average over the last {status.days} days; it trips above {_thousands(status.multiple)} times "
+            f"that and {_thousands(status.spike_min)}"
+        )
+    return f"{entity}: automatic band normal · {agreement} · {samples} · {volume}"
+
+
+@breaker_app.command("status")
+def breaker_status(
+    ctx: typer.Context,
+    entity: Annotated[
+        str | None,
+        typer.Option("--entity", help="One entity (default: every published one).", callback=_checked_name),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Machine output (canonical JSON).")] = False,
+) -> None:
+    """Each entity's automatic band: normal or demoted, why, and what would trip it."""
+    state = _state(ctx)
+    if json_output:
+        state.json = True
+        ctx.obj = state
+    with _hub(ctx) as hub:
+        entities = [entity] if entity else hub.registry.published_entities()
+        statuses = hub.breaker.status(entities, actor=hub.actor)
+        _emit(
+            state, _plain(statuses), lambda: [_breaker_line(s) for s in statuses] or ["no published entity"]
+        )
+
+
+_RESTORE_REFUSALS = {
+    "not_demoted": "The automatic band of {entity} is not demoted, so there is nothing to restore.",
+    "bad_restore_reason": "A restore names its reason: cause_fixed, false_alarm or load_expected.",
+    "unknown_entity": "No published model is named {entity}.",
+    "no_published_model": "No published model is named {entity}.",
+}
+
+
+@breaker_app.command("restore")
+def breaker_restore(
+    ctx: typer.Context,
+    entity: Annotated[
+        str, typer.Option("--entity", help="The entity whose band to restore.", callback=_checked_name)
+    ],
+    reason: Annotated[
+        str,
+        typer.Option("--reason", help="cause_fixed, false_alarm or load_expected (a code, never free text)."),
+    ],
+) -> None:
+    """Restore an entity's automatic band after the quality breaker demoted it (a data owner, on record)."""
+    state = _state(ctx)
+    with _hub(ctx) as hub:
+        try:
+            restored = hub.breaker.restore(entity, actor=hub.actor, reason=reason)
+        except MdmError as error:
+            if error.code == "forbidden":
+                role = hub.actor.role.replace("_", " ")
+                raise _refuse(
+                    state, error, f"Only a data owner restores the automatic band; you act as a {role}."
+                ) from None
+            words = _RESTORE_REFUSALS.get(error.code)
+            if words is None:
+                raise _fail(state, error) from None
+            raise _refuse(state, error, words.format(entity=entity)) from None
+        _emit(
+            state,
+            _plain(restored),
+            lambda: [
+                f"Restored the automatic band of {entity} (change set {restored.restore_change_set}). The records "
+                "waiting for review because of the breaker go back to arrival on its next run."
+            ],
+        )
 
 
 def main() -> None:

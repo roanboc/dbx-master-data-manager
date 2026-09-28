@@ -55,13 +55,15 @@ CLAUSES_MARK = "; clauses "
 def require(actor: Actor, action: str) -> None:
     """`Forbidden` ("forbidden action=publish_model role=consumer") unless `ACTIONS[action]` allows the actor.
 
-    For "arrival" the automated actor's name is checked, for every other action the role.
+    An automated actor passes only the actions whose set names it: its name is checked for every action, never
+    its role, so the automated matcher takes only "arrival" and the quality breaker only "trip_breaker". A
+    person passes by role.
     """
     allowed = ACTIONS.get(action)
     if allowed is None:
         raise Forbidden("unknown_action", action=token(action))
-    if action == "arrival":
-        if actor.kind != "automated" or actor.name not in allowed:
+    if actor.kind == "automated":
+        if actor.name not in allowed:
             raise Forbidden("forbidden", action=action, role=token(actor.role))
         return
     if actor.role not in allowed:

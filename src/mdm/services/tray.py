@@ -27,6 +27,7 @@ from mdm.models.workbench import FlushReport, TrayEntry, TrayView
 from mdm.services import display
 from mdm.services.arrival import ArrivalService
 from mdm.services.authority import require
+from mdm.services.breaker import BreakerService
 from mdm.services.decisions import DecisionService
 from mdm.services.inbox import InboxService, task_lock
 from mdm.services.support import token
@@ -43,6 +44,8 @@ class TrayService:
         inbox: InboxService,
         arrival: ArrivalService,
         clock: Callable[[], datetime] = utcnow,
+        *,
+        breaker: BreakerService | None = None,
     ) -> None:
         """Wires the service; reads nothing from the store (`mdm init` wires the hub before the schema)."""
         self.settings = settings
@@ -51,6 +54,7 @@ class TrayService:
         self.inbox = inbox
         self.arrival = arrival
         self.clock = clock
+        self.breaker = breaker or decisions.breaker
 
     # ------------------------------------------------------------------ staging and undoing
 
@@ -170,9 +174,11 @@ class TrayService:
         """Commits the entries whose window has passed, in deadline order, each on its own; settles each
         `committed` or `failed` with its outcome, and asks arrival to settle the records a "not a match"
         queued again. `FlushReport(skipped_busy=True)` when another flush holds the tray. `started_by`
-        (the command line) needs `flush_tray`; the worker passes none."""
+        (the command line) needs `flush_tray`; the worker passes none. On a shared store the matcher's
+        checkpoint must be in force (`ConfigError` otherwise, and every entry stays staged)."""
         if started_by is not None:
             require(started_by, "flush_tray")
+        self.settings.validate_checkpoint_in_force()
         limit = capacity.require_limit(limit, capacity.READ_PAGE)
         with self.store.exclusive_lease("tray") as held:
             if not held:
@@ -187,6 +193,8 @@ class TrayService:
                 if outcome == "committed" and queued:
                     requeued += len(queued)
                     self._settle_records(entry.entity, queued)
+                if outcome == "committed" and entry.decision in ("blind_link", "blind_none"):
+                    self._check_agreement(entry.entity)
             committed = outcomes.get("committed", 0)
             return FlushReport(
                 committed=committed,
@@ -230,6 +238,14 @@ class TrayService:
         if self.store.fail_tray(entry.entry_id, outcome, now, entry.task_id, entry.actor):
             return outcome
         return None  # undone meanwhile: nothing to do
+
+    def _check_agreement(self, entity: str) -> None:
+        """After a blind answer commits, the quality breaker checks the agreement of automatic links; any
+        failure is logged by its type, since the answer has committed already."""
+        try:
+            self.breaker.check_agreement(entity)
+        except Exception as error:  # noqa: BLE001 - the answer has committed; the next check tries again
+            logger.warning("breaker_check_failed type=%s", type(error).__name__)
 
     def _settle_records(self, entity: str, sources: tuple[SourceKey, ...]) -> None:
         """Arrival settles the records a "not a match" queued again; any failure leaves them queued for the

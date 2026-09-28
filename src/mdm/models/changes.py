@@ -19,6 +19,7 @@ from typing import Any
 from mdm.models.authority import Actor, Authority
 from mdm.models.canonical import canonical_json
 from mdm.models.match import PairScore
+from mdm.models.quality import QualitySample, SampleReview
 from mdm.models.records import SourceKey
 from mdm.models.tasks import Task
 from mdm.models.workbench import MatchLabel, TraySettlement
@@ -254,6 +255,12 @@ class WorkWrites:
     tray: tuple[TraySettlement, ...] = ()  # the staged decisions this commit settles
     expect_events: tuple[tuple[SourceKey, str], ...] = ()  # each record must still be at this event
     close_task_ids: tuple[str, ...] = ()  # each task must still be open; closed by its ID
+    # the matcher's checkpoint (story 3.2)
+    samples: tuple[QualitySample, ...] = ()  # decisions drawn for blind review, inserted once each
+    reviews: tuple[SampleReview, ...] = ()  # blind answers: each sample must still be open
+    # (sample ID, task ID, source): a deleted record's open sample voided and its task, or the review its
+    # disagreement opened, closed
+    void_samples: tuple[tuple[str, str, SourceKey | None], ...] = ()
 
     def empty(self) -> bool:
         return not (
@@ -268,6 +275,9 @@ class WorkWrites:
             or self.tray
             or self.expect_events
             or self.close_task_ids
+            or self.samples
+            or self.reviews
+            or self.void_samples
         )
 
     def merged(self, other: WorkWrites) -> WorkWrites:
@@ -287,15 +297,19 @@ class WorkWrites:
             tray=self.tray + other.tray,
             expect_events=self.expect_events + other.expect_events,
             close_task_ids=self.close_task_ids + other.close_task_ids,
+            samples=self.samples + other.samples,
+            reviews=self.reviews + other.reviews,
+            void_samples=self.void_samples + other.void_samples,
         )
 
     def split(self, sources: Collection[SourceKey]) -> tuple[WorkWrites, WorkWrites]:
         """(the part for `sources`, the rest), for `CommitService.apply_chunked`.
 
         A task goes with its source; a task without a source (one naming master IDs) stays in the rest,
-        which goes with the last chunk. A pair goes with the part when either end is in `sources`. The
-        workbench's writes (labels, requeue, tray, expect_events, close_task_ids) all stay in the rest, so
-        they are checked and written with the last chunk.
+        which goes with the last chunk. A pair goes with the part when either end is in `sources`. A quality
+        sample and a void go with their record, like its task; a keep-apart sample (no record) stays in the
+        rest. The workbench's writes (labels, requeue, tray, expect_events, close_task_ids, reviews) all stay
+        in the rest, so they are checked and written with the last chunk.
         """
         chosen = frozenset(sources)
         part = WorkWrites(
@@ -306,6 +320,8 @@ class WorkWrites:
             release=tuple(s for s in self.release if s in chosen),
             tasks=tuple(t for t in self.tasks if t.source is not None and t.source in chosen),
             pairs=tuple(p for p in self.pairs if p.left in chosen or p.right in chosen),
+            samples=tuple(s for s in self.samples if s.source is not None and s.source in chosen),
+            void_samples=tuple(v for v in self.void_samples if v[2] is not None and v[2] in chosen),
         )
         rest = WorkWrites(
             entity=self.entity,
@@ -320,6 +336,9 @@ class WorkWrites:
             tray=self.tray,
             expect_events=self.expect_events,
             close_task_ids=self.close_task_ids,
+            samples=tuple(s for s in self.samples if s.source is None or s.source not in chosen),
+            reviews=self.reviews,
+            void_samples=tuple(v for v in self.void_samples if v[2] is None or v[2] not in chosen),
         )
         return part, rest
 

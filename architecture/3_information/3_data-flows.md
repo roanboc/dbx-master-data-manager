@@ -4,7 +4,7 @@ _[← Information layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Information: Data Object and the flows between data objects, with the parties outside the hub that write and read them, and Representation.
 
-**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
+**Status:** ◐ Draft catalogue — written for story 3.2 of initiative 3, Steward workbench; not yet validated.
 
 A flow between two data objects runs inside the hub. A flow to or from a party outside the hub crosses the landing interface, the listener interface, the workbench's screens or an optional copy for analytics.
 
@@ -118,6 +118,8 @@ flowchart LR
   dobj3_5["▦ Staged decision [DOBJ3.5]"]:::object
   dobj3_6["▦ Steward match label [DOBJ3.6]"]:::object
   dobj3_4["▦ Arrival position [DOBJ3.4]"]:::object
+  dobj3_7["▦ Quality sample [DOBJ3.7]"]:::object
+  dobj3_8["▦ Breaker state [DOBJ3.8]"]:::object
   dobj5_1["▦ Change set record [DOBJ5.1]"]:::object
   dobj4_1["▦ Golden record [DOBJ4.1]"]:::object
   dobj5_4["▦ Access log entry [DOBJ5.4]"]:::object
@@ -129,6 +131,13 @@ flowchart LR
   dobj3_5 -->|flows to| dobj3_6
   dobj3_5 -->|flows to| dobj3_4
   dobj3_6 -->|flows to| dobj3_1
+  dobj3_1 -->|flows to| dobj3_7
+  dobj3_5 -->|flows to| dobj3_7
+  dobj3_7 -->|flows to| dobj3_2
+  dobj3_7 -->|flows to| dobj3_8
+  dobj3_4 -->|flows to| dobj3_8
+  dobj3_8 -->|flows to| dobj3_2
+  dobj3_8 -->|flows to| dobj5_1
   dobj4_1 -->|flows to| screens
   asvc6 -->|accesses| dobj5_4
 
@@ -137,7 +146,7 @@ flowchart LR
   classDef representation fill:#ffffff,stroke:#0288d1,color:#333,stroke-dasharray: 2 2
 ```
 
-A steward's decision waits as a staged decision, then commits through the same path as every other change set. The dotted box is the [workbench screens](#representations), where people read records masked by role. [Application service [`ASVC6`] Privacy protection](../4_application/1_application-services.md#application-services) visits from the application layer: it writes one access log entry for each value it reveals, with the reason code. A declined record goes back to the arrival queue, and its label keeps the declined golden records out of its candidates ([decision 22](../decisions/22_labels-bind-the-matcher.md)).
+A steward's decision waits as a staged decision, then commits through the same path as every other change set. The dotted box is the [workbench screens](#representations), where people read records masked by role. [Application service [`ASVC6`] Privacy protection](../4_application/1_application-services.md#application-services) visits from the application layer: it writes one access log entry for each value it reveals, with the reason code. A declined record goes back to the arrival queue, and its label keeps the declined golden records out of its candidates ([decision 22](../decisions/22_labels-bind-the-matcher.md)). A share of the automated and the stewards' decisions is drawn as quality samples, in the transaction that commits each one. The quality breaker reads the agreement of their blind answers, and the arrivals per hour.
 
 | From | To | What moves | How | Owner |
 | ---- | -- | ---------- | --- | ----- |
@@ -146,6 +155,13 @@ A steward's decision waits as a staged decision, then commits through the same p
 | data object [`DOBJ3.5`] Staged decision | [data object [`DOBJ3.6`] Steward match label](./2_data-objects.md#resolution-work) | The match decision | The same transaction | business process [`BPROC3`] Decide a steward task |
 | data object [`DOBJ3.5`] Staged decision | [data object [`DOBJ3.4`] Arrival position](./2_data-objects.md#resolution-work) | A declined record, queued again | The same transaction; arrival settles it under its source's policy | [business process [`BPROC1`] Resolve an arrival](../2_business/3_business-processes.md#business-processes) |
 | data object [`DOBJ3.6`] Steward match label | [data object [`DOBJ3.1`] Candidate pair](./2_data-objects.md#resolution-work) | The golden records a record must not join | Arrival drops a declined golden record's members from the record's candidates before it clusters, and names the staged decision in its evidence | business process [`BPROC1`] Resolve an arrival |
+| data object [`DOBJ3.1`] Candidate pair | [data object [`DOBJ3.7`] Quality sample](./2_data-objects.md#resolution-work) | A share of the automated links and creates | Drawn by a hash of the record, its event and the decision, in the transaction that settles them, up to the cap of open automated samples per entity | business process [`BPROC1`] Resolve an arrival |
+| data object [`DOBJ3.5`] Staged decision | data object [`DOBJ3.7`] Quality sample | A blind answer; and a share of the stewards' links, "Not a match" and keep apart | The flush's commit settles the sample with the answer, or draws a sample of the steward's decision, in the same transaction | business process [`BPROC3`] Decide a steward task |
+| data object [`DOBJ3.7`] Quality sample | data object [`DOBJ3.2`] Steward task | A sample's task; a review when a blind answer disagrees | One task per sample, with no first decision, suggestion or score in its evidence; a disagreement opens a review of the first decision | business process [`BPROC1`] Resolve an arrival<br>business process [`BPROC3`] Decide a steward task |
+| data object [`DOBJ3.7`] Quality sample | [data object [`DOBJ3.8`] Breaker state](./2_data-objects.md#resolution-work) | The agreement of the latest automated samples | After each blind answer and each arrival run, the breaker reads the latest reviews of automatic links decided since the last restore | [actor [`ACT8`] Quality breaker](../2_business/1_business-actors-and-roles.md#actors) |
+| [data object [`DOBJ3.4`] Arrival position](./2_data-objects.md#resolution-work) | data object [`DOBJ3.8`] Breaker state | The arrivals per entity and clock hour | Counted in the intake transaction, leaving initial loads aside; the breaker compares the hour with the same hour over the previous days | actor [`ACT8`] Quality breaker |
+| data object [`DOBJ3.8`] Breaker state | data object [`DOBJ3.2`] Steward task | The arrivals the automatic band would have linked | While the band is demoted, they become review tasks naming the breaker's trip; after a restore, arrival hands them back and settles them under the published bands | business process [`BPROC1`] Resolve an arrival |
+| data object [`DOBJ3.8`] Breaker state | [data object [`DOBJ5.1`] Change set record](./2_data-objects.md#audit-and-privacy) | Each trip and each restore | An audit change set in the same transaction: the quality breaker's trip with its reason and figures, or a data owner's restore with its reason code | actor [`ACT8`] Quality breaker<br>[role [`ROLE1`] Data owner](../2_business/1_business-actors-and-roles.md#roles) |
 | [data object [`DOBJ4.1`] Golden record](./2_data-objects.md#published-master-data), and the source states, provenance and relationships behind it | The [workbench screens](#representations) | Values | Masked by role; the workbench shows what the services return, and a revealed value lives only in the rendered page | [application service [`ASVC10`] Record lookup](../4_application/1_application-services.md#application-services) |
 
 ## Representations
@@ -159,4 +175,4 @@ A steward's decision waits as a staged decision, then commits through the same p
 | Entity model file | An entity model and its first rule sets, in `models/person.yaml` and `models/organisation.yaml` | YAML, a plain-text format | Technical stewards; `mdm model load` reads it into the store |
 | Code-list file | A governed code list for the local mode, in `models/codelists/country.yaml` | YAML | `mdm codelists load` reads it into the store |
 | Command-line output | Records, match explanations, tasks and feed pages, masked unless a value is revealed | Text | People at the command line |
-| Workbench screens | The inbox, the decide pane, the undo tray, and the record and source record views, masked by role | HyperText Markup Language (HTML) pages in a browser; addresses and stored browser state carry IDs and codes only, and no response is cached | People, by role: stewards decide, and every role reads records |
+| Workbench screens | The inbox, the decide pane, the undo tray, and the record and source record views, masked by role; a quality sample shows no first decision, suggestion or score | HyperText Markup Language (HTML) pages in a browser; addresses and stored browser state carry IDs and codes only, and no response is cached | People, by role: stewards decide, and every role reads records |

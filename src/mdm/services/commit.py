@@ -13,6 +13,12 @@ version but still applies its work writes, and a steward's decision
 the same transaction. Every open task the work writes gets a due time from the
 service level of its kind; every tray settlement names this change set.
 
+The quality breaker (decision 3): while an entity's automatic band is demoted,
+an automated change set that carries a `rule1:auto_band` item is refused with
+`Conflict(breaker_demoted)`, before the transaction and again inside it, where
+the commit holds the band's row until it ends, so a trip waits for a commit in
+flight and a commit never outruns a trip.
+
 `apply_chunked` splits items so no transaction writes more than `max_rows`
 published rows, never splitting a create from its links or a merge from its
 repoints; each chunk is its own change set (`<id>-<n>`) and version, with its
@@ -64,6 +70,7 @@ from mdm.models.changes import (
 )
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Conflict, Forbidden, NotFound
+from mdm.models.quality import AUTO_BAND
 from mdm.models.records import GoldenRow, RelationshipRow, RetiredRow, SourceKey, XrefRow
 from mdm.models.tasks import Task, task_id, task_key
 from mdm.models.workbench import ServiceLevels
@@ -84,6 +91,8 @@ _KIND_RANK = {
     "updated": 6,
 }
 _ROW_PARTS = frozenset({"values", "xref", "status", "survivor"})
+#: the clause of an item the automatic band allowed (rule RULE1): refused while the breaker demotes the band
+_AUTO_BAND_CLAUSE = "rule1:auto_band"
 
 
 class RateLimiter:
@@ -297,6 +306,11 @@ class CommitService:
         fault = fault or self.fault
         # step 0: authority, a dry plan from keyed reads, personal values into the vault before the lock
         self.authority.check(cs)
+        guarded = self._automatic_band(cs)
+        if guarded:
+            band = self.store.breaker_states([cs.entity]).get((cs.entity, AUTO_BAND))
+            if band is not None and band.demoted:
+                raise Conflict([token(cs.entity)], code="breaker_demoted")
         model = self.registry.published(cs.entity)
         vaulted = self._vault_provenance(cs, model)
         dry = self._plan(cs, model, vaulted, 0, {**known, **{r: r for r in self._refs(cs)}})
@@ -311,8 +325,10 @@ class CommitService:
                         self.store.append_change_log(self._decision_log(cs))
             return CommitResult(cs.change_set_id, None, {}, {})
         with self.store.commit_scope():
-            # step 2: authority again, under the lock
+            # step 2: authority again, under the lock, and the quality breaker's band held until COMMIT
             self.authority.check(cs, in_transaction=True)
+            if guarded and not self.store.hold_band(cs.entity, AUTO_BAND):
+                raise Conflict([token(cs.entity)], code="breaker_demoted")
             model = self.registry.published(cs.entity)
             # step 4 and 5: the version, then master IDs in item order
             version = self.store.next_commit_version()
@@ -406,6 +422,11 @@ class CommitService:
             if between_chunks is not None and not last:
                 between_chunks(number)
         return results
+
+    @staticmethod
+    def _automatic_band(cs: ChangeSet) -> bool:
+        """An automated change set carrying an item the automatic band allowed (`rule1:auto_band`)."""
+        return cs.actor.kind == "automated" and any(item_clause(i) == _AUTO_BAND_CLAUSE for i in cs.items)
 
     # ------------------------------------------------------------------ chunking helpers
 
@@ -1044,6 +1065,7 @@ class CommitService:
         Every open task without a due time gets one from the service level of its kind; every tray settlement
         without a change set names this one."""
         work = self._remap_tasks(work, mapping, cs)
+        work = self._remap_samples(work, mapping)
         levels = self.service_levels
         if any(t.status == "open" and t.due_at is None for t in work.tasks):
             work = replace(
@@ -1064,6 +1086,29 @@ class CommitService:
                 ),
             )
         return work
+
+    @staticmethod
+    def _remap_samples(work: WorkWrites, mapping: Mapping[str, str]) -> WorkWrites:
+        """A quality sample whose target is a CreateGolden ref names the master ID instead (refs of earlier
+        chunks included); one whose golden record was never created is dropped with its task."""
+        if not any(is_ref(s.target) for s in work.samples):
+            return work
+        samples = []
+        dropped: set[str] = set()
+        for sample in work.samples:
+            if not is_ref(sample.target):
+                samples.append(sample)
+                continue
+            target = mapping.get(sample.target or "", sample.target)
+            if is_ref(target):
+                dropped.add(sample.task_id)
+                continue
+            samples.append(replace(sample, target=target))
+        return replace(
+            work,
+            samples=tuple(samples),
+            tasks=tuple(t for t in work.tasks if t.task_id not in dropped),
+        )
 
     @staticmethod
     def _remap_tasks(work: WorkWrites, mapping: Mapping[str, str], cs: ChangeSet) -> WorkWrites:

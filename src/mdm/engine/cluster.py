@@ -25,7 +25,20 @@
 Resolutions come in input order of their first record; the cluster-pair
 resolutions follow, in the order of their clusters. Reason codes: `auto_band`,
 `ambiguous_auto`, `review_band`, `cannot_link_conflict`, `unlinked_candidate`,
-`batch_candidate`, `new_cluster`, `possible_duplicate`. Pure.
+`batch_candidate`, `new_cluster`, `possible_duplicate`, `breaker_demoted`. Pure.
+
+`demoted` (the quality breaker demoted the entity's automatic band, decision 3):
+nothing links or joins a new cluster automatically, and nothing widens a band.
+In step 1 a record with exactly one linkable automatic golden candidate is a
+`review` (`breaker_demoted`, `master_ids` its automatic, blocked and review
+candidates by score); two or more stay `ambiguous`, a task already. In step 2 a
+record sent to review by an unlinked record outside the batch that pairs with it
+in the automatic band is a `breaker_demoted` review rather than an
+`unlinked_candidate` one. Before step 2's fixpoint, every record left with an
+automatic-band pair to another record of the batch is a `breaker_demoted`
+review, `review_with` naming those partners, so the fixpoint carries the wait on
+to their review-band partners and step 3 unions nothing: every new cluster holds
+one record. Everything else works as it does in the automatic band.
 """
 
 from __future__ import annotations
@@ -46,6 +59,7 @@ REASONS = (
     "batch_candidate",
     "new_cluster",
     "possible_duplicate",
+    "breaker_demoted",
 )
 _PAIRED = (Band.AUTO, Band.REVIEW)
 
@@ -125,6 +139,8 @@ def resolve_batch(
     golden: Mapping[SourceKey, Sequence[GoldenCandidate]],
     among_new: Sequence[PairScore],
     unlinked: Mapping[SourceKey, Sequence[PairScore]],
+    *,
+    demoted: bool = False,
 ) -> list[Resolution]:
     inputs: list[ClusterInput] = []
     position: dict[SourceKey, int] = {}
@@ -162,7 +178,20 @@ def resolve_batch(
             key=_pair_order,
         )
         outside_with = tuple(dict.fromkeys(p.right if p.left == source else p.left for p in outside))
-        if len(linkable) == 1:
+        if len(linkable) == 1 and demoted:
+            # the breaker holds the one automatic link for a steward: every candidate it had, best first
+            held = sorted([*auto, *review], key=_by_score)
+            resolved[source] = Resolution(
+                "review",
+                (source,),
+                tuple(g.master_id for g in held),
+                None,
+                linkable[0].best.explanation,
+                None,
+                review_with=outside_with,
+                reason="breaker_demoted",
+            )
+        elif len(linkable) == 1:
             chosen = linkable[0]
             resolved[source] = Resolution(
                 "link",
@@ -187,6 +216,12 @@ def resolve_batch(
             held = sorted([*blocked, *review], key=_by_score)
             best = held[0].best.explanation if held else outside[0].explanation
             reason = "cannot_link_conflict" if blocked else "review_band" if review else "unlinked_candidate"
+            if (
+                reason == "unlinked_candidate"
+                and demoted
+                and any(p.explanation.band == Band.AUTO for p in outside)
+            ):
+                reason = "breaker_demoted"
             resolved[source] = Resolution(
                 "review",
                 (source,),
@@ -205,6 +240,28 @@ def resolve_batch(
             for other, pair in neighbours[source]
             if other in among and pair.explanation.band in _PAIRED
         ]
+
+    if demoted:
+        # nothing joins a new cluster automatically: a record with an automatic-band pair in the batch waits
+        for item in inputs:
+            source = item.source
+            if source in resolved:
+                continue
+            partners = [
+                (other, pair) for other, pair in neighbours[source] if pair.explanation.band == Band.AUTO
+            ]
+            if not partners:
+                continue
+            resolved[source] = Resolution(
+                "review",
+                (source,),
+                (),
+                None,
+                partners[0][1].explanation,
+                None,
+                review_with=tuple(dict.fromkeys(other for other, _pair in partners)),
+                reason="breaker_demoted",
+            )
 
     waiting: set[SourceKey] = set()
     changed = True

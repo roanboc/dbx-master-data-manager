@@ -1,5 +1,5 @@
-"""The decide pane: a one-line header (kind, band, title, IDs, due, claim) and the reason, a notice, the
-candidate choice, the compare table, one panel per candidate (the waterfall to scale and what would flip
+"""The decide pane: a header (the title with its band; a muted line with the kind, the IDs, due and claim)
+and the reason, a notice, the candidate choice, the compare table, one panel per candidate (the waterfall to scale and what would flip
 it, then what changes), and a footer that stays on screen with the impact line and the actions with their
 key hints and, as visible text, why any is unavailable (B.8.7).
 
@@ -9,7 +9,18 @@ the decision service built, masked by role; the only values in clear it ever sho
 (`revealed`), and only inside `DECIDE_COMPARE`. Every candidate's panel and impact line are rendered at
 once and all but the chosen one are hidden, so choosing another (1, 2, 3 or a click) needs no request.
 Nothing here is a dead button: an action the steward cannot take is disabled and its reason is written
-out beside it, and what comes in a later story is said in one plain line.
+out beside it, and what comes in a later story is said in one plain line. The pane stays calm: no box
+around a section, one filled button (the decision that changes records), the work actions as quiet text
+buttons, and colour only where it carries meaning (the band, a disagreement, a warning).
+
+A quality sample is decided blind (story 3.2): the record and the golden records it might belong to, with
+no score, band, waterfall, flip, preview, impact line, first decision or link to a record view, since each
+would give its placement away. The steward chooses one (1, 2, 3, as in a close call, never by default) and
+answers "Belongs to <ID>" or "Belongs to none of these", both outlined, so the pane nudges no answer; a
+pair kept apart is answered "They are the same" or "They are not the same". A dispute is decided in the
+open, with the same equal weight. While the quality breaker has paused automatic linking, the pane of a
+task of that entity says so, except a blind one, which stays free of anything about the first decision's
+kind.
 
 Owner: INBOX (B.8.7).
 """
@@ -26,7 +37,9 @@ from dash import html
 from dash.development.base_component import Component
 
 from mdm.models.canonical import utcnow
+from mdm.models.tasks import WAITS_TEXT, waits_for_restore
 from mdm.models.workbench import (
+    DECISIONS,
     ESCALATION_REASONS,
     SNOOZE_HOURS,
     Action,
@@ -36,15 +49,12 @@ from mdm.models.workbench import (
     TaskRow,
 )
 from mdm.ui import ids
-from mdm.ui.components import compare, impact, waterfall
+from mdm.ui.components import breaker, compare, impact, waterfall
 from mdm.ui.components.band import band_chip, score_text
 from mdm.ui.components.common import duration, empty_state, kbd, notice
 from mdm.ui.components.icons import icon
 from mdm.ui.components.provenance import source_href
 
-#: the size of the pane's text (the pane sits beside the list, so it stays small)
-PANE_TEXT = {"fontSize": "0.9rem"}
-SUBHEADING = {"fontSize": "0.9rem", "fontWeight": 650, "margin": "10px 0 4px"}
 #: what the pane says before a task is chosen
 NOTHING_SELECTED = "No task is selected. Choose one in the list, or press J for the next one."
 #: what the pane says when the selected task has been decided or is gone
@@ -60,15 +70,20 @@ ESCALATION_LABELS = {
 }
 #: the decision each shape's preview describes, as `impact.render`'s verb
 PREVIEW_VERBS = {"held_update": "approve", "golden_pair": "keep_apart", "golden": "keep"}
-#: how each action's button looks: the decision that changes records is filled, the rest quieter
+#: how each action's button looks: the decision that changes records is filled, the one primary; its
+#: alternatives (not a match, keep apart, reject) are outlined ("default"); the work actions are quiet
 VARIANTS = {
     "link": "filled",
     "approve_update": "filled",
     "keep_orphan": "filled",
-    "not_a_match": "light",
-    "keep_apart": "light",
-    "reject_update": "light",
 }
+#: the work actions (claim, snooze, escalate): quiet text buttons in grey, never a decision's weight
+WORK = ("claim", "snooze", "escalate")
+QUIET = {"variant": "subtle", "color": "gray"}
+#: the shapes whose decisions are all outlined, none filled: a blind measurement and a dispute, where the
+#: pane must not nudge the answer (`actions(quiet=True)`; the pane carries `data-quiet`, so choosing a
+#: candidate in the browser keeps the link outlined too)
+QUIET_SHAPES = ("blind", "blind_pair", "disputed", "disputed_pair")
 #: the actions offered as menus rather than buttons
 MENUS = ("snooze", "escalate")
 #: the full-width toggle's labels (the page keeps it outside the pane, so it survives a new case)
@@ -85,6 +100,17 @@ def choice_keys(count: int) -> str:
 def link_label(target: str | None, count: int = 2) -> str:
     """ "Link to ORG-000123"; "Choose 1 or 2 to link" before a close call is chosen."""
     return f"Link to {target}" if target else f"Choose {choice_keys(count)} to link"
+
+
+def blind_label(target: str | None, count: int = 1) -> str:
+    """ "Belongs to ORG-000123"; "Choose 1, 2 or 3 first" before a blind review's choice."""
+    return f"Belongs to {target}" if target else f"Choose {choice_keys(count)} first"
+
+
+def choosing(case: TaskCase) -> str:
+    """The decision whose button follows the choice on screen: a blind review's `blind_link` (a record's,
+    not a pair's, which names its second golden record itself), else the candidates' `link`."""
+    return "blind_link" if case.blind and case.shape == "blind" else "link"
 
 
 def _hint(key: str | None) -> Component | None:
@@ -104,18 +130,33 @@ def _aria(action: Action) -> dict:
     return extra
 
 
-def action_button(action: Action, *, variant: str | None = None) -> Component:
+def button_look(decision: str, *, variant: str | None = None, quiet: bool = False) -> dict:
+    """The variant (and colour) of an action's button: a work action quiet and grey; with `quiet`, every
+    decision outlined, so the pane nudges no answer; else `variant`, or the decision's own look."""
+    if decision in WORK:
+        return dict(QUIET)
+    if quiet:
+        return {"variant": "default"}
+    return {"variant": variant or VARIANTS.get(decision, "default")}
+
+
+def action_button(action: Action, *, variant: str | None = None, quiet: bool = False) -> Component:
     """One action's button: its label, its key hint, disabled with its reason when not enabled."""
     return dmc.Button(
         action.label,
         id=ids.action(action.decision),
         disabled=not action.enabled,
-        variant=variant or VARIANTS.get(action.decision, "default"),
         size="xs",
         rightSection=_hint(action.key),
         className=f"mdm-action mdm-action-{action.decision}",
+        **button_look(action.decision, variant=variant, quiet=quiet),
         **_aria(action),
     )
+
+
+def chosen_choice(case: TaskCase, chosen: str | None = None) -> str | None:
+    """The golden record a blind review chose: one of `case.choices`, never a default."""
+    return chosen if chosen in {c.master_id for c in case.choices} else None
 
 
 def visible_candidate(case: TaskCase, chosen: str | None = None) -> str | None:
@@ -138,15 +179,28 @@ def chosen_candidate(case: TaskCase, chosen: str | None = None) -> str | None:
 
 def link_target(case: TaskCase, chosen: str | None = None) -> str | None:
     """The candidate the link button names: the chosen or default one, else the one shown (a candidate a
-    rule blocks, whose link is then disabled with its reason); None in a close call not yet chosen."""
+    rule blocks, whose link is then disabled with its reason); None in a close call not yet chosen. On a
+    blind review, the golden record chosen, else None."""
+    if case.blind:
+        return chosen_choice(case, chosen)
     if needs_choice(case, chosen):
         return None
     return chosen_candidate(case, chosen) or visible_candidate(case, chosen)
 
 
 def needs_choice(case: TaskCase, chosen: str | None = None) -> bool:
-    """A close call with no candidate chosen yet: L then moves to the choice instead of linking."""
+    """A close call with no candidate chosen yet, or a blind review of a record with golden records
+    offered and none chosen: L then moves to the choice instead of deciding."""
+    if case.blind:
+        return case.shape == "blind" and bool(case.choices) and chosen_choice(case, chosen) is None
     return case.close_call and chosen_candidate(case, chosen) is None
+
+
+def locked(case: TaskCase) -> bool:
+    """Whether no decision can be taken now, whatever is chosen (the role, the steward's own first decision,
+    a decision in the tray, another's claim): choosing in the browser then enables nothing."""
+    offered = [a for a in case.actions if a.decision in DECISIONS]
+    return bool(offered) and not any(a.enabled for a in offered)
 
 
 def _menu(menu_id: str, action: Action, label: str, items: Sequence[Component]) -> Component:
@@ -161,9 +215,9 @@ def _menu(menu_id: str, action: Action, label: str, items: Sequence[Component]) 
                 dmc.Button(
                     action.label,
                     disabled=not action.enabled,
-                    variant="default",
                     size="xs",
                     rightSection=_hint(action.key),
+                    **QUIET,
                     className=f"mdm-action mdm-menu-target mdm-{action.decision}-target",
                     **_aria(action),
                 )
@@ -188,14 +242,15 @@ def escalate_menu(action: Action) -> Component:
 
 
 def reasons(case: TaskCase, chosen: str | None = None) -> list[str]:
-    """Each distinct reason an action is unavailable, in the order the actions come; for the link, only
-    the reason of the candidate it names."""
+    """Each distinct reason an action is unavailable, in the order the actions come; for the link (a blind
+    review's answer), only the reason of the candidate (the golden record) it names."""
     target = link_target(case, chosen)
+    follows = choosing(case)
     found: list[str] = []
     for action in case.actions:
         if action.enabled or not action.why_not:
             continue
-        if action.decision == "link" and action.target not in (None, target):
+        if action.decision == follows and action.target not in (None, target):
             continue
         found.append(action.why_not)
     return list(dict.fromkeys(found))
@@ -208,7 +263,7 @@ def _moving() -> list[Component]:
             dmc.ActionIcon(
                 icon("chevron-left"),
                 id=ids.PREV_TASK,
-                variant="default",
+                **QUIET,
                 size="md",
                 className="mdm-move",
                 **{"aria-label": "Previous task (K)", "aria-keyshortcuts": "K"},
@@ -220,7 +275,7 @@ def _moving() -> list[Component]:
             dmc.ActionIcon(
                 icon("chevron"),
                 id=ids.NEXT_TASK,
-                variant="default",
+                **QUIET,
                 size="md",
                 className="mdm-move",
                 **{"aria-label": "Next task (J)", "aria-keyshortcuts": "J"},
@@ -231,17 +286,23 @@ def _moving() -> list[Component]:
     ]
 
 
-def actions(case: TaskCase, chosen: str | None = None) -> Component:
+def actions(case: TaskCase, chosen: str | None = None, *, quiet: bool = False) -> Component:
     """The action group: a button per `case.actions` (ACTION pattern IDs) with its key hint, the snooze
     and escalate menus, Previous and Next task, and ACTION_REASONS listing each distinct `why_not`,
     referenced by `aria-describedby` from every disabled button. The candidates' link actions are one
     button, "Link to <the chosen candidate>", whose label follows the choice; before a close call is
-    chosen it reads "Choose 1 or 2 to link", quieter."""
+    chosen it reads "Choose 1 or 2 to link", quieter. A blind review's answers are one button the same
+    way, "Belongs to <the golden record chosen>", reading "Choose 1, 2 or 3 first" before a choice.
+    `quiet` outlines every decision, none filled (a measurement or a dispute, where the pane must not
+    nudge the answer). Claim, Snooze and Escalate sit in one group after the decisions, so the row wraps
+    between the decisions and the work, never leaving one of them alone on a line."""
     buttons: list[Component] = []
-    links = {a.target: a for a in case.actions if a.decision == "link"}
+    work: list[Component] = []  # claim, snooze and escalate: they wrap as one group
+    follows = choosing(case)
+    links = {a.target: a for a in case.actions if a.decision == follows}
     linked = False
     for action in case.actions:
-        if action.decision == "link":
+        if action.decision == follows:
             if linked:
                 continue
             linked = True
@@ -255,20 +316,36 @@ def actions(case: TaskCase, chosen: str | None = None) -> Component:
             else:
                 enabled = named.enabled if named is not None else False
                 why = named.why_not if named is not None else first_why
-            label = link_label(shown, len(case.candidates))
-            merged = Action("link", label, action.key, enabled, why, target=shown)
-            buttons.append(action_button(merged, variant="light" if waiting else None))
+            if follows == "blind_link":
+                label = blind_label(shown, len(case.choices))
+            else:
+                label = link_label(shown, len(case.candidates))
+            merged = Action(follows, label, action.key, enabled, why, target=shown)
+            buttons.append(action_button(merged, variant="light" if waiting else None, quiet=quiet))
         elif action.decision == "snooze":
-            buttons.append(snooze_menu(action))
+            work.append(snooze_menu(action))
         elif action.decision == "escalate":
-            buttons.append(escalate_menu(action))
+            work.append(escalate_menu(action))
+        elif action.decision == "claim":
+            work.append(action_button(action, quiet=quiet))
         else:
-            buttons.append(action_button(action))
+            buttons.append(action_button(action, quiet=quiet))
     why = reasons(case, chosen)
     return html.Div(
         [
             html.H3("Decide", className="mdm-sr-only"),
-            html.Div([*buttons, html.Span(_moving(), className="mdm-moving")], className="mdm-actions"),
+            html.Div(
+                [
+                    # the decisions and the work wrap inside their own group, so Previous and Next keep
+                    # their place at the end of the first line
+                    html.Div(
+                        [*buttons, html.Div(work, className="mdm-actions-work")],
+                        className="mdm-actions-main",
+                    ),
+                    html.Span(_moving(), className="mdm-moving"),
+                ],
+                className="mdm-actions",
+            ),
             html.Div(
                 [html.P(text, className="mdm-action-reason") for text in why],
                 id=ids.ACTION_REASONS,
@@ -288,6 +365,8 @@ def due_line(row: TaskRow, now: datetime) -> str | None:
         return "In the tray"
     if row.due_at is None:
         return None
+    if waits_for_restore(row.due_at):
+        return WAITS_TEXT
     text = duration(row.due_at - now)
     return text[:1].upper() + text[1:] if text.startswith("breached") else f"Due in {text}"
 
@@ -330,36 +409,43 @@ def row_band_chip(row: TaskRow) -> Component | None:
     return band_chip(row.band, row.score)
 
 
-def header(case: TaskCase, now: datetime) -> Component:
-    """One line: kind, band, the title (masked), the subject's IDs, due and claim; then the reason."""
-    row = case.row
-    parts: list[Component | str] = [
-        dmc.Badge(row.kind_label, variant="light", color="indigo", tt="none", className="mdm-kind-badge")
-    ]
-    if case.shape == "golden_pair" and any(c.blocked_by for c in case.candidates):
-        row = replace(row, kept_apart=True)  # a rule keeps the pair apart, whatever the score says
-    chip = row_band_chip(row)
-    if chip is not None:
-        parts.append(chip)
-    if row.escalated:
-        parts.append(dmc.Badge("Escalated", variant="light", color="orange", tt="none"))
-    if row.snoozed_until is not None:
-        parts.append(dmc.Badge("Snoozed", variant="light", color="gray", tt="none"))
-    meta: list = [*subject_links(row)]
+def subject_text(row: TaskRow) -> str:
+    """The subject's IDs as plain words, "crm:C001409"; "ORG-000211 and ORG-000388" for a pair."""
+    return " and ".join(part.strip() for part in row.subject.split("·") if part.strip())
+
+
+def meta_line(case: TaskCase, row: TaskRow, now: datetime) -> list:
+    """The header's muted line: "Review · crm:C000123 · Due in 7 h 40 min · Not claimed", with
+    "Escalated" and "Snoozed" as words when they are so; the IDs link to their records, except on a blind
+    review, where a record view would show where the record is placed now."""
+    subject = [subject_text(row)] if case.blind else subject_links(row)
+    meta: list = [html.Span(row.kind_label, className="mdm-decide-kind"), " · ", *subject]
     due = due_line(row, now)
     if due:
-        meta.extend([" · ", icon("clock"), " ", due])
+        meta.extend([" · ", due])
     meta.extend([" · ", claim_line(case)])
+    if row.escalated:
+        meta.append(" · Escalated")
+    if row.snoozed_until is not None:
+        meta.append(" · Snoozed")
+    return meta
+
+
+def header(case: TaskCase, now: datetime) -> Component:
+    """The title (masked) with its band; a muted line with the kind, the subject's IDs, due and claim;
+    then the reason."""
+    row = case.row
+    if case.shape == "golden_pair" and any(c.blocked_by for c in case.candidates):
+        row = replace(row, kept_apart=True)  # a rule keeps the pair apart, whatever the score says
+    headline: list[Component] = [html.H2(row.title, className="mdm-decide-title")]
+    # a dispute's band would be the first decision's, beside the waterfall of the record as it is now
+    chip = None if case.blind or case.shape in ("disputed", "disputed_pair") else row_band_chip(row)
+    if chip is not None:
+        headline.append(chip)
     return html.Div(
         [
-            html.Div(
-                [
-                    *parts,
-                    html.H2(row.title, className="mdm-decide-title"),
-                    html.Span(meta, className="mdm-decide-meta"),
-                ],
-                className="mdm-decide-headline",
-            ),
+            html.Div(headline, className="mdm-decide-headline"),
+            html.P(meta_line(case, row, now), className="mdm-decide-meta"),
             html.P(case.reason_text, className="mdm-decide-reason"),
         ],
         className="mdm-decide-header",
@@ -420,6 +506,29 @@ def close_call_box(case: TaskCase, chosen: str | None = None) -> Component:
         className="mdm-notice mdm-notice-warning mdm-close-call",
         role="group",
         **{"aria-label": "Close call"},
+    )
+
+
+def blind_choice(case: TaskCase, chosen: str | None = None) -> Component:
+    """A blind review's choice (CANDIDATE_CHOICE, as in a close call): one option per golden record
+    offered, "1 · ORG-000123" with no score or band, each carrying `data-candidate-index` so 1, 2 and 3
+    choose it; never a default."""
+    options = [
+        dmc.Radio(
+            label=f"{c.index} · {c.master_id}",
+            value=c.master_id,
+            size="md",  # a 24 px target (WCAG 2.2 success criterion 2.5.8)
+            **{"data-candidate-index": str(c.index), "data-master-id": c.master_id},
+        )
+        for c in case.choices
+    ]
+    return dmc.RadioGroup(
+        dmc.Group(options, gap="md", mt=2),
+        id=ids.CANDIDATE_CHOICE,
+        label="Choose the golden record it belongs to",
+        value=chosen_choice(case, chosen),
+        size="sm",
+        className="mdm-candidate-choice mdm-blind-choice",
     )
 
 
@@ -526,7 +635,9 @@ def candidates(case: TaskCase, chosen: str | None = None) -> Component:
 
 def impact_lines(case: TaskCase, chosen: str | None = None) -> list[Component]:
     """The footer's impact line: one per candidate (CANDIDATE_IMPACT), all but the visible one hidden; or
-    the shape's own."""
+    the shape's own; none on a blind review."""
+    if case.blind:
+        return []
     if case.candidates and any(c.preview is not None for c in case.candidates):
         visible = visible_candidate(case, chosen)
         return [
@@ -545,7 +656,10 @@ def impact_lines(case: TaskCase, chosen: str | None = None) -> list[Component]:
 
 
 def _record_path(case: TaskCase) -> str | None:
-    """The golden record Enter opens when no candidate is shown: the preview's, else the first subject ID."""
+    """The golden record Enter opens when no candidate is shown: the preview's, else the first subject ID;
+    none on a blind review, whose record views would show the placement."""
+    if case.blind:
+        return None
     if case.preview is not None and case.preview.master_id:
         return record_href(case.preview.master_id)
     first = case.row.subject.split("·")[0].strip()
@@ -582,9 +696,17 @@ def render(
     staged = staged_line(case)
     if staged is not None:
         body.append(staged)
-    if case.notice:
+    # the breaker's notice on a record it could have linked; never on a blind review, which would learn
+    # the first decision's kind from it, nor on a pair, an orphan or a dispute, which it does not touch
+    if case.paused is not None and not case.blind and case.shape == "source":
+        body.append(breaker.pane_notice(case.paused, open_=case.row.reason == breaker.WAITS_REASON))
+    # a notice that is also the reason an action is unavailable is said once, beside the action
+    if case.notice and case.notice not in reasons(case, chosen):
         body.append(notice("info", case.notice))
-    if case.close_call:
+    if case.blind:
+        if case.choices:
+            body.append(blind_choice(case, chosen))
+    elif case.close_call:
         body.append(close_call_box(case, chosen))
     elif len(case.candidates) >= 2:
         body.append(candidate_choice(case, chosen))
@@ -601,10 +723,12 @@ def render(
             id=ids.DECIDE_COMPARE,
         )
     )
-    if case.candidates:
+    # a blind review shows no candidate, preview or impact line, even if one came with the case
+    if case.candidates and not case.blind:
         body.append(candidates(case, chosen))
     if (
-        case.preview is not None
+        not case.blind
+        and case.preview is not None
         and case.preview.rows
         and not any(c.preview is not None for c in case.candidates)
     ):
@@ -613,7 +737,7 @@ def render(
             html.Div(impact.changes(case.preview, verb=verb, open_=True), className="mdm-shape-preview")
         )
     footer = html.Div(
-        [*impact_lines(case, chosen), actions(case, chosen)],
+        [*impact_lines(case, chosen), actions(case, chosen, quiet=case.shape in QUIET_SHAPES)],
         className="mdm-decide-footer",
     )
     extra = {"data-task-id": case.row.task_id}
@@ -622,10 +746,17 @@ def render(
         extra["data-open-record"] = path
     if needs_choice(case, chosen):
         extra["data-needs-choice"] = "yes"
+    if case.shape in QUIET_SHAPES:
+        extra["data-quiet"] = "yes"
+    if case.blind:
+        extra["data-blind"] = "yes"
+        if not any(a.decision == "blind_link" for a in case.actions):
+            extra["data-link"] = "none"  # nothing to place it in: L does nothing, N answers
+    if locked(case):
+        extra["data-locked"] = "yes"
     return html.Section(
         [html.Div(body, className="mdm-decide-body"), footer],
         className="mdm-decide",
-        style=PANE_TEXT,
         **{"aria-label": "Decide", **extra},
     )
 

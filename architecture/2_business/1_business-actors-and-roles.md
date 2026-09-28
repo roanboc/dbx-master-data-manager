@@ -4,7 +4,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Business layer: Business Actor, Business Role, Contract.
 
-**Status:** ◐ Draft catalogue — written for initiative 3, Steward workbench; not yet validated.
+**Status:** ◐ Draft catalogue — written for story 3.2 of initiative 3, Steward workbench; not yet validated.
 
 ## Actors
 
@@ -38,8 +38,8 @@ flowchart LR
   act6 -.->|escalates to| role1
   act7 -.->|assigned to| role3
   act7 -.->|escalates to| role3
-  act8 -.->|assigned to| role3
-  act8 -.->|escalates to| role1
+  act8 -->|assigned to| role3
+  act8 -->|escalates to| role1
   act9 -.->|serves| role2
   act9 -.->|serves| role4
   act9 -.->|escalates to| role2
@@ -50,7 +50,7 @@ flowchart LR
   classDef role fill:#f7f099,stroke:#a89400,color:#333
 ```
 
-Cyan, and the mark (AI) for artificial intelligence, show an automated actor, never a person. Solid edges are true. Dashed edges wait for the matcher's checkpoint, the work router, the platform deployment and the language model.
+Cyan, and the mark (AI) for artificial intelligence, show an automated actor, never a person. Solid edges are true. Dashed edges wait for the work router, the platform deployment and the language model.
 
 | ID | Actor | Kind | State | Source | Notes |
 | -- | ----- | ---- | ----- | ------ | ----- |
@@ -59,9 +59,9 @@ Cyan, and the mark (AI) for artificial intelligence, show an automated actor, ne
 | `ACT3` | **Data engineers** — the data and analytics unit's engineers who configure models, sources and jobs; with the data stewards, the people behind stakeholder [`STK3`] Data stewards | Human | Exists today | Blueprint §5.6; adopted — named for the technical steward role | |
 | `ACT4` | **Hub administrators** — the product owner's staff who will run the hub | Human | **Pending — future initiative** (initiative 4): when the hub is deployed | Blueprint §5.6 | |
 | `ACT5` | **Record consumers** — staff and analysts who look golden records up; among [stakeholder [`STK4`] Consumers of master data](../1_strategy/1_motivation.md#stakeholders) | Human | Exists today | Blueprint §5.6 | |
-| `ACT6` | **Automated matcher** — settles the arrivals the published rules allow, recomputes golden values when a pin expires, and applies an approved rule version to existing records | Automated (AI), deterministic, with no language model — autonomous with checkpoint | Exists for arrivals — the arrival job, `mdm arrive`, in `src/mdm/services/arrival.py`; its checkpoint (the quality breaker and the blind review of [decision 1](../decisions/1_automated-matcher-autonomy.md)) **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence), story 3.2), which must merge before any real data loads; the pin-expiry recompute **Pending — future initiative** (initiative 3, story 3.7); applying an approved rule version to existing records **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §4, §5.5; adopted — one actor for arrivals, pin expiry and approved re-evaluation | |
+| `ACT6` | **Automated matcher** — settles the arrivals the published rules allow, recomputes golden values when a pin expires, and applies an approved rule version to existing records | Automated (AI), deterministic, with no language model — autonomous with checkpoint | Exists for arrivals — the arrival job, `mdm arrive`, in `src/mdm/services/arrival.py`. Its checkpoint exists ([decision 1](../decisions/1_automated-matcher-autonomy.md)): blind review samples its links and creates, in `src/mdm/services/quality.py`. The quality breaker can demote its automatic band, in `src/mdm/services/breaker.py`. The pin-expiry recompute **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence), story 3.7); applying an approved rule version to existing records **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §3, §4, §5.5; adopted — one actor for arrivals, pin expiry and approved re-evaluation; adopted — blind review samples its source-asserted links and its creates, as well as its automatic links | |
 | `ACT7` | **Work router** — ranks steward tasks, escalates breached service levels and releases lapsed claims | Automated (AI), deterministic, with no language model — autonomous with checkpoint | **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence), story 3.4); until then [application service [`ASVC8`] Steward work](../4_application/1_application-services.md#application-services) orders the inbox by due time, and a claim lapses by itself | Blueprint §4; adopted — named "work router" | |
-| `ACT8` | **Quality breaker** — withdraws bulk rights and demotes the automatic band when agreement falls | Automated (AI), deterministic, with no language model — autonomous with checkpoint, reducing only | **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence), story 3.2) | Blueprint §4 | |
+| `ACT8` | **Quality breaker** — withdraws bulk rights and demotes the automatic band when agreement falls or arrivals spike | Automated (AI), deterministic, with no language model — autonomous with checkpoint, reducing only | Exists for the automatic band — `src/mdm/services/breaker.py` demotes an entity's automatic band on low blind-review agreement or an arrival spike, and a data owner restores it with `mdm breaker restore`. Withdrawing bulk rights from a signature **Pending — future initiative** ([initiative 3](../6_transition/2_sequence.md#sequence), story 3.3); restoring on the platform waits for workspace groups mapped to roles, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §4; adopted — a restore on the command line only, with a reason code; proposed — its thresholds | The thresholds are proposed settings until a data owner approves them |
 | `ACT9` | **AI assistant** — drafts case narratives, answers with cited records and suggests configuration | Automated (AI), with a language model — advisory | **Pending — future initiative** (Release 2, [initiative 5](../6_transition/2_sequence.md#sequence)); the stub answers today, in `src/mdm/agent/` | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers); Blueprint §4 | |
 
 ### Automated matcher
@@ -73,7 +73,7 @@ The automated matcher (`ACT6`) acts for the data steward role where the publishe
 | Decision rights | Commit what [rule [`RULE1`] Source traffic follows the source's policy](./5_domain-context-and-rules.md) lets source traffic commit automatically; recompute a golden record when a pin expires; apply an approved rule version to existing records within its dry-run fingerprint, at the agreed throttle |
 | Never | Anything in [rule [`RULE6`] Some actions are never automatic](./5_domain-context-and-rules.md); a decision in the review band; a critical update its source's policy holds; linking a record to a golden record a steward declined for it, or opening again a possible duplicate a steward kept apart |
 | Escalates to | `ROLE2` Data steward, for review-band tasks, possible duplicates, orphans and held arrivals<br>`ROLE1` Data owner, when a re-evaluation stops on a changed fingerprint |
-| Checkpoint | Every decision is audited with its rule version and sampled by blind review; the quality breaker (`ACT8`) can demote its automatic band; a wrong automatic link is reversed by detach |
+| Checkpoint | Every decision is audited with its rule version; a share of its links and creates is sampled by blind review; the quality breaker (`ACT8`) can demote its automatic band; a wrong automatic link is reversed by detach |
 | Decision | [Decision 1 — The automated matcher acts in the automatic band](../decisions/1_automated-matcher-autonomy.md)<br>[Decision 22 — A steward's label binds the automated matcher](../decisions/22_labels-bind-the-matcher.md) |
 
 ### Work router
@@ -96,8 +96,8 @@ The quality breaker (`ACT8`) can only reduce automation.
 | ------ | ----- |
 | Decision rights | Withdraw bulk rights from a signature whose blind-review agreement falls below its threshold; demote the automatic band on low agreement or on a volume spike |
 | Never | Restore a right, widen a band, or change a record |
-| Escalates to | `ROLE1` Data owner, who restores rights and bands |
-| Checkpoint | Every trip is logged with its reason, and its thresholds are governance policy a data owner approves |
+| Escalates to | `ROLE1` Data owner, who restores rights and bands; the inbox's notice and `mdm breaker status` say what tripped |
+| Checkpoint | Every trip is logged with its reason as an audit change set; its thresholds are settings until the governance policy of initiative 4 holds them, which a data owner approves. On a shared store neither blind review nor the agreement trigger can be switched off by a setting; until initiative 4, the values are deployment settings, not approved policy |
 | Decision | [Decision 3 — The quality breaker may only reduce automation](../decisions/3_quality-breaker-autonomy.md) |
 
 ### AI assistant
@@ -116,7 +116,7 @@ The AI assistant (`ACT9`) advises the person using it and commits nothing.
 
 | ID | Role | Decides | Source | Notes |
 | -- | ---- | ------- | ------ | ----- |
-| `ROLE1` | **Data owner** — accountable for the records of a master data domain | Approves the approval matrix, source policies, models and rules; proposes governance changes with a dry run and approves another owner's; with an administrator, approves purge and erasure | Blueprint §5.5; proposed by the Data Management Body of Knowledge (DAMA-DMBOK2 Revised) ch. 3 (data owner) | |
+| `ROLE1` | **Data owner** — accountable for the records of a master data domain | Approves the approval matrix, source policies, models and rules; proposes governance changes with a dry run and approves another owner's; restores an automatic band the quality breaker demoted; with an administrator, approves purge and erasure | Blueprint §5.5; proposed by the Data Management Body of Knowledge (DAMA-DMBOK2 Revised) ch. 3 (data owner); [decision 3](../decisions/3_quality-breaker-autonomy.md), for restoring a band | |
 | `ROLE2` | **Data steward** — curates the records of a master data domain | Decides review tasks; links, consolidates and detaches; creates and edits records; pins values; raises issues; makes change sets | Blueprint §5.5; proposed by DMBOK2 Revised ch. 3 (business steward) | |
 | `ROLE3` | **Coordinating steward** — leads stewards across a master data domain and checks their work; any other steward who is not the maker may also check | Balances work; checks change sets another steward made; approves a governance change as second approver | Blueprint §5.5; proposed by DMBOK2 Revised ch. 3 (coordinating steward) | |
 | `ROLE4` | **Technical steward** — looks after models, sources and jobs | Maintains entity models, sources, standardisers and jobs; drafts model and source changes for a data owner to propose | Blueprint §5.6; proposed by DMBOK2 Revised ch. 3 (technical steward) | |

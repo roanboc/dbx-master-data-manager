@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mdm.models.errors import ConfigError
+from mdm.models.quality import BREAKER_WINDOW_CAP, SAMPLE_KEY_MIN, SAMPLE_OPEN_CAP_MAX, SHARED_AGREEMENT_FLOOR
 from mdm.models.tasks import TASK_KINDS
 from mdm.models.workbench import FALLBACK_SERVICE_HOURS
 
@@ -37,6 +38,7 @@ DEFAULT_SLA_HOURS: tuple[tuple[str, int], ...] = (
     ("exception", 24),
     ("orphan", 72),
     ("unresolved_reference", 72),
+    ("quality_sample", 72),  # a blind review (story 3.2)
 )
 SCHEMA_PREFIX_RE = re.compile(r"[a-z][a-z0-9_]{0,30}")  # matched whole (fullmatch): no trailing newline
 #: the TLS modes a connection that carries a Lakebase token over a network may use: none sends it in clear
@@ -78,6 +80,20 @@ class Settings:
     close_call_points: float = 10.0  # MDM_CLOSE_CALL_POINTS: the top two candidates this close need a choice
     tray_worker: str = "auto"  # MDM_TRAY_WORKER: auto (on a local store) | on | off
     ui_port: int = 8050  # MDM_UI_PORT
+    # the matcher's checkpoint (story 3.2): settings until initiative 4's governance policy holds them
+    sample_share: float = 0.02  # MDM_SAMPLE_SHARE: the share of decisions drawn for blind review (adopted)
+    sample_key: str = field(
+        default="", repr=False
+    )  # MDM_SAMPLE_KEY: keys the draw; a secret on a shared store
+    sample_open_cap: int = 200  # MDM_SAMPLE_OPEN_CAP: automated samples open at once per entity (proposed)
+    breaker_agreement: float = (
+        0.95  # MDM_BREAKER_AGREEMENT: the agreement the automatic band needs (proposed)
+    )
+    breaker_window: int = 100  # MDM_BREAKER_WINDOW: the latest automated reviews it reads (proposed)
+    breaker_min_samples: int = 20  # MDM_BREAKER_MIN_SAMPLES: reviews before it may trip (proposed)
+    breaker_spike_multiple: float = 5.0  # MDM_BREAKER_SPIKE_MULTIPLE: times the same hour's mean (proposed)
+    breaker_spike_days: int = 7  # MDM_BREAKER_SPIKE_DAYS: days of that hour it averages (proposed)
+    breaker_spike_min: int = 1000  # MDM_BREAKER_SPIKE_MIN: arrivals an hour needs before it trips (proposed)
     app_port: int = 0  # DATABRICKS_APP_PORT: the platform's own, read and never set; 0 = not in an App
     platform_signals: tuple[str, ...] = ()  # set by from_env: the PLATFORM_VARIABLES present
 
@@ -186,6 +202,17 @@ class Settings:
             "close_call_points": number("MDM_CLOSE_CALL_POINTS", cls.close_call_points, 0.0, 100.0),
             "tray_worker": text("MDM_TRAY_WORKER", cls.tray_worker).lower() or cls.tray_worker,
             "ui_port": integer("MDM_UI_PORT", cls.ui_port, minimum=1),
+            "sample_share": number("MDM_SAMPLE_SHARE", cls.sample_share, 0.0, 1.0),
+            "sample_key": env.get("MDM_SAMPLE_KEY", ""),
+            "sample_open_cap": integer("MDM_SAMPLE_OPEN_CAP", cls.sample_open_cap, minimum=1),
+            "breaker_agreement": number("MDM_BREAKER_AGREEMENT", cls.breaker_agreement, 0.0, 1.0),
+            "breaker_window": integer("MDM_BREAKER_WINDOW", cls.breaker_window, minimum=1),
+            "breaker_min_samples": integer("MDM_BREAKER_MIN_SAMPLES", cls.breaker_min_samples, minimum=1),
+            "breaker_spike_multiple": number(
+                "MDM_BREAKER_SPIKE_MULTIPLE", cls.breaker_spike_multiple, 1.0, 1000.0
+            ),
+            "breaker_spike_days": integer("MDM_BREAKER_SPIKE_DAYS", cls.breaker_spike_days, minimum=1),
+            "breaker_spike_min": integer("MDM_BREAKER_SPIKE_MIN", cls.breaker_spike_min, minimum=1),
             "app_port": integer("DATABRICKS_APP_PORT", cls.app_port),
             "platform_signals": tuple(name for name in PLATFORM_VARIABLES if name in env),
         }
@@ -218,12 +245,66 @@ class Settings:
             raise ConfigError("bad_setting", variable="MDM_UI_PORT")
         if self.app_port < 0:
             raise ConfigError("bad_setting", variable="DATABRICKS_APP_PORT")
+        self._validate_checkpoint()
+
+    def validate_checkpoint_in_force(self) -> None:
+        """On a shared store the matcher's checkpoint cannot be switched off: blind review draws a share above
+        0, the agreement trigger asks for at least `SHARED_AGREEMENT_FLOOR`, and the draw is keyed by a secret
+        of at least `SAMPLE_KEY_MIN` characters, so no steward can tell which of their decisions will be
+        drawn. A local store may do without all three. Arrival and the tray's flush, which make and draw the
+        decisions, and the workbench's server call it before they start. `ConfigError` names the variable
+        only."""
+        if self.local_mode:
+            return
+        if self.sample_share <= 0.0:
+            raise ConfigError("bad_setting", variable="MDM_SAMPLE_SHARE")
+        if self.breaker_agreement < SHARED_AGREEMENT_FLOOR:
+            raise ConfigError("bad_setting", variable="MDM_BREAKER_AGREEMENT")
+        if len(self.sample_key) < SAMPLE_KEY_MIN:
+            raise ConfigError("bad_setting", variable="MDM_SAMPLE_KEY")
+
+    def _validate_checkpoint(self) -> None:
+        """The matcher's checkpoint: each setting within its bounds, naming the variable only."""
+        if not _number_between(self.sample_share, 0.0, 1.0):
+            raise ConfigError("bad_setting", variable="MDM_SAMPLE_SHARE")
+        if not _number_between(self.breaker_agreement, 0.0, 1.0):
+            raise ConfigError("bad_setting", variable="MDM_BREAKER_AGREEMENT")
+        if not isinstance(self.sample_key, str):
+            raise ConfigError("bad_setting", variable="MDM_SAMPLE_KEY")
+        if not _whole(self.breaker_min_samples) or self.breaker_min_samples < 1:
+            raise ConfigError("bad_setting", variable="MDM_BREAKER_MIN_SAMPLES")
+        if not _whole(self.sample_open_cap) or not (
+            self.breaker_min_samples <= self.sample_open_cap <= SAMPLE_OPEN_CAP_MAX
+        ):
+            raise ConfigError("bad_setting", variable="MDM_SAMPLE_OPEN_CAP")
+        if not _whole(self.breaker_window) or not (
+            self.breaker_min_samples <= self.breaker_window <= BREAKER_WINDOW_CAP
+        ):
+            raise ConfigError("bad_setting", variable="MDM_BREAKER_WINDOW")
+        if (
+            not _number_between(self.breaker_spike_multiple, 1.0, 1000.0)
+            or self.breaker_spike_multiple <= 1.0
+        ):
+            raise ConfigError("bad_setting", variable="MDM_BREAKER_SPIKE_MULTIPLE")
+        if not _whole(self.breaker_spike_days) or not 1 <= self.breaker_spike_days <= 7:
+            raise ConfigError("bad_setting", variable="MDM_BREAKER_SPIKE_DAYS")
+        if not _whole(self.breaker_spike_min) or self.breaker_spike_min < 1:
+            raise ConfigError("bad_setting", variable="MDM_BREAKER_SPIKE_MIN")
 
     def with_(self, **changes: Any) -> Settings:
         """A copy with `changes` applied and validated (`dataclasses.replace`)."""
         settings = dataclasses.replace(self, **changes)
         settings.validate()
         return settings
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _number_between(value: Any, low: float, high: float) -> bool:
+    """A real number (not a bool) with low <= value <= high; nan is refused."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and low <= value <= high
 
 
 def _sla_complete(hours: tuple[tuple[str, int], ...]) -> bool:

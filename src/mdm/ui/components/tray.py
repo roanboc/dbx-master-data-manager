@@ -37,11 +37,13 @@ DONE_HEADING = "Done in the last 10 minutes"
 
 
 def button() -> Component:
-    """The header's tray button (TRAY_BUTTON): "Tray" or "Tray 1 · 0:48", dashed while any is staged."""
+    """The header's tray button (TRAY_BUTTON): "Tray", quiet, while nothing waits; "Tray 1 · 0:48", dashed
+    in amber, while any is staged (the `mdm-staged` class the countdown sets)."""
     return dmc.Button(
         "Tray",
         id=ids.TRAY_BUTTON,
-        variant="default",
+        variant="subtle",
+        color="gray",
         size="sm",
         leftSection=icon("tray"),
         className="mdm-tray-button",
@@ -83,9 +85,19 @@ def _deadline_ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
 
 
+#: what a committed blind answer says: it matched the first decision, or differed and opened a review
+BLIND_OUTCOMES = {
+    "agreed": "Matched the first decision",
+    "disagreed": "Differed from the first decision: a review is open",
+}
+
+
 def outcome_text(view: TrayView) -> str:
-    """What a settled entry says: "Committed as commit 42", "Undone", "Not committed. <why>"."""
+    """What a settled entry says: "Committed as commit 42", "Undone", "Not committed. <why>"; a blind
+    answer "Matched the first decision" or "Differed from the first decision: a review is open"."""
     if view.status == "committed":
+        if view.outcome in BLIND_OUTCOMES:
+            return BLIND_OUTCOMES[view.outcome]
         if view.commit_version is None:
             return "Committed; no published record changed"
         return f"Committed as commit {view.commit_version}"
@@ -210,6 +222,8 @@ class TrayRefresh:
 
 def settlement_notice(view: TrayView) -> dict | None:
     """The notification for a decision that committed or failed; none for one undone (the undo said so)."""
+    if view.status == "committed" and view.outcome in BLIND_OUTCOMES:
+        return notify(f"{view.label}. {BLIND_OUTCOMES[view.outcome]}.", "teal", title="Answered")[0]
     if view.status == "committed":
         return notify(f"{outcome_text(view)}: {view.label}.", "teal", title="Committed")[0]
     if view.status == "failed":
