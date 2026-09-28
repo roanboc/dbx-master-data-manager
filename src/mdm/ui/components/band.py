@@ -1,4 +1,5 @@
-"""The band of a score, as a chip with colour and text ("79 review"), so colour is never the only cue.
+"""The band of a score as plain text after a dot in the band's colour ("● 79 review"; the dot is drawn by
+styles.css), so colour is never the only cue.
 
 The words are the engine's (`models.wording`): auto reads "automatic", and a score short of certainty
 never reads 100.
@@ -30,7 +31,8 @@ def band_words(band: str | None) -> str:
 
 
 def band_chip(band: str | None, score: float | None = None) -> Component:
-    """ "79 review": the band (auto, review, distinct) in its colour, with the score when given."""
+    """ "79 review": the band (auto, review, distinct), its dot in the band's colour, with the score when
+    given."""
     if band is None and score is None:
         return html.Span()
     known = band if band in BANDS else "distinct"

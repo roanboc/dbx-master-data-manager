@@ -47,8 +47,6 @@ LATER = "Editing, pinning, detaching, merging and retiring are not on screen yet
 SHOWN = source_page.SHOWN
 #: what a tab holds before it is first shown
 LOADING = "Loading…"
-_MUTED = {"color": "var(--mdm-muted)"}
-_MONO = {"fontFamily": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"}
 
 
 def first_tab(query: Mapping[str, str]) -> str:
@@ -90,10 +88,11 @@ def open_tasks_link(ctx: UiContext, task_ids: Sequence[str]) -> Component | str:
 
 def header_view(ctx: UiContext, header: RecordHeader, *, offer_reveal: bool) -> Component:
     """RECORD_HEADER: the title (masked); one line with the master ID, entity, status, the IDs merged into
-    it, its open tasks as a link, its source records and last commit; the record it was merged into; the
-    open tasks by name; "Show values" when offered, and the line on what comes later."""
+    it, its source records and last commit (and "no open task", or the count for a role that sees no
+    task); the record it was merged into; the open tasks by name, once; "Show values" when offered, and the
+    line on what comes later."""
     facts: list[Component | str] = [
-        html.Span(header.master_id, style=_MONO),
+        html.Span(header.master_id, className="mdm-record-id"),
         " · ",
         entity_label(header.entity),
         " · ",
@@ -104,9 +103,12 @@ def header_view(ctx: UiContext, header: RecordHeader, *, offer_reveal: bool) -> 
         for index, retired in enumerate(header.retired_ids):
             if index:
                 facts.append(", ")
-            facts.append(dmc.Anchor(retired, href=record_href(retired), style=_MONO))
+            facts.append(dmc.Anchor(retired, href=record_href(retired)))
     members = "1 source record" if header.member_count == 1 else f"{header.member_count} source records"
-    facts.extend([" · ", open_tasks_link(ctx, header.open_tasks), " · ", members])
+    named = bool(header.open_tasks) and ctx.can("view_tasks")  # the tasks line below names them, once
+    if not named:
+        facts.extend([" · ", open_tasks_link(ctx, header.open_tasks)])
+    facts.extend([" · ", members])
     facts.append(f" · last changed in commit {header.commit_version}")
     lines: list[Component] = [
         common.page_title(header.title),
@@ -117,7 +119,7 @@ def header_view(ctx: UiContext, header: RecordHeader, *, offer_reveal: bool) -> 
             dmc.Text(
                 [
                     "Merged into ",
-                    dmc.Anchor(header.survivor_id, href=record_href(header.survivor_id), style=_MONO),
+                    dmc.Anchor(header.survivor_id, href=record_href(header.survivor_id)),
                     ".",
                 ],
                 size="sm",
@@ -128,7 +130,7 @@ def header_view(ctx: UiContext, header: RecordHeader, *, offer_reveal: bool) -> 
     actions: list[Component] = []
     if offer_reveal:
         actions.append(reveal.open_button(PAGE))
-    actions.append(dmc.Text(LATER, size="sm", style=_MUTED))
+    actions.append(dmc.Text(LATER, size="xs", className="mdm-later"))
     lines.append(dmc.Group(actions, gap="md", mt=8))
     return html.Div(lines, id=ids.RECORD_HEADER, className="mdm-record-header")
 
@@ -207,11 +209,7 @@ def members_table(
     for member in members:
         task: Component | str = "none"
         if member.open_task:
-            task = (
-                dmc.Anchor(source_page.task_words(ctx, member.open_task), href=task_href(member.open_task))
-                if ctx.can("view_tasks")
-                else "1 open task"
-            )
+            task = source_page.task_anchor(ctx, member.open_task) if ctx.can("view_tasks") else "1 open task"
         rows.append(
             html.Tr(
                 [
@@ -270,9 +268,7 @@ def relationships_table(master_id: str, relationships: Sequence[RelationshipView
                         [
                             html.Span(rel.other_title),
                             " · ",
-                            dmc.Anchor(
-                                rel.other_master_id, href=record_href(rel.other_master_id), style=_MONO
-                            ),
+                            dmc.Anchor(rel.other_master_id, href=record_href(rel.other_master_id)),
                         ]
                     ),
                     html.Td(rel.valid_from or "not given"),

@@ -95,6 +95,16 @@
       focusRow(node.data.task_id);
     }
   }
+  // below the large breakpoint the pane sits under the list: a move made from outside the list (J, K,
+  // Previous and Next) brings the pane into view, so the case it opens is never off screen
+  function paneBelowList() {
+    var queue = document.querySelector(".mdm-inbox-queue");
+    var pane = document.getElementById("decide-pane");
+    if (!queue || !pane) {
+      return null;
+    }
+    return pane.getBoundingClientRect().top >= queue.getBoundingClientRect().bottom - 1 ? pane : null;
+  }
   // the task whose case the pane shows (its data-task-id), or null
   function paneTask() {
     var pane = document.querySelector("#decide-pane [data-task-id]");
@@ -164,8 +174,10 @@
     var seconds = Math.max(Math.ceil(ms / 1000), 0);
     return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
   }
-  // the task: line 1 its kind and title, the title a button that opens it (Tab reaches it, Enter or a
-  // click selects the row); line 2 the band chip, the suggestion and the reason, wrapping
+  // the task: line 1 its kind (muted, in a mixed list only) and its title, the title a button that opens
+  // it (Tab reaches it, Enter or a click selects the row); line 2, muted, at most two lines with its full
+  // text in its title: the band (a dot and "79 review"), then the reason, the suggestion and the entity, so
+  // the entity is what a narrow list cuts, never the reason
   cells.MdmTask = function (props) {
     var d = props.data || {};
     var h = window.React.createElement;
@@ -175,24 +187,28 @@
         node.setSelected(true, true);
       }
     }
+    var first = [];
+    if (d.kind_label) {
+      first.push(h("span", {key: "kind", className: "mdm-kind"}, String(d.kind_label)));
+    }
+    first.push(
+      h(
+        "button",
+        {key: "title", type: "button", className: "mdm-row-open", onClick: open, tabIndex: 0},
+        String(d.title || "")
+      )
+    );
     var second = [];
     if (d.band_text) {
       var band = BANDS[d.band] ? d.band : "distinct";
       second.push(h("span", {key: "band", className: "mdm-band mdm-band-" + band}, String(d.band_text)));
-      second.push(" ");
     }
-    second.push(h("span", {key: "words"}, joined([d.entity_label, d.suggestion, d.reason])));
+    second.push(
+      h("span", {key: "words", className: "mdm-task-words"}, joined([d.reason, d.suggestion, d.entity_label]))
+    );
     return h("div", {className: "mdm-task-cell"}, [
-      h("div", {key: "first", className: "mdm-task-first"}, [
-        h("span", {key: "kind", className: "mdm-kind"}, String(d.kind_label || "")),
-        " ",
-        h(
-          "button",
-          {key: "title", type: "button", className: "mdm-row-open", onClick: open, tabIndex: 0},
-          String(d.title || "")
-        ),
-      ]),
-      h("div", {key: "second", className: "mdm-task-second"}, second),
+      h("div", {key: "first", className: "mdm-task-first"}, first),
+      h("div", {key: "second", className: "mdm-task-second", title: String(d.second_title || "")}, second),
     ]);
   };
   // a staged decision's countdown, ticking in the row while it waits
@@ -393,7 +409,8 @@
 
     // I7a: a decision key, a button or a menu item becomes one request for the act callback, naming the
     // task whose case the pane shows; a button drawn again (its clicks unset) asks for nothing. Link on a
-    // close call not chosen yet moves to the choice instead.
+    // close call not chosen yet, or on a blind review not chosen yet, moves to the choice instead; L on a
+    // blind review with nothing to place the record in does nothing (N answers it).
     actRequest: function (keyEvent) {
       var slots = slotsOfOnlyOutput();
       var context = window.dash_clientside.callback_context;
@@ -416,8 +433,12 @@
       if (!action) {
         return slots.map(noUpdate);
       }
-      if (action === "link" && dc.mdm_inbox.needsChoice()) {
-        dc.mdm_inbox.focusChoice();
+      var choosing = action === "link" || action === "blind_link";
+      var nothing = action === "link" && !!document.querySelector('#decide-pane [data-link="none"]');
+      if ((choosing && dc.mdm_inbox.needsChoice()) || nothing) {
+        if (!nothing) {
+          dc.mdm_inbox.focusChoice();
+        }
         if (window.mdmKeys && window.mdmKeys.done) {
           window.mdmKeys.done();
         }
@@ -507,8 +528,10 @@
       return [noUpdate(), noUpdate(), noUpdate()];
     },
 
-    // I6: a candidate chosen shows its panel and impact line and names it on the Link button (filled; or
-    // disabled when a rule blocks it); no request
+    // I6: a candidate chosen shows its panel and impact line and names it on the Link button (filled, or
+    // outlined on a pane that must not nudge the answer, data-quiet; disabled when a rule blocks it, or when
+    // nothing can be decided now, data-locked); no request. On a blind review the golden record chosen is
+    // named on "Belongs to …", outlined, and there is no panel or impact line to show.
     chooseCandidate: function (value) {
       var panels = outputs(1);
       var buttons = outputs(2);
@@ -535,16 +558,21 @@
           ? "mdm-candidate-impact"
           : "mdm-candidate-impact mdm-hidden";
       });
+      var blind = !!document.querySelector('#decide-pane [data-blind="yes"]');
+      var decision = blind ? "blind_link" : "link";
       function forLink(what) {
         return buttons.map(function (slot) {
-          return slot.id && slot.id.decision === "link" ? what : noUpdate();
+          return slot.id && slot.id.decision === decision ? what : noUpdate();
         });
       }
       var pane = document.querySelector("#decide-pane [data-needs-choice]");
       if (pane) {
         pane.removeAttribute("data-needs-choice");
       }
-      return [value, classes, forLink("Link to " + value), lines, forLink("filled"), forLink(blocked)];
+      var quiet = !!document.querySelector('#decide-pane [data-quiet="yes"]');
+      var shut = !!document.querySelector('#decide-pane [data-locked="yes"]');
+      var label = (blind ? "Belongs to " : "Link to ") + value;
+      return [value, classes, forLink(label), lines, forLink(quiet ? "default" : "filled"), forLink(shut || blocked)];
     },
 
     // F, or the toggle: the decide pane full width, and back; the toggle says what it does next
@@ -630,10 +658,25 @@
         return;
       }
       selectAt(api, nodes, target);
+      var below = inGrid(document.activeElement) ? null : paneBelowList();
+      if (below && below.getBoundingClientRect().top > window.innerHeight / 2) {
+        below.scrollIntoView({block: "start"});
+      }
     },
 
-    // 1, 2, 3: choose a candidate (only when there is a choice to make)
+    // 1, 2, 3: choose a candidate (only when there is a choice to make); on a blind review, a golden record
+    // of its choice, even when only one is offered, since it is never chosen by default
     choose: function (n) {
+      if (document.querySelector('#decide-pane [data-blind="yes"]')) {
+        var option = document.querySelector(
+          '#decide-pane .mdm-blind-choice [data-candidate-index="' + Number(n) + '"]'
+        );
+        var master = option ? option.getAttribute("data-master-id") : null;
+        if (master) {
+          setProps("candidate-choice", {value: master});
+        }
+        return;
+      }
       var panels = document.querySelectorAll("#why-section [data-candidate-index]");
       if (panels.length < 2) {
         return;

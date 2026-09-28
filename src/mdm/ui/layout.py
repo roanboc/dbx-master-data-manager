@@ -4,8 +4,9 @@
 entity, shortcuts switch, key event, tray state, tray version, settled), the intervals (tray poll, clock
 tick, counts poll), the notification container, the skip link, the AppShell (header, navbar, main with
 the address note and the page) and the key help modal (B.8.6). Header, left to right: burger, the product
-name, the entity select; then the tray button, the breaches link, the role badge, the persona select
-(local store only, "Act as"), the engine badge, "?" and the colour-scheme switch. The navigation has one
+name, the entity select; then the tray button (quiet until it holds a decision), the breaches link, the
+role as quiet text, the persona select (local store only, "Act as"), the engine as quiet text ("DuckDB ·
+stub"), "?" and the colour-scheme switch. The navigation has one
 group, Work, with the Inbox and the view rail; a role that sees no tasks gets a line saying how records
 open instead.
 
@@ -31,7 +32,7 @@ from mdm import capacity
 from mdm.config import Settings
 from mdm.models.authority import ROLE_LABELS, ROLES, Actor
 from mdm.models.tasks import TASK_KINDS
-from mdm.models.workbench import TASK_VIEWS, HubBadges
+from mdm.models.workbench import ALL_VIEWS, SAMPLES_VIEW, HubBadges
 from mdm.ui import context, ids
 from mdm.ui.components import keys, rail, tray
 from mdm.ui.components.common import count_text
@@ -135,31 +136,33 @@ def header(settings: Settings, badges: HubBadges) -> list[Component]:
                 className="mdm-breaches",
             ),
             # the role in words where the persona select does not show it: between the small and the medium
-            # breakpoints on a local store, and always on the platform (the navigation says it below small)
-            dmc.Badge(
+            # breakpoints on a local store, and always on the platform (the navigation says it below small);
+            # quiet text, not a pill
+            dmc.Text(
                 role_text(role) if role is not None else "",
                 id=ids.ROLE_BADGE,
-                variant="light",
-                color="indigo",
-                size="lg",
+                span=True,
+                size="sm",
+                c="dimmed",
                 className="mdm-role-badge",
                 visibleFrom="sm",
                 **({"hiddenFrom": "md"} if badges.local else {}),
             ),
             *persona_part,
-            dmc.Badge(
+            dmc.Text(
                 [html.Span("Store and assistant: ", className="mdm-sr-only"), engine_text(badges)],
                 id=ids.ENGINE_BADGE,
-                variant="outline",
-                color="gray",
-                size="lg",
+                span=True,
+                size="sm",
+                c="dimmed",
                 visibleFrom="lg",
                 className="mdm-engine-badge",
             ),
             dmc.ActionIcon(
                 "?",
                 id=ids.HELP_OPEN,
-                variant="default",
+                variant="subtle",
+                color="gray",
                 size="lg",
                 className="mdm-help-open",
                 visibleFrom="sm",
@@ -220,7 +223,7 @@ def navbar() -> list[Component]:
                     href="/",
                     leftSection=icon("tray"),
                     active=True,
-                    variant="light",
+                    variant="subtle",
                     className="mdm-nav-inbox",
                 ),
                 html.Div(id=ids.NAV_VIEWS, className="mdm-nav-views"),
@@ -301,7 +304,8 @@ def inbox_query(pathname: str | None, search: str | None) -> dict[str, str | Non
     pairs = dict(parse_qsl((search or "").lstrip("?")))
     view = pairs.get("view")
     kind = pairs.get("kind")
-    return {"view": view if view in TASK_VIEWS else "mine", "kind": kind if kind in TASK_KINDS else None}
+    view = view if view in ALL_VIEWS else "mine"
+    return {"view": view, "kind": kind if kind in TASK_KINDS and view != SAMPLES_VIEW else None}
 
 
 def entity_filter(ctx: context.UiContext, entity: object) -> str | None:

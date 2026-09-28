@@ -13,13 +13,35 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from mdm.models.records import SourceKey
 
-TASK_KINDS = ("review", "possible_duplicate", "held", "exception", "orphan", "unresolved_reference")
+TASK_KINDS = (
+    "review",
+    "possible_duplicate",
+    "held",
+    "exception",
+    "orphan",
+    "unresolved_reference",
+    "quality_sample",  # a blind review of a committed decision (story 3.2): one task per sample
+)
 TASK_STATUSES = ("open", "closed")
+#: the due time of a record the quality breaker holds with no golden record to decide on: nobody can settle it
+#: until a data owner restores automatic linking, so it never breaches, and it sorts after every other task
+WAITS_FOR_RESTORE = datetime(9999, 1, 1, tzinfo=UTC)
+
+
+#: what such a task shows for its due time
+WAITS_TEXT = "Waits for a data owner"
+
+
+def waits_for_restore(due_at: datetime | None) -> bool:
+    """Whether a due time is the breaker's wait (`WAITS_FOR_RESTORE`) rather than a service level's."""
+    return due_at is not None and due_at >= WAITS_FOR_RESTORE
+
+
 #: what a steward reads for each kind
 KIND_LABELS: Mapping[str, str] = {
     "review": "Review",
@@ -28,6 +50,7 @@ KIND_LABELS: Mapping[str, str] = {
     "exception": "Exception",
     "orphan": "Orphan",
     "unresolved_reference": "Unresolved reference",
+    "quality_sample": "Quality sample",
 }
 
 

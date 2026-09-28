@@ -15,6 +15,14 @@ moves only forward by its version key, a moved record gets its state, blocking
 keys, rule failures and a queue row at its new event; the reader's position
 (fault point "after_intake").
 
+The matcher's checkpoint (story 3.2): each run first hands back to the queue
+the records the quality breaker held for review, once a data owner restored
+their band, and checks the agreement of the latest blind reviews; intake counts
+the arrivals of each clock hour and checks the volume. While an entity's
+automatic band is demoted, nothing links or joins a new cluster automatically:
+those records become `breaker_demoted` reviews. A share of the automated
+decisions a page settles is drawn for blind review, in the same transaction.
+
 `settle()`: per entity, a page of the queue in landing order: deletes, candidates
 (stop keys dropped, pairs deduplicated, capped, `fast_weight`, `explain` at or
 above the lower band), golden candidates with `blocked_by`, decisions
@@ -68,14 +76,17 @@ from mdm.models.errors import Conflict, MdmError, NotFound
 from mdm.models.match import Band, Explanation, GoldenCandidate, PairScore
 from mdm.models.records import Reject, RuleResult, SourceChange, SourceKey, SourceState, StdRecord
 from mdm.models.safety import safe_detail, safe_message
-from mdm.models.tasks import Task, task_id, task_key
+from mdm.models.tasks import WAITS_FOR_RESTORE, Task, task_id, task_key
 from mdm.services.authority import AuthorityService, require
+from mdm.services.breaker import BreakerService
 from mdm.services.codelists import CodeListService, code_lists_of
 from mdm.services.commit import CommitService, RateLimiter
+from mdm.services.inbox import task_lock
 from mdm.services.landing import Batch, LandingReader
 from mdm.services.matching import MatchService, conflict
 from mdm.services.policy import COMMITTING, Plan, decide_delete, decide_new, decide_update, rule1_clause
 from mdm.services.privacy import Vault, source_subject, vault_ref
+from mdm.services.quality import QualityService, Settled
 from mdm.services.registry import ModelRegistry
 from mdm.services.support import (
     HINT_KEY,
@@ -123,6 +134,12 @@ class ArrivalReport:
     gaps_open: int = 0
     gaps_lost: int = 0
     candidates_capped: int = 0
+    # the matcher's checkpoint (story 3.2); a sample's task never counts in `tasks`
+    samples: int = 0  # automated decisions drawn for blind review
+    samples_skipped: int = 0  # draws skipped because the entity's open automated samples reached the cap
+    demoted: int = 0  # arrivals the quality breaker sent to review instead of linking automatically
+    handed_back: int = 0  # records that waited for the breaker, queued again after a restore
+    tripped: list[str] = field(default_factory=list)  # entities whose automatic band the breaker demoted
     skipped_busy: bool = False
     seconds: float = 0.0
 
@@ -145,8 +162,13 @@ class ArrivalReport:
             "detached",
             "commits",
             "candidates_capped",
+            "samples",
+            "samples_skipped",
+            "demoted",
+            "handed_back",
         ):
             setattr(self, name, getattr(self, name) + getattr(other, name))
+        self.tripped.extend(e for e in other.tripped if e not in self.tripped)
         for kind, count in other.tasks.items():
             self.tasks[kind] = self.tasks.get(kind, 0) + count
         if other.first_version is not None and (
@@ -260,6 +282,9 @@ class _PagePlan:
     unpend: list[tuple] = field(default_factory=list)
     linked_now: list[SourceKey] = field(default_factory=list)  # sources linked or created by this page
     declined_by: set[str] = field(default_factory=set)  # tray entries whose "not a match" removed a candidate
+    samples: list[Any] = field(default_factory=list)  # quality samples drawn from this page's decisions
+    void: list[tuple[str, str, SourceKey | None]] = field(default_factory=list)  # deleted records' samples
+    union_edge: dict[SourceKey, Explanation] = field(default_factory=dict)  # a cluster member's joining pair
     report: ArrivalReport = field(default_factory=ArrivalReport)
     initial_load: bool = False
     planning_version: int = 0
@@ -282,9 +307,12 @@ class ArrivalService:
         fault: Callable[[str], None] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        breaker: BreakerService | None = None,
+        quality: QualityService | None = None,
     ) -> None:
         """`fault(point)` is called at the FAULT_POINTS; tests raise there. `sleep` and `monotonic` drive the
-        bulk throttle (a fake clock in tests)."""
+        bulk throttle (a fake clock in tests). `breaker` and `quality` are the hub's (made here when not
+        given)."""
         self.settings = settings
         self.store = store
         self.registry = registry
@@ -299,6 +327,8 @@ class ArrivalService:
         self.sleep = sleep
         self.monotonic = monotonic
         self._throttle: RateLimiter | None = None
+        self.breaker = breaker or BreakerService(settings, store, registry, clock)
+        self.quality = quality or QualityService(settings, store, registry, matching, None, clock)
 
     def _fault(self, point: str) -> None:
         if self.fault is not None:
@@ -314,8 +344,10 @@ class ArrivalService:
         batch_size: int | None = None,
         bulk: bool = False,
     ) -> ArrivalReport:
-        """Requires ACTIONS["run_arrival"]; the lease; a job_run row with heartbeat."""
+        """Requires ACTIONS["run_arrival"] and, on a shared store, the matcher's checkpoint in force
+        (`Settings.validate_checkpoint_in_force`); the lease; a job_run row with heartbeat."""
         require(started_by, "run_arrival")
+        self.settings.validate_checkpoint_in_force()
         began = time.perf_counter()
         report = ArrivalReport()
         size = batch_size or (capacity.BULK_BATCH if bulk else capacity.ARRIVAL_BATCH)
@@ -326,6 +358,7 @@ class ArrivalService:
             run_id = self.store.start_job("arrival", started_by.name)
             self._throttle = self._make_throttle(bulk)
             try:
+                report.add(self._checkpoint())
                 if self.reader.due_for_reconcile():
                     report.add(self._reconcile_rows(bulk))
                 report.add(self.settle(bulk=bulk))
@@ -351,6 +384,57 @@ class ArrivalService:
             self.store.heartbeat(run_id, report.progress())
             self._finish(run_id, "succeeded", None)
         return report
+
+    def _checkpoint(self) -> ArrivalReport:
+        """For each published entity: the records the breaker held handed back once their band is normal
+        again, then the agreement of the latest blind reviews checked (a trip holds this run's links too)."""
+        report = ArrivalReport()
+        for entity in self.registry.published_entities():
+            report.handed_back += self._hand_back(entity)
+            if self.breaker.check_agreement(entity) is not None:
+                report.tripped.append(entity)
+        return report
+
+    def _hand_back(self, entity: str) -> int:
+        """Once a data owner restored the band: every open review the breaker opened (`breaker_demoted`) closed
+        and its record queued again at its current event, a page per transaction, so the restored band settles
+        it as if the breaker had never tripped. A task whose decision waits in the tray stays; a page that
+        meets a `Conflict` waits for the next run. Returns the records queued again."""
+        if self.breaker.demoted(entity) is not None:
+            return 0
+        handed = 0
+        after: str | None = None
+        while True:
+            page = self.store.open_tasks_by_reason(
+                entity, "review", "breaker_demoted", after, capacity.HAND_BACK_PAGE
+            )
+            if not page:
+                return handed
+            staged = self.store.staged_by_locks([task_lock(t.task_id) for t in page])
+            ready = [t for t in page if task_lock(t.task_id) not in staged]
+            sources = sorted({t.source for t in ready if t.source is not None})
+            states = self.store.source_states(entity, sources) if sources else {}
+            requeue = [
+                (s, states[s].event_id, states[s].landing_seq)
+                for s in sources
+                if s in states and states[s].status == "active"
+            ]
+            if ready:
+                try:
+                    with self.store.transaction():
+                        self.store.apply_work(
+                            WorkWrites(
+                                entity,
+                                requeue=tuple(requeue),
+                                close_task_ids=tuple(t.task_id for t in ready),
+                            )
+                        )
+                    handed += len(requeue)
+                except Conflict as exc:
+                    log.info(safe_message("hand_back_conflict", entity=entity, keys=len(exc.keys)))
+            if len(page) < capacity.HAND_BACK_PAGE:
+                return handed
+            after = page[-1].task_id
 
     def _finish(self, run_id: str, status: str, code: str | None) -> None:
         try:
@@ -566,18 +650,24 @@ class ArrivalService:
         report.versions = self.store.put_source_versions(versions)
         self._fault("after_versions")
 
-        # one transaction: states move only forward; moved records are queued; the reader's position
+        # one transaction: states move only forward; moved records are queued and counted for the quality
+        # breaker's volume trigger (initial loads aside); the reader's position
+        counted: dict[str, int] = {}
         with self.store.transaction():
             by_entity: dict[str, list[int]] = {}
             for index, item in enumerate(accepted):
                 by_entity.setdefault(item.model.entity, []).append(index)
             for entity, indexes in by_entity.items():
-                self._move_states(
+                counted[entity] = self._move_states(
                     entity, [(i, accepted[i]) for i in indexes], std_ids, snapshots, now, report
                 )
+            self.breaker.count_arrivals(counted, now)
             if batch is not None:
                 self.reader.record(batch)
         self._fault("after_intake")
+        for entity in sorted(e for e, n in counted.items() if n > 0):
+            if self.breaker.check_volume(entity, now) is not None:
+                report.tripped.append(entity)
         return report, {r.event_id for r in rejects}
 
     def _move_states(
@@ -588,7 +678,9 @@ class ArrivalService:
         snapshots: Mapping[str, tuple[Mapping[str, frozenset[str]], Mapping[str, int]]],
         now: datetime,
         report: ArrivalReport,
-    ) -> None:
+    ) -> int:
+        """Moves the states forward and queues the moved records; returns how many were queued outside an
+        initial load (the arrivals the quality breaker counts)."""
         sources = sorted({item.change.source for _, item in items})
         stored = self.store.source_states(entity, sources)
         best: dict[SourceKey, tuple[int, _Accepted]] = {}
@@ -608,6 +700,7 @@ class ArrivalService:
         keys: dict[SourceKey, Mapping[str, Sequence[str]]] = {}
         failures: list[tuple[SourceKey, Sequence[RuleResult], str]] = []
         queue: list[tuple[str, SourceKey, str, int]] = []
+        arrivals = 0
         model = items[0][1].model
         _, list_versions = snapshots.get(entity, ({}, {}))
         for source in sources:
@@ -626,14 +719,17 @@ class ArrivalService:
             if item.std is not None:
                 failures.append((source, item.results, item.change.event_id))
             queue.append((entity, source, item.change.event_id, item.change.landing_seq))
+            if not item.change.initial_load:
+                arrivals += 1
         if not states:
-            return
+            return 0
         self.store.put_source_states(states)
         self.store.replace_blocking_keys(entity, keys)
         if failures:
             self.store.replace_rule_failures(entity, failures, self._rule_list_versions(model, list_versions))
         self.store.queue_put(queue)
         report.queued += len(queue)
+        return arrivals
 
     @staticmethod
     def _rule_list_versions(model: EntityModel, versions: Mapping[str, int]) -> dict[str, int]:
@@ -810,6 +906,8 @@ class ArrivalService:
                 release=tuple(dict.fromkeys(planned.release)),
                 tasks=tuple(planned.tasks),
                 pairs=tuple(planned.pairs[k] for k in sorted(planned.pairs)),
+                samples=tuple(planned.samples),
+                void_samples=tuple(planned.void),
             )
             if planned.pending:
                 self.store.put_pending_references(planned.pending)
@@ -893,6 +991,9 @@ class ArrivalService:
         failures = store.rule_failures(entity, [s for s, st in states.items() if st.status == "active"])
         spec_of = {s: model.source(s.system) for s in states if model.has_source(s.system)}
         plans: dict[SourceKey, list[Plan]] = {}
+        # the quality breaker: while the automatic band is demoted, nothing links or joins automatically
+        demotion = self.breaker.demoted(entity)
+        breaker = demotion.trip_change_set if demotion is not None else None
 
         # records the conflict path gave up on, and records a quality rule holds
         for source, state in states.items():
@@ -958,6 +1059,9 @@ class ArrivalService:
             master = linked.get(source)
             remaining = member_counts.get(master, 0) - detaching[master] if master else 0
             plans[source] = decide_delete(model, spec_of[source], master, remaining, record=source)
+        # a deleted record's open quality samples count nothing: voided with the deletion, their tasks and the
+        # reviews their disagreements opened closed
+        out.void.extend(self.quality.void_for_deleted(entity, deleted))
 
         # updates from linked records
         updating = [s for s in active if s in linked]
@@ -1063,6 +1167,7 @@ class ArrivalService:
             {s: golden.get(s, []) for s in clustering},
             among,
             unlinked,
+            demoted=demotion is not None,
         )
         clusters: dict[SourceKey, Resolution] = {}
         for resolution in resolutions:
@@ -1070,9 +1175,10 @@ class ArrivalService:
                 self._cluster_pair_task(entity, resolution, states, now, out)
                 continue
             first = resolution.sources[0]
-            plan = decide_new(model, spec_of[first], resolution, None, {}, record=first)
+            plan = decide_new(model, spec_of[first], resolution, None, {}, record=first, breaker=breaker)
             if plan.kind == "create":
                 clusters[first] = resolution
+                self._union_edges(resolution, among, out)
                 for member in resolution.sources:
                     plans[member] = [plan if member == first else replace(plan, source=member)]
             else:
@@ -1081,6 +1187,24 @@ class ArrivalService:
 
         self._build(entity, model, states, linked, plans, clusters, golden, now, out)
         return out
+
+    @staticmethod
+    def _union_edges(resolution: Resolution, among: Sequence[PairScore], out: _PagePlan) -> None:
+        """For each member of a new cluster but its first, the strongest automatic-band pair joining it to
+        another member (the pair a quality sample of its automatic link measures)."""
+        members = set(resolution.sources)
+        for member in resolution.sources[1:]:
+            edges = [
+                p
+                for p in among
+                if p.explanation.band == Band.AUTO
+                and member in (p.left, p.right)
+                and (p.right if p.left == member else p.left) in members
+                and p.left != p.right
+            ]
+            if edges:
+                best = min(edges, key=lambda p: (-p.explanation.score, sorted((p.left, p.right))))
+                out.union_edge[member] = best.explanation
 
     def _linked(self, entity: str, search: Any, linked: Mapping[SourceKey, str]) -> set[SourceKey]:
         """The candidates (outside the page) that are linked to a golden record."""
@@ -1217,6 +1341,8 @@ class ArrivalService:
         joining: dict[str, set[SourceKey]] = {}
         recompute: dict[str, str] = {}  # master -> the clause of the first plan that asked
         creates: list[tuple[str, SourceKey, Resolution, Plan]] = []
+        position = {source: index for index, source in enumerate(states)}
+        settled: list[tuple[int, Settled]] = []  # the automated decisions this page settles, for blind review
 
         for source in (s for s in states if s in plans):
             state = states[source]
@@ -1243,6 +1369,7 @@ class ArrivalService:
                     out.report.detached += 1
                 elif plan.kind in ("link", "consolidate") and plan.master_id:
                     out.items.append(LinkSource(source, plan.master_id, None, plan.clause))
+                    settled.append((position[source], self._settled_link(source, state, plan)))
                     committing.add(source)
                     target[source] = plan.master_id
                     out.linked_now.append(source)
@@ -1271,17 +1398,72 @@ class ArrivalService:
             for member in members:
                 clause = plan.clause if member == first else rule1_clause("auto_band")
                 out.items.append(LinkSource(member, ref, None, clause))
+                settled.append(
+                    (
+                        position[member],
+                        self._settled_create(member, states[member], ref, member == first, out),
+                    )
+                )
                 committing.add(member)
                 target[member] = ref
                 out.linked_now.append(member)
                 out.touches.setdefault(member, set()).update({source_token(member), ref})
                 out.links.append(("s:" + member.text(), "r:" + ref))
             out.report.created += 1
+        # a share of the automated decisions drawn for blind review, in landing order, with their tasks (which
+        # never count in the report's tasks)
+        if settled:
+            samples, tasks, skipped = self.quality.automated(
+                entity, [item for _, item in sorted(settled, key=lambda found: found[0])], now
+            )
+            out.samples.extend(samples)
+            out.tasks.extend(tasks)
+            out.report.samples += len(samples)
+            out.report.samples_skipped += skipped
         # survivorship for every existing golden record a committed item changes
         if recompute:
             self._recompute(entity, model, states, recompute, detached, joining, committing, now, out)
         # relationships from the records' references
         self._relationships(entity, model, states, plans, target, now, out)
+
+    @staticmethod
+    def _settled_link(source: SourceKey, state: SourceState, plan: Plan) -> Settled:
+        """An automatic link (`rule1:auto_band`) or a link the source asserted (a master ID hint, or a retired
+        ID routed to its survivor), as blind review samples it."""
+        if plan.clause == rule1_clause("auto_band"):
+            score = plan.evidence.get("score")
+            band = plan.evidence.get("band")
+            return Settled(
+                "auto_link",
+                source,
+                state.event_id,
+                plan.master_id or "",
+                band if isinstance(band, str) else "auto",
+                float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else None,
+                plan.signature,
+                plan.rule_version,
+            )
+        return Settled("hint_link", source, state.event_id, plan.master_id or "", "", None, "", None)
+
+    @staticmethod
+    def _settled_create(
+        member: SourceKey, state: SourceState, ref: str, first: bool, out: _PagePlan
+    ) -> Settled:
+        """A new golden record: its first record's create (nothing scored in the review band or above), and
+        each other member's automatic link through the pair that joined it."""
+        edge = out.union_edge.get(member)
+        if first or edge is None:
+            return Settled("auto_create", member, state.event_id, ref, "distinct", None, "", None)
+        return Settled(
+            "auto_link",
+            member,
+            state.event_id,
+            ref,
+            edge.band.value,
+            edge.score,
+            edge.signature,
+            edge.rule_version,
+        )
 
     def _recompute(
         self,
@@ -1444,6 +1626,8 @@ class ArrivalService:
             )
             source = plan.source
         key = task_key(kind, entity, source, master_ids)
+        # a record the breaker holds with no golden record to decide on waits for a data owner, not a steward
+        waits = plan.reason == "breaker_demoted" and not master_ids
         out.tasks.append(
             Task(
                 task_id=task_id(key, state.event_id),
@@ -1461,9 +1645,12 @@ class ArrivalService:
                 event_id=state.event_id,
                 created_at=now,
                 updated_at=now,
+                due_at=WAITS_FOR_RESTORE if waits else None,
             )
         )
         out.report.tasks[kind] = out.report.tasks.get(kind, 0) + 1
+        if plan.reason == "breaker_demoted":
+            out.report.demoted += 1
 
     @staticmethod
     def _close_task(

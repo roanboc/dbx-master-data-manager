@@ -26,6 +26,8 @@ class Actor:
 
 
 AUTOMATED_MATCHER = Actor(name="automated-matcher", kind="automated", role="data_steward")
+#: the quality breaker (decision 3): it only reduces automation, and a data owner restores what it demoted
+QUALITY_BREAKER = Actor(name="quality-breaker", kind="automated", role="coordinating_steward")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +78,14 @@ ACTIONS: Mapping[str, frozenset[str]] = {
     "approve_update": _STEWARDS,
     "reject_update": _STEWARDS,
     "flush_tray": frozenset(ROLES) - {"consumer"},
+    # the matcher's checkpoint (story 3.2): a blind answer, and keeping a first decision a review disputed
+    "blind_link": _STEWARDS,
+    "blind_none": _STEWARDS,
+    "keep_decision": _STEWARDS,
+    "view_breaker": frozenset(ROLES) - {"consumer"},
+    "restore_breaker": frozenset({"data_owner"}),
+    # an automated actor's NAME: only the quality breaker demotes a band
+    "trip_breaker": frozenset({QUALITY_BREAKER.name}),
 }
 NEVER_AUTOMATIC = frozenset(
     {
@@ -109,11 +119,12 @@ ROLE_LABELS: Mapping[str, str] = {
 
 def allowed(actor: Actor, action: str) -> bool:
     """Whether the action table lets `actor` take `action`: `services.authority.require` without raising, so
-    the workbench can show what a role cannot do, with the reason. For "arrival" the automated actor's name is
-    checked, for every other action the role; an unknown action is never allowed."""
+    the workbench can show what a role cannot do, with the reason. An automated actor passes only the actions
+    whose set names it (its name, never its role); a person passes by role. An unknown action is never
+    allowed."""
     permitted = ACTIONS.get(action)
     if permitted is None:
         return False
-    if action == "arrival":
-        return actor.kind == "automated" and actor.name in permitted
+    if actor.kind == "automated":
+        return actor.name in permitted
     return actor.role in permitted

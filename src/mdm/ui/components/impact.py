@@ -82,9 +82,10 @@ def _row(row: PreviewRow) -> Component:
 
 
 def line(preview: Preview, *, verb: str = "link") -> Component:
-    """The impact line: "If you link: +1 cross-reference · golden website changes · no ID retired"."""
+    """The impact line: "If you link: +1 cross-reference · golden website changes · no ID retired"; plain
+    text, its lead the one weighted phrase."""
     return html.P(
-        [html.Strong(f"{lead(verb)}: "), preview.impact.sentence()],
+        [html.Span(f"{lead(verb)}: ", className="mdm-impact-lead"), preview.impact.sentence()],
         className="mdm-impact",
     )
 

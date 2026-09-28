@@ -1,6 +1,8 @@
 """The compare table: the attribute column, then one column per record, each cell marked by agreement
 with a class and a symbol (=, ≈, ≠, ∅), so colour is never the only cue; masked values in italics,
-with "(masked)" for screen readers (B.8.7).
+with "(masked)" for screen readers (B.8.7). The cells stay neutral, and only a disagreement is tinted,
+its ≠ red, so the eye goes to what separates them: the row when one record stands against the reference,
+the ≠ cell alone when several do, so a candidate that agrees is never painted as disagreeing.
 
 The table shows what the decision rests on: the attributes the matcher compared, the critical ones and,
 for a held update, those that change. The rest sit under "Other values (N)", collapsed and marked "not
@@ -23,8 +25,6 @@ from dash.development.base_component import Component
 from mdm.models.workbench import CompareRow
 from mdm.ui.components import reveal
 
-#: the size of the pane's subheadings (the pane sits beside the list, so they stay small)
-SUBHEADING = {"fontSize": "0.95rem", "fontWeight": 650, "margin": "10px 0 4px"}
 #: the symbol beside each agreement mark (AGREEMENT)
 SYMBOLS = {"agree": "=", "partial": "≈", "disagree": "≠", "missing": "∅", "": ""}
 #: what each mark means, for screen readers and the legend
@@ -34,6 +34,8 @@ AGREEMENT_WORDS = {
     "disagree": "different",
     "missing": "missing on one side",
 }
+#: the same, shorter, for the legend beside the heading (a cell's own words stay whole for screen readers)
+LEGEND_WORDS = {"agree": "same", "partial": "similar", "disagree": "different", "missing": "missing"}
 #: the text of a value no record holds
 NO_VALUE = "—"
 CAPTION = "The records side by side"
@@ -48,6 +50,25 @@ def is_masked(row: CompareRow, value: str | None, *, revealed: bool) -> bool:
     return row.personal and value is not None and not revealed
 
 
+#: where a long value may break between lines: after these, before any break inside a word
+BREAKS_AFTER = "/.-@_"
+
+
+def breakable(text: str) -> list:
+    """`text` with a line-break opportunity (`<wbr>`) after each "/", ".", "-", "@" and "_" of a long word,
+    so a web address in a narrow column breaks at its parts, not in the middle of one."""
+    if len(text) <= 16 or not any(mark in text for mark in BREAKS_AFTER):
+        return [text]
+    parts: list = []
+    start = 0
+    for index, char in enumerate(text):
+        if char in BREAKS_AFTER and index + 1 < len(text):
+            parts.extend([text[start : index + 1], html.Wbr()])
+            start = index + 1
+    parts.append(text[start:])
+    return parts
+
+
 def _value(row: CompareRow, value: str | None, *, revealed: bool) -> list:
     if value is None:
         return [
@@ -56,7 +77,7 @@ def _value(row: CompareRow, value: str | None, *, revealed: bool) -> list:
         ]
     if is_masked(row, value, revealed=revealed):
         return [html.Span(value, className="mdm-masked"), html.Span(" (masked)", className="mdm-sr-only")]
-    return [value]
+    return breakable(value)
 
 
 def cell(row: CompareRow, index: int, *, revealed: bool = False, column: str = "") -> Component:
@@ -130,15 +151,46 @@ def empty_sentence(rows: Sequence[CompareRow], columns: int) -> str:
     return f"None of these records has {joined}."
 
 
+#: the reference column's noun as the legend says it
+_REFERENCE_WORDS = {
+    "Arriving": "the arriving record",
+    "Record": "the record",
+    "Approved": "the approved values",
+}
+
+
+def reference_words(header: str) -> str:
+    """The reference column's header as the object of "Against": "the arriving record · crm:C000123" for
+    "Arriving · crm:C000123", "the record · finance:F000160"; a master ID stays as it is."""
+    noun, sep, ref = header.partition(" · ")
+    words = _REFERENCE_WORDS.get(noun)
+    if words is None:
+        words = noun[:1].lower() + noun[1:] if noun[1:2].islower() else noun
+    return f"{words}{sep}{ref}"
+
+
 def legend(reference: str) -> Component:
-    """What the marks mean: "Against Arriving · crm:C000123: = the same, ≈ similar, ≠ different, ∅
-    missing on one side"."""
-    parts: list = [f"Against {reference}: "]
-    for index, (code, words) in enumerate(AGREEMENT_WORDS.items()):
+    """What the marks mean, in one short line beside the heading: "Against the arriving record ·
+    crm:C000123: = same, ≈ similar, ≠ different, ∅ missing"."""
+    parts: list = [f"Against {reference_words(reference)}: "]
+    for index, (code, words) in enumerate(LEGEND_WORDS.items()):
         if index:
             parts.append(", ")
         parts.extend([html.Span(SYMBOLS[code], className="mdm-symbol"), words])
     return html.P(parts, className="mdm-compare-legend")
+
+
+def disagrees(row: CompareRow) -> bool:
+    """Whether any record disagrees with the reference on this attribute."""
+    return "disagree" in row.agreement
+
+
+def _row_class(row: CompareRow, *, other: bool, single: bool) -> str | None:
+    """The row's classes: the whole row is tinted for a disagreement only when one record stands against
+    the reference; with several, the ≠ cell alone is (`mdm-compare-multi`)."""
+    tinted = single and disagrees(row)
+    names = [name for name, on in (("mdm-compare-other", other), ("mdm-row-disagree", tinted)) if on]
+    return " ".join(names) or None
 
 
 def _table(
@@ -147,20 +199,28 @@ def _table(
     head = html.Thead(
         html.Tr([html.Th("Attribute", scope="col")] + [html.Th(header, scope="col") for header in columns])
     )
+    single = len(columns) <= 2
     body = html.Tbody(
         [
             html.Tr(
                 [_label(row)]
                 + [cell(row, i, revealed=revealed, column=columns[i]) for i in range(len(columns))],
-                className="mdm-compare-other" if other else None,
+                className=_row_class(row, other=other, single=single),
             )
             for row in rows
         ]
     )
+    classes = ["mdm-table", "mdm-compare"]
+    if len(columns) >= 3:
+        # three or four records side by side (candidates, or a blind review's golden records): the labels
+        # wrap and a long value breaks, so every column stays on screen
+        classes.append("mdm-compare-wide")
+    if not single:
+        classes.append("mdm-compare-multi")
     return html.Div(
         html.Table(
             [html.Caption(caption, className="mdm-sr-only"), head, body],
-            className="mdm-table mdm-compare",
+            className=" ".join(classes),
         ),
         className="mdm-compare-scroll",
     )
@@ -181,7 +241,7 @@ def render(
     first, rest = main_rows(rows)
     shown = first + rest
     masked = any(is_masked(row, value, revealed=revealed) for row in shown for value in row.values)
-    bar: list = [html.H3("Values", className="mdm-decide-subheading", style=SUBHEADING)]
+    bar: list = [html.H3("Values", className="mdm-decide-subheading")]
     if any(compared(row) for row in shown) and len(columns) > 1:
         bar.append(legend(columns[0]))
     offer = False

@@ -10,6 +10,8 @@ from collections.abc import Callable, Iterator, Sequence
 from typing import TypeVar
 
 from mdm.models.errors import CapacityError
+from mdm.models.quality import BREAKER_WINDOW_CAP as BREAKER_WINDOW_CAP  # re-exported
+from mdm.models.quality import SAMPLE_OPEN_CAP_MAX as SAMPLE_OPEN_CAP_MAX  # re-exported
 
 T = TypeVar("T")
 K = TypeVar("K")
@@ -62,6 +64,14 @@ TRAY_SHOWN = 50  # entries in the tray's popover
 FLUSH_BATCH = 100  # staged decisions one flush pass commits, each in its own transaction
 FLUSH_ATTEMPTS = 3  # passes an unexpected failure is retried before the decision settles failed
 
+# The matcher's checkpoint (story 3.2)
+SAMPLE_BASIS = 1_000_000  # a draw compares a hash modulo this with the share times this
+# SAMPLE_OPEN_CAP_MAX (10,000) and BREAKER_WINDOW_CAP (1,000) bound MDM_SAMPLE_OPEN_CAP and MDM_BREAKER_WINDOW;
+# models.quality holds them, so the settings may read them, and they are imported above
+BREAKER_Z = 1.645  # the one-sided 95% bound on agreement (Wilson's)
+ARRIVAL_HOURS_KEPT = 192  # arrival counts kept per entity: the current hour and 7 days back, with margin
+HAND_BACK_PAGE = ARRIVAL_BATCH  # records waiting for the breaker handed back to arrival in one transaction
+
 #: tables no statement may read without a key document, a full key or a LIMIT; + every entity table
 LARGE_TABLES = (
     "source_state",
@@ -79,6 +89,7 @@ LARGE_TABLES = (
     "arrival_gap",
     "tray_entry",
     "match_label",
+    "quality_sample",
 )
 
 

@@ -225,3 +225,99 @@ def test_duplicate_inputs_and_foreign_pairs_are_ignored() -> None:
     outside = key("crm:C99")
     out = resolve_batch(plain(A, A, B), {}, [pair(A, outside, 99.0), pair(A, A, 99.0), pair(A, B, 95.0)], {})
     assert out == [Resolution("new_cluster", (A, B), (), "new:crm:C1", None, 95.0, reason="new_cluster")]
+
+
+# ------------------------------------------------------------------------------------------------ the quality breaker
+
+
+def test_a_demoted_auto_link_waits_for_a_steward_naming_every_candidate() -> None:
+    goldens = {A: [golden("PER-1", A, H1, 97.0), golden("PER-2", A, H2, 70.0)]}
+    (only,) = resolve_batch(plain(A), goldens, [], {}, demoted=True)
+    assert only == Resolution(
+        "review", (A,), ("PER-1", "PER-2"), None, x(97.0), None, reason="breaker_demoted"
+    )
+
+
+def test_a_demoted_band_leaves_two_auto_goldens_ambiguous() -> None:
+    goldens = {A: [golden("PER-1", A, H1, 93.0), golden("PER-2", A, H2, 99.0)]}
+    (only,) = resolve_batch(plain(A), goldens, [], {}, demoted=True)
+    assert only.kind == "ambiguous" and only.reason == "ambiguous_auto"
+
+
+def test_an_outside_auto_partner_gives_the_breakers_reason_and_a_review_one_does_not() -> None:
+    outside = key("crm:C99")
+    (auto,) = resolve_batch(plain(A), {}, [], {A: [pair(A, outside, 97.0)]}, demoted=True)
+    assert (auto.kind, auto.reason, auto.review_with) == ("review", "breaker_demoted", (outside,))
+    (review,) = resolve_batch(plain(A), {}, [], {A: [pair(A, outside, 70.0)]}, demoted=True)
+    assert review.reason == "unlinked_candidate"
+    (normal,) = resolve_batch(plain(A), {}, [], {A: [pair(A, outside, 97.0)]})
+    assert normal.reason == "unlinked_candidate"
+
+
+def test_demoted_records_of_one_batch_wait_instead_of_joining() -> None:
+    pairs = [pair(A, B, 97.0), pair(B, C, 70.0)]
+    out = resolve_batch(plain(A, B, C, D), {}, pairs, {}, demoted=True)
+    by_first = {r.sources[0]: r for r in out}
+    assert (by_first[A].kind, by_first[A].reason, by_first[A].review_with) == (
+        "review",
+        "breaker_demoted",
+        (B,),
+    )
+    assert (by_first[B].kind, by_first[B].reason, by_first[B].review_with) == (
+        "review",
+        "breaker_demoted",
+        (A,),
+    )
+    assert (by_first[C].kind, by_first[C].reason) == ("review", "batch_candidate")  # waits with its partner
+    assert by_first[D] == Resolution("new_cluster", (D,), (), "new:crm:C4", None, None, reason="new_cluster")
+
+
+def _random_batch(seed: int) -> tuple[list[ClusterInput], dict, list[PairScore], dict]:
+    rng = random.Random(seed)
+    sources = [key(f"crm:R{seed:03d}{i:02d}") for i in range(rng.randint(1, 14))]
+    ids = {s: {("PERSON_REF", str(rng.randint(0, 3)))} for s in sources if rng.random() < 0.3}
+    scores = [40.0, 65.0, 80.0, 91.0, 95.0, 99.0]
+    pairs = [
+        pair(rng.choice(sources), rng.choice(sources), rng.choice(scores)) for _ in range(rng.randint(0, 20))
+    ]
+    goldens = {
+        s: [
+            golden(
+                f"PER-{seed}{j}", s, H1 if j % 2 else H2, rng.choice(scores), rng.choice([None, None, "x"])
+            )
+            for j in range(rng.randint(0, 3))
+        ]
+        for s in sources
+        if rng.random() < 0.5
+    }
+    outside = key("crm:OUTSIDE")
+    unlinked = {s: [pair(s, outside, rng.choice(scores))] for s in sources if rng.random() < 0.2}
+    return plain(*sources, ids=ids), goldens, pairs, unlinked
+
+
+def test_the_breaker_never_widens_a_band_over_random_batches() -> None:
+    task_kinds = {"ambiguous", "review"}
+    for seed in range(500):
+        inputs, goldens, pairs, unlinked = _random_batch(seed)
+        normal = resolve_batch(inputs, goldens, pairs, unlinked)
+        demoted = resolve_batch(inputs, goldens, pairs, unlinked, demoted=True)
+        assert all(r.kind != "link" for r in demoted), seed
+        assert all(len(r.sources) == 1 for r in demoted if r.kind == "new_cluster"), seed
+        seen = sorted(s for r in demoted if not r.is_cluster_pair for s in r.sources)
+        assert seen == sorted(i.source for i in inputs), seed
+        after = {r.sources[0]: r for r in demoted if not r.is_cluster_pair}
+        for before in normal:
+            if before.is_cluster_pair:
+                continue
+            first = before.sources[0]
+            if before.kind in task_kinds:
+                assert after[first].kind in (before.kind, "review"), seed
+            if before.kind == "link":
+                assert (after[first].kind, after[first].reason) == ("review", "breaker_demoted"), seed
+        paired = {s for p in pairs if p.left != p.right for s in (p.left, p.right)}
+        for item in inputs:
+            lonely = (
+                item.source not in paired and not goldens.get(item.source) and not unlinked.get(item.source)
+            )
+            if lonely:
+                assert after[item.source].kind == "new_cluster", seed

@@ -4,11 +4,15 @@ Application service `ASVC8` (with `DecisionService`). A page is keyed by `(due t
 by an offset; every count reads at most `capacity.COUNT_CAP` rows and shows "999+" at the cap; titles
 are masked by the actor's role. Reads need `view_tasks`, everything else `work_tasks`. A refusal never
 names another person: `claimed_by_another` carries the claim's expiry only.
+
+Quality samples (story 3.2) have a view of their own, Quality samples, which lists every open sample but those
+the actor decided first; the task views and the health strip's Open and Breaching figures leave them out.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -22,9 +26,10 @@ from mdm.models.errors import Conflict, Forbidden, NotFound
 from mdm.models.records import SourceKey
 from mdm.models.tasks import TASK_KINDS, Task
 from mdm.models.workbench import (
+    ALL_VIEWS,
     ESCALATION_REASONS,
+    SAMPLES_VIEW,
     SNOOZE_HOURS,
-    TASK_VIEWS,
     Health,
     ServiceLevels,
     StagedRef,
@@ -35,6 +40,7 @@ from mdm.models.workbench import (
 )
 from mdm.services import display
 from mdm.services.authority import require
+from mdm.services.breaker import BreakerService
 from mdm.services.privacy import PrivacyService
 from mdm.services.registry import ModelRegistry
 from mdm.services.support import token
@@ -184,6 +190,8 @@ class InboxService:
         registry: ModelRegistry,
         privacy: PrivacyService,
         clock: Callable[[], datetime] = utcnow,
+        *,
+        breaker: BreakerService | None = None,
     ) -> None:
         """Wires the service; reads nothing from the store (`mdm init` wires the hub before the schema)."""
         self.settings = settings
@@ -192,6 +200,7 @@ class InboxService:
         self.privacy = privacy
         self.clock = clock
         self.rows = TaskRows(settings, store, registry)
+        self.breaker = breaker or BreakerService(settings, store, registry, clock)
 
     # ------------------------------------------------------------------ reads
 
@@ -200,6 +209,7 @@ class InboxService:
     ) -> TaskQuery:
         if kind is not None and kind not in TASK_KINDS:
             raise NotFound("unknown_kind", kind=token(kind))
+        samples = "quality_sample"
         if view == "mine":
             return TaskQuery(
                 now,
@@ -208,15 +218,19 @@ class InboxService:
                 mine=actor.name,
                 lapsed_before=self.rows.lapsed_before(now),
                 snoozed=False,
+                exclude_kind=samples,
             )
         if view == "team":
-            return TaskQuery(now, entity, kind, snoozed=False)
+            return TaskQuery(now, entity, kind, snoozed=False, exclude_kind=samples)
         if view == "breaching":
-            return TaskQuery(now, entity, kind, snoozed=None, breaching=True)
+            return TaskQuery(now, entity, kind, snoozed=None, breaching=True, exclude_kind=samples)
         if view == "snoozed":
-            return TaskQuery(now, entity, kind, snoozed=True)
+            return TaskQuery(now, entity, kind, snoozed=True, exclude_kind=samples)
         if view == "escalated":
-            return TaskQuery(now, entity, kind, snoozed=None, escalated=True)
+            return TaskQuery(now, entity, kind, snoozed=None, escalated=True, exclude_kind=samples)
+        if view == SAMPLES_VIEW:
+            # every open sample, snoozed or not, but those the actor decided first
+            return TaskQuery(now, entity, samples, snoozed=None, not_first_decider=actor.name)
         raise NotFound("unknown_view", view=token(view))
 
     def page(
@@ -229,7 +243,7 @@ class InboxService:
         after: tuple[str, str] | None = None,
         limit: int = capacity.INBOX_PAGE,
     ) -> TaskPage:
-        """One page of the view (`TASK_VIEWS`), ordered by `(due time, task ID)` after the cursor `after`
+        """One page of the view (`ALL_VIEWS`), ordered by `(due time, task ID)` after the cursor `after`
         (ISO due time, task ID); titles masked, staged markers from the tray's locks, score, band,
         suggestion and reason from the stored evidence (never scored again). `view_tasks`."""
         require(actor, "view_tasks")
@@ -258,20 +272,32 @@ class InboxService:
         cap = capacity.COUNT_CAP
         views = {
             view: self.store.task_count(self._query(view, actor, entity, None, now), cap)
-            for view in TASK_VIEWS
+            for view in ALL_VIEWS
         }
         kinds = {
             kind: self.store.task_count(TaskQuery(now, entity, kind, snoozed=None), cap)
             for kind in TASK_KINDS
         }
         mine = TaskQuery(
-            now, entity, claimed_by=actor.name, lapsed_before=self.rows.lapsed_before(now), snoozed=False
+            now,
+            entity,
+            claimed_by=actor.name,
+            lapsed_before=self.rows.lapsed_before(now),
+            snoozed=False,
+            exclude_kind="quality_sample",
         )
-        return ViewCounts(views=views, kinds=kinds, claimed=self.store.task_count(mine, cap))
+        overdue = replace(self._query(SAMPLES_VIEW, actor, entity, None, now), breaching=True)
+        return ViewCounts(
+            views=views,
+            kinds=kinds,
+            claimed=self.store.task_count(mine, cap),
+            samples_breaching=self.store.task_count(overdue, cap),
+        )
 
     def health(self, *, actor: Actor) -> Health:
-        """The health strip: open, breaching and staged (capped), the last commit and the last arrival
-        run's progress. `view_tasks`."""
+        """The health strip: open, breaching and staged (capped; quality samples left out), the last commit, the
+        last arrival run's progress, and the entities whose automatic linking the quality breaker paused.
+        `view_tasks`."""
         require(actor, "view_tasks")
         now = self.clock()
         cap = capacity.COUNT_CAP
@@ -290,9 +316,12 @@ class InboxService:
         automatic = None
         if isinstance(settled, int) and settled > 0 and isinstance(opened, int):
             automatic = max(0.0, min(1.0, (settled - opened) / settled))
+        samples = "quality_sample"
         return Health(
-            open_tasks=self.store.task_count(TaskQuery(now, snoozed=None), cap),
-            breaching=self.store.task_count(TaskQuery(now, snoozed=None, breaching=True), cap),
+            open_tasks=self.store.task_count(TaskQuery(now, snoozed=None, exclude_kind=samples), cap),
+            breaching=self.store.task_count(
+                TaskQuery(now, snoozed=None, breaching=True, exclude_kind=samples), cap
+            ),
             staged=self.store.staged_count(cap),
             last_commit_version=version,
             last_commit_at=commit_at,
@@ -300,6 +329,7 @@ class InboxService:
             arrival_read=read if isinstance(read, int) else None,
             arrival_tasks=opened if isinstance(opened, int) else None,
             arrival_automatic=automatic,
+            paused=self.breaker.paused(self.registry.published_entities()),
         )
 
     def task(self, task_id: str) -> Task:

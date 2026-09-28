@@ -3,8 +3,9 @@
     make screenshots        # uv run --group gui python tools/screenshots.py
 
 It seeds a temporary DuckDB store with the demo world (`tools/workbench_live.seed`: seed 7, 2,000 persons
-and 500 organisations with hard cases, creations first and then the later events), picks an Organisation
-close call and a value of its first candidate that has runners-up, and, for each colour scheme, serves
+and 500 organisations with hard cases, creations first and then the later events, the default share drawn
+for blind review and no breaker tripped), picks an Organisation close call, a value of its first candidate
+that has runners-up and a quality sample, and, for each colour scheme, serves
 `mdm ui` on a fresh copy of the store as the persona data_steward with a ten-minute undo window (so a
 staged decision holds still, and each scheme starts from the same world). It captures into
 `docs/screenshots/`, at 1440 × 900, in the light and the dark colour scheme:
@@ -12,7 +13,9 @@ staged decision holds still, and each scheme starts from the same world). It cap
 - `inbox-<scheme>.png`: the close call selected, candidate 1 chosen, the pane with its waterfall, what
   would flip it, the values that change and the impact line;
 - `tray-<scheme>.png`: after L, the tray open with the staged decision and its countdown (undone after);
-- `record-<scheme>.png`: the candidate's golden record, with the Why open under that value.
+- `record-<scheme>.png`: the candidate's golden record, with the Why open under that value;
+- `sample-<scheme>.png`: the Quality samples view with a blind case open and choice 1 selected, not
+  staged (an Organisation sample with two golden records offered or more, when the world has one).
 
 Organisation data is not personal, so the pictures show invented names; Person values stay masked. It
 refuses to run with a platform variable or a backend other than DuckDB, and it never touches the local
@@ -39,7 +42,7 @@ from tools.workbench_live import _PLATFORM, MODELS, free_port, launch_chromium, 
 OUT = ROOT / "docs" / "screenshots"
 VIEWPORT = {"width": 1440, "height": 900}
 SCHEMES = ("light", "dark")
-PARTS = ("inbox", "tray", "record")
+PARTS = ("inbox", "tray", "record", "sample")
 #: the world the pictures show (as `make demo` lands it)
 WORLD = {"persons": 2000, "organisations": 500, "hard_cases": 0.03, "updates": 0.1, "deletes": 0.01}
 #: a staged decision waits this long, so the tray holds still while it is captured
@@ -64,6 +67,7 @@ class Scene:
     candidate: str  # its first candidate's master ID
     attribute: str  # a golden value of the candidate with runners-up
     label: str  # that attribute's label, as the Why names it
+    sample: str  # a quality sample of a record, decided blind
 
 
 def refuse_unsafe_environment() -> None:
@@ -75,9 +79,27 @@ def refuse_unsafe_environment() -> None:
         raise SystemExit("screenshots: refused, the pictures are taken on a DuckDB file only")
 
 
+def find_sample(hub, steward) -> str:
+    """A quality sample of a record for the picture: an Organisation one with the most golden records
+    offered (up to three), else one of any entity with at least one."""
+    best: tuple[int, str] | None = None
+    for row in hub.inbox.page("samples", actor=steward).rows:
+        if ":" not in row.subject or row.staged is not None:
+            continue
+        case = hub.decisions.case(row.task_id, actor=steward)
+        if not case.blind or not case.choices:
+            continue
+        rank = len(case.choices) + (10 if row.entity == "organisation" else 0)
+        if best is None or rank > best[0]:
+            best = (rank, row.task_id)
+    if best is None:
+        raise SystemExit("screenshots: the seeded world has no quality sample with a golden record offered")
+    return best[1]
+
+
 def find_scene(path: Path) -> Scene:
-    """The close call and the value the pictures show, read through the services before serving (the
-    DuckDB file takes one process at a time)."""
+    """The close call, the value and the quality sample the pictures show, read through the services before
+    serving (the DuckDB file takes one process at a time)."""
     from mdm.config import Settings
     from mdm.models.authority import Actor
     from mdm.services.context import Hub
@@ -89,6 +111,7 @@ def find_scene(path: Path) -> Scene:
     hub = Hub.open(settings)
     fallback: Scene | None = None
     try:
+        sample = find_sample(hub, steward)
         for row in hub.inbox.page("team", actor=steward, entity="organisation", kind="review").rows:
             case = hub.decisions.case(row.task_id, actor=steward)
             if case.shape != "source" or not case.close_call or len(case.candidates) < 2:
@@ -98,7 +121,7 @@ def find_scene(path: Path) -> Scene:
                 why = hub.lookup.why("organisation", candidate, value.attribute, actor=steward)
                 if not why.runners_up:
                     continue
-                scene = Scene(row.task_id, candidate, value.attribute, value.label)
+                scene = Scene(row.task_id, candidate, value.attribute, value.label, sample)
                 if any(r.value != why.winner.value for r in why.runners_up):
                     return scene  # a runner-up that lost with another value explains the most
                 fallback = fallback or scene
@@ -175,6 +198,16 @@ def capture(browser, base_url: str, scene: Scene, scheme: str, part: str) -> Pat
             expect(tray).to_have_text("Tray")
             page.keyboard.press("Escape")
             settle(page)
+        elif part == "sample":
+            page.goto(f"/?view=samples&task={scene.sample}")
+            expect(
+                page.get_by_role("radiogroup", name="Choose the golden record it belongs to")
+            ).to_be_visible()
+            settle(page)
+            press(page, "1")
+            expect(page.get_by_role("radio", name=re.compile(r"^1 · "))).to_be_checked()
+            settle(page)
+            page.screenshot(path=str(shot))
         else:
             page.goto(f"/record/{scene.candidate}")
             name = re.compile(rf", why this {re.escape(scene.label.lower())}\?$")
@@ -204,7 +237,11 @@ def main(argv: list[str] | None = None) -> int:
         print("seeding the invented demo world …", flush=True)
         seed(path, seed=7, **WORLD)
         scene = find_scene(path)
-        print(f"close call {scene.task_id}, candidate {scene.candidate}, value {scene.attribute}", flush=True)
+        print(
+            f"close call {scene.task_id}, candidate {scene.candidate}, value {scene.attribute}, "
+            f"sample {scene.sample}",
+            flush=True,
+        )
         env = {"MDM_UNDO_SECONDS": str(UNDO_SECONDS)}
         with sync_playwright() as playwright:
             browser = launch_chromium(playwright, headless=True)

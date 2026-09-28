@@ -1,9 +1,14 @@
-/* The workbench's tokens and styles, light and dark: band colours, agreement marks, provenance chips,
-   the staged outline, the waterfall, focus rings, the skip link and AG Grid variables.
+/* The workbench's tokens and styles, light and dark: band dots, agreement marks, provenance, the staged
+   outline, the waterfall, focus rings, the skip link and AG Grid variables.
+
+   Data stays, noise goes. Colour carries meaning only: the score band, disagreement between records,
+   the one primary action, warnings and errors. Everything else is neutral: sections are separated by
+   space and a hairline, not by filled boxes; plain labels are muted text, not outlined pills. Each region
+   has one bold level; secondary text is muted and smaller; spacing follows an 8 px rhythm.
 
    Every text colour meets 4.5:1 and every non-text mark 3:1 in both schemes, measured against the
    surface it sits on (light: white and its tints; dark: Mantine's dark body #242424 and its tints);
-   targets are at least 24 x 24 px. Colour is never the only cue: a band chip carries its word, an
+   targets are at least 24 x 24 px. Colour is never the only cue: a band dot carries its word, an
    agreement cell its symbol (= ≈ ≠ ∅), a staged row its dashed outline and the word "In the tray".
 
    The scheme follows Mantine's data-mantine-color-scheme attribute, which the header's switch sets.
@@ -19,6 +24,7 @@
   --mdm-rule-strong: #868f95;    /* 3.3:1 on white: borders that carry meaning */
   --mdm-focus: #3b5bdb;          /* 5.7:1 on white */
   --mdm-link: #3b5bdb;
+  --mdm-accent: #3b5bdb;         /* the selection rule, the Why rule, the active view: 5.7:1 on white */
 
   --mdm-auto: #1d7447;           /* 5.0:1 on its tint */
   --mdm-auto-tint: #e2f2e8;
@@ -29,10 +35,28 @@
   --mdm-distinct-tint: #eceff1;
   --mdm-neg: #b3372b;            /* 5.1:1 on its tint */
   --mdm-neg-tint: #fbe8e5;
-  --mdm-teal: #0d6b68;           /* 5.4:1 on its tint: deterministic marks, provenance */
+  --mdm-neg-wash: #fdf2f0;       /* a disagreement row: the ≠ in --mdm-neg reads 5.5:1 on it */
+  --mdm-teal: #0d6b68;           /* 5.4:1 on its tint: deterministic marks */
   --mdm-teal-tint: #e1f1ef;
   --mdm-gold: #85560a;           /* 5.6:1 on its tint: a steward's pin, the assistant */
   --mdm-gold-tint: #fbf1de;
+
+  /* the waterfall's band regions: decorative, fainter than the tints; the tick labels carry the meaning */
+  --mdm-wash-auto: #eef7f1;
+  --mdm-wash-review: #fdf6ea;
+  --mdm-wash-distinct: #f4f6f7;
+  /* grid rows: muted text reads 7.6:1 on hover and 7.3:1 on the selection */
+  --mdm-row-hover: #f5f7fa;
+  --mdm-row-selected: #eef1fd;
+
+  /* the rhythm and the three small text sizes */
+  --mdm-space-1: 4px;
+  --mdm-space-2: 8px;
+  --mdm-space-3: 16px;
+  --mdm-space-4: 24px;
+  --mdm-text-xs: 0.75rem;
+  --mdm-text-sm: 0.8125rem;
+  --mdm-text-md: 0.875rem;
 
   /* Mantine's own text colours, darkened where the stock shade misses 4.5:1 on its tint. The component
      library injects its variables after this file, so these are marked important. */
@@ -68,6 +92,7 @@
   --mdm-rule-strong: #7d8589;    /* 4.1:1 on #242424 */
   --mdm-focus: #91a7ff;          /* 6.8:1 on #242424 */
   --mdm-link: #91a7ff;
+  --mdm-accent: #91a7ff;
 
   --mdm-auto: #63c98f;
   --mdm-auto-tint: #12321f;
@@ -78,10 +103,17 @@
   --mdm-distinct-tint: #243035;
   --mdm-neg: #f08a7c;
   --mdm-neg-tint: #3a1b17;
+  --mdm-neg-wash: #2d1c19;
   --mdm-teal: #5cc6bf;
   --mdm-teal-tint: #113330;
   --mdm-gold: #e2b259;
   --mdm-gold-tint: #3a2b12;
+
+  --mdm-wash-auto: #222d27;
+  --mdm-wash-review: #2e2a23;
+  --mdm-wash-distinct: #2a2c2e;
+  --mdm-row-hover: #2c2f33;
+  --mdm-row-selected: #2a3150;
 
   --mantine-color-dimmed: #a6a7ab !important;
   --mantine-color-anchor: #91a7ff !important;
@@ -131,7 +163,7 @@
 .mdm-page-title {
   font-size: 1.35rem;
   line-height: 1.25;
-  margin: 0 0 12px;
+  margin: 0 0 var(--mdm-space-2);
 }
 
 /* focus: 2 px, at least 3:1 against both schemes, on every focusable element */
@@ -164,28 +196,30 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* the role and the engine: quiet words, not pills */
 .mdm-role-badge,
 .mdm-engine-badge {
-  text-transform: none;
-  font-weight: 600;
+  color: var(--mdm-muted) !important;
+  font-size: var(--mdm-text-sm);
+  font-weight: 500;
+  white-space: nowrap;
 }
 .mdm-help-open {
   font-weight: 700;
+  color: var(--mdm-muted) !important;
 }
 .mdm-nav-heading,
 .mdm-nav-subheading {
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: var(--mdm-text-xs);
+  font-weight: 600;
   color: var(--mdm-muted);
-  margin: 4px 12px 6px;
+  margin: var(--mdm-space-1) 12px var(--mdm-space-1);
 }
 .mdm-nav-subheading {
-  margin-top: 14px;
+  margin-top: var(--mdm-space-3);
 }
 .mdm-nav-note {
-  font-size: 0.9rem;
+  font-size: var(--mdm-text-md);
   color: var(--mdm-muted);
   margin: 8px 12px;
 }
@@ -196,9 +230,33 @@
 .mdm-rail-link {
   min-height: 32px;
 }
+/* the Inbox is the heading of its views: never filled; the chosen view carries one accent rule */
+.mdm-nav .mdm-nav-inbox[data-active],
+.mdm-nav .mdm-rail-link[data-active] {
+  background: transparent !important;
+  color: var(--mdm-ink) !important;
+}
+.mdm-nav .mdm-nav-inbox[data-active]:hover,
+.mdm-nav .mdm-rail-link[data-active]:hover {
+  background: var(--mdm-row-hover) !important;
+}
+.mdm-nav .mdm-rail-link[data-active] {
+  box-shadow: inset 2px 0 0 var(--mdm-accent);
+}
+.mdm-nav .mdm-rail-link[data-active] .mantine-NavLink-label {
+  font-weight: 600;
+}
+.mdm-rail-link .mantine-NavLink-description {
+  font-size: var(--mdm-text-xs);
+}
 .mdm-count {
-  text-transform: none;
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-sm);
   font-variant-numeric: tabular-nums;
+}
+.mdm-count-alert {
+  color: var(--mdm-neg);
+  font-weight: 600;
 }
 
 /* ------------------------------------------------------------------ small parts */
@@ -232,25 +290,28 @@
   color: var(--mdm-muted);
   margin: 8px 0;
 }
+.mdm-tag {
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+  font-weight: 500;
+}
+/* a notice: a thin rule on the left, no fill; the rule's colour says info, success, warning or error */
 .mdm-notice {
-  border-left: 4px solid var(--mdm-teal);
-  background: var(--mdm-teal-tint);
+  border-left: 2px solid var(--mdm-rule-strong);
+  background: none;
   color: var(--mdm-ink);
-  border-radius: 0 6px 6px 0;
-  padding: 8px 12px;
-  margin: 0 0 12px;
+  border-radius: 0;
+  padding: var(--mdm-space-1) 0 var(--mdm-space-1) 12px;
+  margin: 0 0 var(--mdm-space-3);
 }
 .mdm-notice-success {
   border-left-color: var(--mdm-auto);
-  background: var(--mdm-auto-tint);
 }
 .mdm-notice-warning {
   border-left-color: var(--mdm-review-line);
-  background: var(--mdm-review-tint);
 }
 .mdm-notice-error {
   border-left-color: var(--mdm-neg);
-  background: var(--mdm-neg-tint);
 }
 .mdm-modal-text {
   margin: 0 0 12px;
@@ -258,7 +319,7 @@
 .mdm-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.9rem;
+  font-size: var(--mdm-text-md);
 }
 .mdm-table th,
 .mdm-table td {
@@ -268,44 +329,67 @@
   border-bottom: 1px solid var(--mdm-rule);
 }
 .mdm-table th {
-  font-weight: 650;
+  font-weight: 600;
   color: var(--mdm-muted);
+}
+.mdm-table thead th {
+  font-size: var(--mdm-text-xs);
+}
+.mdm-table tbody th {
+  font-weight: 500;
+}
+
+/* a link inside smaller text (a table, the pane's meta line, the record's facts) reads at that text's size */
+.mdm-table .mantine-Anchor-root,
+.mdm-decide-meta .mantine-Anchor-root,
+.mdm-record-facts .mantine-Anchor-root {
+  font-size: inherit;
+  line-height: inherit;
+}
+/* a link inside a line of text is underlined, so colour is not the only thing that tells it apart */
+.mdm-decide-meta .mantine-Anchor-root,
+.mdm-record-header .mantine-Anchor-root,
+.mdm-source-header .mantine-Anchor-root,
+.mdm-relationships .mantine-Anchor-root {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* ------------------------------------------------------------------ bands, agreement, provenance */
+/* the band: plain text in ink ("79 review") after a dot in the band's colour, so the word always goes
+   with the colour */
 .mdm-band {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.78rem;
-  font-weight: 700;
-  line-height: 1.5;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--mdm-ink);
+  font: 600 var(--mdm-text-xs) / 1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.mdm-band-auto {
-  background: var(--mdm-auto-tint);
-  color: var(--mdm-auto);
+.mdm-band::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mdm-distinct);
 }
-.mdm-band-review {
-  background: var(--mdm-review-tint);
-  color: var(--mdm-review);
+.mdm-band-auto::before {
+  background: var(--mdm-auto);
 }
-.mdm-band-distinct {
-  background: var(--mdm-distinct-tint);
-  color: var(--mdm-distinct);
+.mdm-band-review::before {
+  background: var(--mdm-review);
+}
+.mdm-band-distinct::before {
+  background: var(--mdm-distinct);
 }
 
-.mdm-agree {
-  background: var(--mdm-auto-tint);
-  color: var(--mdm-ink);
-}
-.mdm-partial {
-  background: var(--mdm-review-tint);
-  color: var(--mdm-ink);
-}
+/* agreement: neutral cells with a symbol; only a disagreement has colour, its ≠ and its row's tint */
+.mdm-agree,
+.mdm-partial,
 .mdm-disagree {
-  background: var(--mdm-neg-tint);
+  background: none;
   color: var(--mdm-ink);
 }
 .mdm-missing {
@@ -319,11 +403,10 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-weight: 700;
 }
-.mdm-agree .mdm-symbol {
-  color: var(--mdm-auto);
-}
-.mdm-partial .mdm-symbol {
-  color: var(--mdm-review);
+.mdm-agree .mdm-symbol,
+.mdm-partial .mdm-symbol,
+.mdm-missing .mdm-symbol {
+  color: var(--mdm-muted);
 }
 .mdm-disagree .mdm-symbol {
   color: var(--mdm-neg);
@@ -333,22 +416,31 @@
   color: var(--mdm-muted);
 }
 
+/* provenance: a quiet text button after the value ("finance · source trust · 265 d") that opens its Why */
 .mdm-prov {
   display: inline-block;
   min-height: 24px;
-  padding: 1px 6px;
-  border: 1px solid var(--mdm-teal);
+  padding: 2px 4px;
+  border: none;
   border-radius: 4px;
-  background: transparent;
-  color: var(--mdm-teal);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.75rem;
-  line-height: 1.6;
+  background: none;
+  color: var(--mdm-muted);
+  font: inherit;
+  font-size: var(--mdm-text-xs);
+  line-height: 20px;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
   white-space: nowrap;
   cursor: pointer;
 }
-.mdm-prov-pin {
-  border-color: var(--mdm-gold);
+.mdm-prov:hover,
+.mdm-prov[aria-expanded="true"] {
+  color: var(--mdm-ink);
+  background: var(--mdm-sunk);
+}
+.mdm-prov-pin,
+.mdm-prov-pin:hover,
+.mdm-prov-pin[aria-expanded="true"] {
   color: var(--mdm-gold);
 }
 .mdm-gold {
@@ -360,51 +452,138 @@
 
 /* ------------------------------------------------------------------ the record */
 .mdm-record-facts {
-  margin: 0 0 6px;
-  font-size: 0.9rem;
+  margin: 0 0 var(--mdm-space-1);
+  font-size: var(--mdm-text-sm);
+  color: var(--mdm-muted);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 2px 4px;
 }
+.mdm-record-id {
+  color: var(--mdm-ink);
+  font-weight: 600;
+}
+.mdm-golden th,
+.mdm-golden td {
+  padding: var(--mdm-space-2);
+}
 .mdm-golden-value {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 12px;
+  gap: 2px 8px;
 }
 .mdm-why-row > td {
-  padding: 0 8px 10px !important;
+  padding: 0 8px 12px !important;
   border-bottom: 1px solid var(--mdm-rule);
 }
+/* the Why: a sunk surface with the accent rule, opened by the provenance button above it */
 .mdm-why-box {
-  border: 1px solid var(--mdm-review-line);
-  background: var(--mdm-review-tint);
+  border: none;
+  border-left: 2px solid var(--mdm-accent);
+  background: var(--mdm-sunk);
   color: var(--mdm-ink);
-  border-radius: 6px;
-  padding: 8px 12px;
+  border-radius: 0 6px 6px 0;
+  padding: var(--mdm-space-2) var(--mdm-space-3);
 }
 .mdm-why-title {
-  font-size: 0.95rem;
+  font-size: var(--mdm-text-md);
+  font-weight: 600;
   margin: 0 0 4px;
 }
 .mdm-why-sentence {
-  margin: 0 0 6px;
+  margin: 0 0 var(--mdm-space-2);
+  font-size: var(--mdm-text-md);
 }
 .mdm-why-box .mdm-table th,
 .mdm-why-box .mdm-table td {
-  border-bottom-color: var(--mdm-review-line);
-  padding: 3px 8px;
+  border-bottom-color: var(--mdm-rule);
+  padding: 4px 8px;
+}
+.mdm-why-box .mdm-table tbody tr:last-child > * {
+  border-bottom: none;
 }
 .mdm-why-note {
   margin: 6px 0 0;
-  font-size: 0.85rem;
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-sm);
+}
+.mdm-later {
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+}
+/* the timeline: one line per entry, its details on demand */
+.mdm-timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.mdm-tl-item {
+  border-left: 1px dotted var(--mdm-rule-strong);
+  padding: 2px 0 2px 12px;
+  margin-bottom: var(--mdm-space-1);
+}
+.mdm-tl-item.mdm-tl-identity {
+  border-left: 2px solid var(--mdm-rule-strong);
+}
+.mdm-tl-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-height: 24px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.mdm-tl-summary .mdm-icon {
+  align-self: center;
+}
+.mdm-tl-headline {
+  font-weight: 500;
+}
+.mdm-tl-identity .mdm-tl-headline {
+  font-weight: 600;
+}
+/* the summary is a flex line, which drops the browser's own marker: draw one, so it reads as a disclosure */
+.mdm-tl-summary {
+  list-style: none;
+}
+.mdm-tl-summary::-webkit-details-marker {
+  display: none;
+}
+.mdm-tl-summary::before {
+  content: "▸";
+  align-self: center;
+  width: 0.8em;
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+}
+.mdm-tl-entry[open] > .mdm-tl-summary::before {
+  content: "▾";
+}
+.mdm-tl-when {
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+}
+.mdm-tl-details {
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+  padding: 0 0 4px 38px;
+}
+.mdm-tl-details > div + div {
+  margin-top: 2px;
 }
 
 /* ------------------------------------------------------------------ staged decisions and the tray */
 .mdm-staged {
   outline: 2px dashed var(--mdm-review-line);
   outline-offset: -2px;
+}
+/* quiet while empty; it stands out only while it holds a decision */
+.mdm-tray-button {
+  color: var(--mdm-muted) !important;
+  font-weight: 500;
 }
 .mdm-tray-button.mdm-staged {
   outline: none;
@@ -419,7 +598,7 @@
 }
 .mdm-popover-text {
   color: var(--mdm-muted);
-  font-size: 0.85rem;
+  font-size: var(--mdm-text-sm);
   margin: 0 0 8px;
 }
 .mdm-tray-list {
@@ -454,56 +633,105 @@
 .mdm-tray-outcome {
   flex: 1 1 100%;
   color: var(--mdm-muted);
-  font-size: 0.85rem;
+  font-size: var(--mdm-text-sm);
 }
 .mdm-tray-failed .mdm-tray-outcome {
   color: var(--mdm-neg);
 }
 .mdm-tray-heading {
-  font-size: 0.85rem;
-  font-weight: 700;
+  font-size: var(--mdm-text-sm);
+  font-weight: 600;
   margin: 8px 0 2px;
 }
 .mdm-tray-none {
   color: var(--mdm-muted);
-  font-size: 0.85rem;
+  font-size: var(--mdm-text-sm);
   margin: 4px 0;
 }
 
+/* ------------------------------------------------------------------ the inbox: health and heading */
+.mdm-health {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0;
+  padding: 0 0 var(--mdm-space-2);
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+  line-height: 1.4;
+}
+.mdm-health-item {
+  white-space: nowrap;
+}
+.mdm-health-sep {
+  white-space: pre;
+}
+.mdm-health .mdm-breaches {
+  min-height: 0;
+}
+.mdm-health .mdm-breaches .mdm-icon {
+  margin-right: 4px;
+}
+/* the quality breaker paused an entity: one line under the figures, in the warning colour, no fill */
+.mdm-breaker-line {
+  display: flex;
+  align-items: center;
+  gap: var(--mdm-space-1);
+  margin: 0 0 var(--mdm-space-2);
+  color: var(--mdm-review);
+  font-size: var(--mdm-text-xs);
+  font-weight: 500;
+  line-height: 1.4;
+}
+.mdm-health-block > .mdm-health {
+  padding-bottom: var(--mdm-space-1);
+}
+.mdm-paging .mantine-Button-root:disabled,
+.mdm-paging .mantine-Button-root[data-disabled] {
+  display: none;
+}
+.mdm-queue-heading {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 var(--mdm-space-2);
+}
+
 /* ------------------------------------------------------------------ the inbox's grid (AG Grid) */
+/* dash-ag-grid 35's theme reads these; no stripes, a surface header in muted text, hairline rows, no
+   outer frame */
 .mdm-grid,
 #inbox-grid {
   --ag-font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --ag-font-size: 13px;
   --ag-cell-horizontal-padding: 10px;
-  --ag-foreground-color: #172026;
-  --ag-background-color: #ffffff;
-  --ag-header-background-color: #f1f3f5;
-  --ag-header-foreground-color: #3f464d;
-  --ag-odd-row-background-color: #fbfbfc;
-  --ag-row-hover-color: #eef2ff;
-  --ag-selected-row-background-color: #dfe6ff;
-  --ag-border-color: #d5dcdf;
-  --ag-secondary-foreground-color: #495057;
-}
-[data-mantine-color-scheme="dark"] .mdm-grid,
-[data-mantine-color-scheme="dark"] #inbox-grid {
-  --ag-foreground-color: #e3e9eb;
-  --ag-background-color: #242424;
-  --ag-header-background-color: #2e2e2e;
-  --ag-header-foreground-color: #ced4da;
-  --ag-odd-row-background-color: #272a2d;
-  --ag-row-hover-color: #2f3548;
-  --ag-selected-row-background-color: #33406b;
-  --ag-border-color: #3b3b3b;
-  --ag-secondary-foreground-color: #a6a7ab;
+  --ag-foreground-color: var(--mdm-ink);
+  --ag-background-color: var(--mdm-surface);
+  --ag-header-background-color: var(--mdm-surface);
+  --ag-header-text-color: var(--mdm-muted);
+  --ag-header-font-size: 12px;
+  --ag-header-font-weight: 600;
+  --ag-header-column-border: none;
+  --ag-odd-row-background-color: var(--mdm-surface);
+  --ag-row-hover-color: var(--mdm-row-hover);
+  --ag-selected-row-background-color: var(--mdm-row-selected);
+  --ag-border-color: var(--mdm-rule);
+  --ag-row-border: 1px solid var(--mdm-rule);
+  --ag-header-row-border: 1px solid var(--mdm-rule);
+  --ag-wrapper-border: none;
+  --ag-wrapper-border-radius: 0;
+  --ag-secondary-foreground-color: var(--mdm-muted);
 }
 .ag-row.mdm-staged {
   outline: 2px dashed var(--mdm-review-line);
   outline-offset: -3px;
 }
-.ag-row.mdm-breaching {
-  box-shadow: inset 4px 0 0 var(--mdm-neg);
+#inbox-grid .ag-row-selected {
+  box-shadow: inset 3px 0 0 var(--mdm-accent);
+}
+/* a breach: the due time turns red and says "Breached … ago" */
+.ag-row.mdm-breaching .mdm-due-first {
+  color: var(--mdm-neg);
+  font-weight: 600;
 }
 .ag-row.mdm-claimed-other {
   color: var(--mdm-muted);
@@ -531,39 +759,58 @@
   min-width: 0;
   gap: 2px;
 }
+/* the first line: the kind (in a mixed list) and the title, the title cut short on its own, since a
+   button is one box that would otherwise overflow whole and leave the kind alone */
 .mdm-task-first {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.mdm-task-first .mdm-kind {
+  flex: none;
+}
+.mdm-task-first .mdm-row-open {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* the second line: the band, then the reason, the suggestion and the entity, wrapping to two lines at
+   any width so the reason is never lost (the 56 px row holds them); past two lines the entity, last, is
+   what gets cut, with the full text in the title */
 .mdm-task-second {
-  color: var(--mdm-muted);
-  font-size: 0.8rem;
-  white-space: normal;
-  line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  min-width: 0;
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+  line-height: 1.3;
+  white-space: normal;
+}
+.mdm-task-words {
+  display: inline;
 }
 .mdm-task-second .mdm-band {
-  font-size: 0.72rem;
-  padding: 0 5px;
+  display: inline-flex;
+  margin-right: 8px;
+  vertical-align: baseline;
+  font-weight: 500;
 }
 .mdm-kind {
-  display: inline-block;
-  padding: 0 6px;
-  border: 1px solid var(--mdm-rule-strong);
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 1.5;
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+  font-weight: 500;
   white-space: nowrap;
+  margin-right: 6px;
 }
 .mdm-row-open {
   all: unset;
   cursor: pointer;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--mdm-ink);
   border-radius: 3px;
 }
@@ -583,13 +830,15 @@
 }
 .mdm-due-first {
   white-space: nowrap;
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-sm);
+  font-variant-numeric: tabular-nums;
 }
 .mdm-due-second {
   color: var(--mdm-muted);
-  font-size: 0.78rem;
+  font-size: var(--mdm-text-xs);
   line-height: 1.25;
 }
-
 /* ------------------------------------------------------------------ the decide pane */
 .mdm-decide-full .mdm-inbox-queue,
 .mdm-decide-full .mdm-queue {
@@ -606,6 +855,7 @@
   top: 0;
   right: 0;
   z-index: 3;
+  color: var(--mdm-muted) !important;
 }
 .mdm-decide-scroll {
   max-height: calc(100vh - 88px);
@@ -616,9 +866,14 @@
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  font-size: var(--mdm-text-md);
 }
 .mdm-decide-body {
   flex: 1 0 auto;
+}
+/* the pane's rhythm: one step of space between its blocks, no box around any */
+.mdm-decide-body > * + * {
+  margin-top: var(--mdm-space-3);
 }
 .mdm-decide-empty {
   padding-right: 44px;
@@ -629,35 +884,55 @@
 .mdm-decide-headline {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
+  align-items: baseline;
+  gap: 2px 12px;
 }
 .mdm-decide-title {
-  font-size: 1.08rem;
+  font-size: 1.05rem;
+  font-weight: 650;
   line-height: 1.3;
   margin: 0;
   overflow-wrap: anywhere;
 }
+.mdm-decide-headline .mdm-band {
+  font-size: var(--mdm-text-sm);
+}
 .mdm-decide-meta {
+  margin: 2px 0 0;
   color: var(--mdm-muted);
-  font-size: 0.85rem;
+  font-size: var(--mdm-text-sm);
 }
 .mdm-decide-meta .mdm-icon {
   vertical-align: -0.15em;
 }
 .mdm-decide-reason {
-  margin: 4px 0 8px;
-  font-size: 0.85rem;
+  margin: var(--mdm-space-1) 0 0;
+  font-size: var(--mdm-text-sm);
   line-height: 1.4;
 }
 .mdm-decide .mdm-notice {
-  padding: 6px 10px;
-  margin: 0 0 8px;
+  margin: 0;
+  font-size: var(--mdm-text-sm);
+  line-height: 1.4;
+}
+/* a notice belongs to the case above it: half a step */
+.mdm-decide-body > .mdm-notice {
+  margin-top: var(--mdm-space-2);
+}
+/* the breaker's notice: one line, with why and what waits behind it (open on a record it made wait) */
+.mdm-breaker-notice summary {
+  cursor: pointer;
+}
+.mdm-breaker-notice p {
+  margin: var(--mdm-space-1) 0 0;
 }
 .mdm-close-call p {
   margin: 0 0 2px;
-  font-size: 0.85rem;
+  font-size: var(--mdm-text-sm);
   line-height: 1.4;
+}
+.mdm-close-lead {
+  font-weight: 600;
 }
 .mdm-close-call .mdm-candidate-choice {
   display: flex;
@@ -667,6 +942,10 @@
 }
 .mdm-close-call .mdm-candidate-choice > div {
   margin-top: 0 !important;
+}
+/* the radio keeps its 24 px target; its label reads at the pane's size */
+.mdm-candidate-choice .mantine-Radio-label {
+  font-size: var(--mdm-text-md);
 }
 /* once a candidate is chosen (in the browser), the call to choose goes */
 .mdm-decide:not([data-needs-choice]) .mdm-close-lead {
@@ -682,9 +961,9 @@
   white-space: nowrap;
 }
 .mdm-decide-subheading {
-  font-size: 0.9rem;
-  font-weight: 650;
-  margin: 10px 0 4px;
+  font-size: var(--mdm-text-md);
+  font-weight: 600;
+  margin: var(--mdm-space-2) 0 var(--mdm-space-1);
 }
 .mdm-candidate-head {
   display: flex;
@@ -693,13 +972,13 @@
   gap: 2px 8px;
 }
 .mdm-candidate-head .mdm-decide-subheading {
-  margin: 6px 0 0;
+  margin: 0;
   flex: none;
   white-space: nowrap;
 }
 .mdm-candidate-meta {
   color: var(--mdm-muted);
-  font-size: 0.82rem;
+  font-size: var(--mdm-text-xs);
   /* one line: the name and the best match are in the table above, so a long one is cut short */
   min-width: 0;
   overflow: hidden;
@@ -710,52 +989,112 @@
 .mdm-compare-summary,
 .mdm-preview-summary {
   cursor: pointer;
-  font-weight: 650;
-  font-size: 0.85rem;
+  font-weight: 600;
+  font-size: var(--mdm-text-sm);
   margin: 2px 0;
   min-height: 24px;
+}
+.mdm-why-summary {
+  margin-top: var(--mdm-space-1);
 }
 .mdm-compare-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 12px;
+  align-items: center;
+  gap: 2px 8px;
+  margin-bottom: var(--mdm-space-1);
 }
 .mdm-compare-bar .mdm-decide-subheading {
-  margin: 2px 0;
+  margin: 0;
+}
+/* "Show values" sits in the heading's line: compact, so the line holds it */
+.mdm-compare-bar .mdm-reveal-open {
+  height: 24px;
+  min-height: 24px;
+  padding: 0 8px;
 }
 .mdm-compare-legend {
   color: var(--mdm-muted);
-  font-size: 0.78rem;
+  font-size: var(--mdm-text-xs);
   margin: 0;
 }
 .mdm-compare-note,
 .mdm-preview-rest {
   color: var(--mdm-muted);
-  font-size: 0.8rem;
+  font-size: var(--mdm-text-xs);
   margin: 4px 0;
 }
 .mdm-compare-tag {
   color: var(--mdm-muted);
   font-weight: 500;
-  font-size: 0.78rem;
+  font-size: var(--mdm-text-xs);
 }
 .mdm-compare-scroll {
   overflow-x: auto;
 }
 .mdm-decide .mdm-table {
-  font-size: 0.84rem;
+  font-size: var(--mdm-text-sm);
 }
 .mdm-decide .mdm-table th,
 .mdm-decide .mdm-table td {
-  padding: 2px 6px;
+  padding: 3px 8px;
   line-height: 1.35;
 }
 .mdm-compare th[scope="row"] {
   white-space: nowrap;
 }
+/* three or four records side by side: equal columns, the labels wrap and a long value breaks at its
+   parts (the page adds <wbr> after "/", "." and "-"), so every column stays on screen and no one long
+   address takes the width of the others */
+.mdm-compare-wide {
+  table-layout: fixed;
+}
+.mdm-compare-wide thead th:first-child {
+  width: 5.5rem;
+}
+.mdm-compare-wide th[scope="row"] {
+  white-space: normal;
+}
+.mdm-compare-wide td {
+  overflow-wrap: break-word;
+  padding-right: 4px;
+}
+/* the agreement mark hangs before the value, so a value that wraps lines up under itself, not the mark */
+@media (min-width: 48em) {
+  .mdm-compare td.mdm-agree,
+  .mdm-compare td.mdm-partial,
+  .mdm-compare td.mdm-disagree,
+  .mdm-compare td.mdm-missing {
+    position: relative;
+    padding-left: calc(8px + 1em + 2px);
+  }
+  .mdm-compare td > .mdm-symbol {
+    position: absolute;
+    left: 8px;
+  }
+  /* side by side, the mark hangs closer, so a phone number keeps its line */
+  .mdm-compare-wide td.mdm-agree,
+  .mdm-compare-wide td.mdm-partial,
+  .mdm-compare-wide td.mdm-disagree,
+  .mdm-compare-wide td.mdm-missing {
+    padding-left: calc(4px + 1em);
+  }
+  .mdm-compare-wide td > .mdm-symbol {
+    left: 3px;
+    min-width: 0;
+  }
+}
 .mdm-compare thead th {
-  font-size: 0.8rem;
+  font-size: var(--mdm-text-xs);
+}
+.mdm-compare tbody tr:last-child > * {
+  border-bottom: none;
+}
+/* a disagreement is the one thing tinted, so the eye goes to what separates them: the row when one
+   record stands against the reference, the ≠ cell alone when several do */
+.mdm-compare tr.mdm-row-disagree > *,
+.mdm-compare-multi td.mdm-disagree {
+  background: var(--mdm-neg-wash);
 }
 .mdm-compare-rest .mdm-table {
   margin-bottom: 4px;
@@ -768,19 +1107,36 @@
   z-index: 2;
   background: var(--mdm-surface);
   border-top: 1px solid var(--mdm-rule);
-  padding: 6px 0 4px;
-  margin-top: 8px;
+  padding: var(--mdm-space-2) 0;
+  margin-top: var(--mdm-space-2);
 }
 .mdm-actions {
   display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.mdm-actions-main {
+  display: flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* claim, snooze and escalate wrap together, so a long answer never leaves one of them alone on a line */
+.mdm-actions-work {
+  display: flex;
   align-items: center;
   gap: 6px;
 }
 .mdm-moving {
   display: inline-flex;
-  gap: 6px;
+  flex: none;
+  gap: 4px;
   margin-left: auto;
+}
+.mdm-move {
+  color: var(--mdm-muted) !important;
 }
 .mdm-action .mantine-Button-label,
 .mdm-menu-target .mantine-Button-label {
@@ -798,40 +1154,61 @@
 .mdm-menu-target .mantine-Button-section[data-position="right"] {
   margin-inline-start: 6px;
 }
+/* a key hint: a small muted glyph after the label, outlined only on the one filled button; hidden once
+   single-key shortcuts are off, since the keys no longer do anything */
 .mdm-decide-actions .mdm-kbd {
-  min-width: 1.4em;
-  padding: 0 0.3em;
-  font-size: 0.72rem;
-  line-height: 1.5;
+  min-width: 1.35em;
+  padding: 0 0.25em;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+.mdm-decide-actions .mantine-Button-root[data-variant="filled"] .mdm-kbd {
+  border-color: currentColor;
+}
+.mdm-decide-actions .mantine-Button-root:not([data-variant="filled"]):not(:disabled) .mdm-kbd {
+  color: var(--mdm-muted);
+}
+body[data-mdm-keys="off"] .mdm-decide-actions .mdm-kbd {
+  display: none;
+}
+/* a quiet button stays quiet when it is unavailable: no grey fill, its reason is written out below */
+.mdm-decide-actions .mantine-Button-root[data-variant="subtle"]:disabled,
+.mdm-decide-actions .mantine-Button-root[data-variant="subtle"][data-disabled] {
+  background: transparent;
 }
 .mdm-action-reasons p {
   margin: 4px 0 0;
-  font-size: 0.82rem;
+  font-size: var(--mdm-text-sm);
   color: var(--mdm-muted);
 }
+/* the impact line: plain text, its lead the one weighted phrase */
 .mdm-impact {
-  border: 1px solid var(--mdm-rule);
-  background: var(--mdm-sunk);
+  margin: 0 0 var(--mdm-space-2);
   color: var(--mdm-ink);
-  padding: 4px 10px;
-  border-radius: 6px;
-  margin: 0 0 6px;
-  font-size: 0.85rem;
+  font-size: var(--mdm-text-sm);
+}
+.mdm-impact-lead {
+  font-weight: 600;
 }
 .mdm-changed {
   font-weight: 700;
 }
 
-/* the waterfall: tracks with the band regions shaded, a zero line, bars up (green) and down (red) */
+/* the waterfall: thin bars on faint band regions, a zero line, bars up (green) and down (red), the band
+   edges labelled by the scores they stand for */
 .mdm-wf {
   --mdm-wf-up: var(--mdm-auto);
   --mdm-wf-down: var(--mdm-neg);
-  font-size: 0.8rem;
+  font-size: var(--mdm-text-xs);
 }
 .mdm-wf-rows {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 .mdm-wf-label {
   white-space: nowrap;
@@ -848,9 +1225,9 @@
 }
 .mdm-wf-track {
   position: relative;
-  height: 11px;
-  border-radius: 3px;
-  background: var(--mdm-distinct-tint);
+  height: 8px;
+  border-radius: 2px;
+  background: none;
 }
 .mdm-wf-region {
   position: absolute;
@@ -858,13 +1235,15 @@
   bottom: 0;
 }
 .mdm-wf-region-distinct {
-  background: var(--mdm-distinct-tint);
+  background: var(--mdm-wash-distinct);
 }
 .mdm-wf-region-review {
-  background: var(--mdm-review-tint);
+  background: var(--mdm-wash-review);
+  border-left: 1px solid var(--mdm-rule);
 }
 .mdm-wf-region-auto {
-  background: var(--mdm-auto-tint);
+  background: var(--mdm-wash-auto);
+  border-left: 1px solid var(--mdm-rule);
 }
 .mdm-wf-zero-line {
   position: absolute;
@@ -875,9 +1254,9 @@
 }
 .mdm-wf-bar {
   position: absolute;
-  top: 2px;
-  bottom: 2px;
-  border-radius: 2px;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 1px;
 }
 .mdm-wf-up {
   background: var(--mdm-wf-up);
@@ -887,23 +1266,23 @@
 }
 .mdm-wf-ghost {
   background: transparent;
-  border: 1.5px dashed var(--mdm-auto);
+  border: 1px dashed var(--mdm-auto);
 }
 .mdm-wf-empty {
   position: absolute;
-  top: -3px;
+  top: -4px;
   transform: translateX(-50%);
   color: var(--mdm-muted);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   line-height: 1;
 }
 .mdm-wf-marker {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 3px;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
   margin-left: -1px;
-  border-radius: 2px;
+  border-radius: 1px;
   background: var(--mdm-ink);
 }
 .mdm-wf-axis {
@@ -915,14 +1294,14 @@
   top: 0;
   transform: translateX(-50%);
   color: var(--mdm-muted);
-  font-size: 0.72rem;
+  font-size: var(--mdm-text-xs);
   line-height: 1.2;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .mdm-wf-tick-score {
   color: var(--mdm-ink);
-  font-weight: 650;
+  font-weight: 600;
 }
 .mdm-wf-tick-low {
   transform: none;
@@ -932,20 +1311,21 @@
 }
 .mdm-wf-axis-label {
   color: var(--mdm-muted);
-  font-size: 0.72rem;
+  font-size: var(--mdm-text-xs);
 }
+/* what would flip it: a plain section with a left rule */
 .mdm-flip {
-  border-left: 3px solid var(--mdm-teal);
-  background: var(--mdm-teal-tint);
+  border-left: 2px solid var(--mdm-rule-strong);
+  background: none;
   color: var(--mdm-ink);
-  padding: 3px 10px;
-  border-radius: 0 6px 6px 0;
-  margin-top: 4px;
-  font-size: 0.84rem;
+  padding: 2px 0 2px 12px;
+  border-radius: 0;
+  margin-top: var(--mdm-space-2);
+  font-size: var(--mdm-text-sm);
 }
 .mdm-flip-heading {
-  font-size: 0.84rem;
-  font-weight: 650;
+  font-size: var(--mdm-text-sm);
+  font-weight: 600;
   margin: 0 0 2px;
 }
 .mdm-flip-list {
@@ -976,11 +1356,15 @@
     margin-bottom: 6px;
     padding: 4px 0;
   }
+  .mdm-compare tr.mdm-row-disagree {
+    background: var(--mdm-neg-wash);
+  }
   .mdm-compare td[data-column]::before {
     content: attr(data-column) ": ";
     display: block;
     color: var(--mdm-muted);
-    font-size: 0.75rem;
+    font-size: var(--mdm-text-xs);
+    font-style: normal;
     font-weight: 600;
   }
   .mdm-compare-scroll {
@@ -998,7 +1382,7 @@
 /* ------------------------------------------------------------------ the header on a narrow screen */
 .mdm-act-as {
   color: var(--mdm-muted);
-  font-size: 0.8rem;
+  font-size: var(--mdm-text-sm);
   font-weight: 600;
   padding-left: 6px;
 }

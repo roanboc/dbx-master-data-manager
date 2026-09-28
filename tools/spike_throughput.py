@@ -16,6 +16,11 @@
 7. Write <out>/<engine>-<records>.json and print a Markdown row, with a linear
    extrapolation to 1,000,000; --time-limit stops cleanly and reports what finished.
 
+It runs with the default settings, the matcher's checkpoint included (story
+3.2): a share of the automated decisions is drawn for blind review, and the
+row reports the quality samples drawn and those skipped at the open-sample cap
+beside the tasks (which never count them).
+
 The bulk arrival runs one landing batch per `run()`, so the time limit is
 checked between batches and the candidate counts can be read as the store
 fills. The counts come from wrapping, in this process only, the ranking of
@@ -318,7 +323,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         result["finished"].append("evaluation")
         result["golden_records"] = {entity: _active_golden(store, entity) for entity in ENTITIES}
         result["tasks"] = {
-            f"{entity}.{kind}": n for (entity, kind), n in sorted(store.task_counts("open").items())
+            f"{entity}.{kind}": n
+            for (entity, kind), n in sorted(store.task_counts("open").items())
+            if kind != "quality_sample"
+        }
+        incremental_report = result.get("incremental") or {}
+        result["quality_samples"] = {
+            "share": settings.sample_share,
+            "open_cap": settings.sample_open_cap,
+            "drawn": bulk.samples + int(incremental_report.get("samples") or 0),
+            "skipped_at_cap": bulk.samples_skipped + int(incremental_report.get("samples_skipped") or 0),
         }
         result["commits"] = store.last_commit_version()
         hub.close()
@@ -392,7 +406,8 @@ def _projection(result: dict[str, Any]) -> dict[str, Any]:
 
 HEADER = (
     "| engine | records landed | landing rows/s | arrival records/s | incremental records/s | commits | "
-    "golden records | tasks by kind | largest block per pass | records capped | precision | recall | "
+    "golden records | tasks by kind | quality samples drawn / skipped | largest block per pass | "
+    "records capped | precision | recall | "
     "seconds | peak RSS MB | Python | engine version | CPU count | date |"
 )
 
@@ -404,6 +419,7 @@ def markdown_row(result: dict[str, Any]) -> str:
         kinds[name.split(".", 1)[1]] += n
     blocks = "; ".join(f"{name} {b['largest']}" for name, b in (result.get("blocks") or {}).items())
     golden = result.get("golden_records") or {}
+    samples = result.get("quality_samples") or {}
 
     def pair(key: str) -> str:
         return " / ".join(f"{evaluation[e][key]:.3f}" for e in ENTITIES if e in evaluation) or "n/a"
@@ -417,6 +433,7 @@ def markdown_row(result: dict[str, Any]) -> str:
         str(result.get("commits", "n/a")),
         " / ".join(f"{golden.get(e, 0):,}" for e in ENTITIES),
         ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) or "none",
+        "{drawn:,} / {skipped_at_cap:,}".format(**samples) if samples else "n/a",
         blocks or "n/a",
         str(result.get("records_capped", "n/a")),
         pair("precision"),

@@ -606,7 +606,27 @@ class LookupService:
             )
         if decision == "link":
             return f"{source} linked; it was already a member" if source else "Linked; nothing changed"
+        if decision in ("blind_link", "blind_none", "keep_decision"):
+            return LookupService._blind_headline(proof, decision, source, master_id)
         return "Decided; nothing published"
+
+    @staticmethod
+    def _blind_headline(proof: Mapping[str, Any], decision: str, source: str | None, master_id: str) -> str:
+        """A blind review's answer, or the first decision kept after one, on a golden record's timeline."""
+        answer = proof.get("answer") if isinstance(proof.get("answer"), str) else None
+        pair = [m for m in proof.get("master_ids") or [] if isinstance(m, str)]
+        if decision == "keep_decision":
+            about = source or (" and ".join(pair[:2]) if pair else "this record")
+            return f"First decision on {about} kept after a blind review"
+        if source is None:  # a pair kept apart, reviewed blind
+            both = " and ".join(pair[:2]) if len(pair) >= 2 else "the golden records"
+            same = "the same" if decision == "blind_link" else "not the same"
+            return f"Blind review: {both} are {same}"
+        if decision == "blind_none":
+            return f"Blind review placed {source} in none of those shown"
+        if answer == master_id:
+            return f"Blind review placed {source} here"
+        return f"Blind review placed {source} in {answer}" if answer else f"Blind review placed {source}"
 
     @staticmethod
     def _changed_names(logs: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:

@@ -187,3 +187,73 @@ def test_no_personal_value_outside_the_vault_and_the_value_columns(
     assert leaks == []
     assert not [m for m in messages if any(v in m.lower() for v in values)]
     assert hub.store.rejects(10) and hub.store.tasks("person", None, "open", 10, None)
+
+
+def test_no_personal_value_in_the_checkpoints_tables_or_the_breakers_audit(
+    hub, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Quality samples and their answers, agreement counts, the breaker's state, arrival counts, the
+    breaker's change sets and every log line on the way hold codes, IDs, source keys, signatures and numbers
+    only (story 3.2)."""
+    from mdm.models.canonical import utcnow
+    from mdm.services.context import Hub
+    from tests.helpers import COORDINATOR, OWNER, STEWARD, open_tasks, person_review, task_of, workbench_world
+
+    caplog.set_level(logging.DEBUG)
+    sampled = Hub.open(hub.settings.with_(sample_share=1.0), store=hub.store, as_role="data_owner")
+    try:
+        workbench_world(sampled)
+        source = person_review(sampled)
+        review = task_of(sampled, kind="review", source=source)
+        sampled.tray.stage(review.task_id, "link", actor=STEWARD, **seen(sampled, review.task_id))
+        samples = [t for t in open_tasks(sampled, "person", "quality_sample") if t.source is not None]
+        for number, task in enumerate(samples[:4]):
+            sampled.decisions.reveal(task.task_id, actor=COORDINATOR, reason="deciding_task")
+            case = sampled.decisions.case(task.task_id, actor=COORDINATOR)
+            target = case.choices[0].master_id if case.choices and number % 2 == 0 else None
+            sampled.tray.stage(
+                task.task_id,
+                "blind_link" if target else "blind_none",
+                actor=COORDINATOR,
+                target=target,
+                **seen(sampled, task.task_id),
+            )
+        moment = utcnow() + timedelta(seconds=sampled.settings.undo_seconds + 1)
+        sampled.tray.clock = lambda: moment
+        sampled.tray.flush()
+        for dispute in [
+            t for t in open_tasks(sampled, "person", "review") if t.reason == "blind_disagreement"
+        ]:
+            sampled.tray.stage(
+                dispute.task_id, "keep_decision", actor=COORDINATOR, **seen(sampled, dispute.task_id)
+            )
+        sampled.tray.clock = lambda: moment + timedelta(minutes=5)
+        sampled.tray.flush()
+        sampled.breaker.demo_trip("person", figures={"agreed": 30, "reviewed": 40, "threshold": 0.95})
+        land(sampled, [row("crm", crm_person_key(3), "person", person_payload(3), at=T0 + timedelta(days=2))])
+        arrive(sampled)
+        sampled.breaker.restore("person", actor=OWNER, reason="cause_fixed")
+        arrive(sampled)
+        assert sampled.store.agreement_rows("person", None, 10)
+    finally:
+        sampled.close()
+    landed = hub.store.landing_above(0, 100_000)
+    values = _personal_values(landed)
+    leaks = []
+    for schema, table, column in _text_columns(hub):
+        group = schema.rsplit("_", 1)[1]
+        if (group, table, column) in ALLOWED:
+            continue
+        found = hub.store._fetch_all(f"/*mdm:paged*/ SELECT {column} FROM {schema}.{table} LIMIT 100000")
+        for (value,) in found:
+            text = str(value).lower() if value is not None else ""
+            hits = [v for v in values if v in text]
+            if hits:
+                leaks.append((table, column, hits[:2]))
+                break
+    assert leaks == []
+    tables = {table for _, table, _ in _text_columns(hub)}
+    assert {"quality_sample", "quality_agreement", "breaker_state", "arrival_hour"} <= tables
+    lines = [r.getMessage().lower() for r in caplog.records]
+    assert any("breaker_tripped" in line for line in lines)  # the log was captured
+    assert not [line for line in lines if any(v in line for v in values)]

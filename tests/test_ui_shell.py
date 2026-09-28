@@ -377,6 +377,48 @@ def test_the_rail_links_every_view_and_kind_with_capped_counts() -> None:
     assert rail.chosen({}) == (None, None)
 
 
+def test_the_rail_counts_are_plain_text_and_a_breach_count_is_red() -> None:
+    tree = rail.render(samples.COUNTS_AT_CAP, {"view": "team"})
+    assert not [c for c in walk(tree) if type(c).__name__ == "Badge"]  # no pills
+    links = [c for c in walk(tree) if type(c).__name__ == "NavLink"]
+    assert {c.variant for c in links} == {"subtle"}
+    counts = {c.href: c.rightSection for c in links}
+    assert counts["/?view=breaching"].className == "mdm-count mdm-count-alert"
+    assert counts["/?view=team"].className == "mdm-count"
+    quiet = rail.render(replace(samples.COUNTS_AT_CAP, views={"breaching": 0}), {"view": "team"})
+    breaching = next(c for c in walk(quiet) if getattr(c, "href", None) == "/?view=breaching")
+    assert breaching.rightSection.className == "mdm-count"  # red only when a breach is counted
+
+
+def test_the_rail_lists_quality_samples_after_escalated_and_not_as_a_kind() -> None:
+    tree = rail.render(samples.COUNTS_SAMPLES, {"view": "samples", "kind": "review"})
+    links = [c for c in walk(tree) if type(c).__name__ == "NavLink"]
+    hrefs = [c.href for c in links]
+    assert hrefs[:6] == [
+        "/?view=mine",
+        "/?view=team",
+        "/?view=breaching",
+        "/?view=snoozed",
+        "/?view=escalated",
+        "/?view=samples",
+    ]
+    assert not [h for h in hrefs if "quality_sample" in h]  # its own view, never a kind
+    assert "Quality sample" not in [c.label for c in links]
+    found = links[5]
+    assert found.label == "Quality samples" and found.active is True
+    assert found.to_plotly_json()["props"]["aria-current"] == "page"
+    assert found.rightSection.className == "mdm-count mdm-count-alert"  # a sample is past its 72 h
+    assert found.description == "1 overdue"  # said in words too, never by colour alone
+    assert found.to_plotly_json()["props"]["aria-label"] == "Quality samples, 12, 1 overdue"
+    assert not [c for c in links if c.active and c is not found]  # a kind is never marked in this view
+    calm = rail.render(replace(samples.COUNTS_SAMPLES, samples_breaching=0), {"view": "mine"})
+    quiet = next(c for c in walk(calm) if getattr(c, "href", None) == "/?view=samples")
+    assert quiet.rightSection.className == "mdm-count" and getattr(quiet, "description", None) is None
+    assert rail.chosen({"view": "samples", "kind": "held"}) == ("samples", None)
+    assert rail.chosen({"view": "nowhere"}) == ("mine", None)
+    assert layout.inbox_query("/", "?view=samples&kind=held") == {"view": "samples", "kind": None}
+
+
 def test_the_rail_is_plain_links() -> None:
     tree = rail.render(samples.COUNTS_UNDER_CAP, {"view": "mine"})
     assert all(getattr(c, "id", None) is None for c in walk(tree))
@@ -403,6 +445,20 @@ def test_the_tray_lists_staged_entries_with_a_countdown_and_undo() -> None:
     assert "Committed as commit 6" in shown
     assert any(text.startswith("Not committed. The source record changed") for text in shown)
     assert "Nothing is waiting" in text_of(tray.entry_items((), samples.NOW, undo_seconds=60)[0])
+
+
+def test_a_blind_answer_says_whether_it_matched_the_first_decision() -> None:
+    agreed, disagreed = samples.TRAY_VIEWS_BLIND
+    assert tray.outcome_text(agreed) == "Matched the first decision"
+    assert tray.outcome_text(disagreed) == "Differed from the first decision: a review is open"
+    shown = texts_in(tray.entry_items(samples.TRAY_VIEWS_BLIND, samples.NOW))
+    assert any(text.startswith("Matched the first decision") for text in shown)
+    note = tray.settlement_notice(disagreed)
+    assert note is not None and note["title"] == "Answered"
+    assert note["message"] == (
+        "Quality sample: ORG-000211 and ORG-000388 are not the same. "
+        "Differed from the first decision: a review is open."
+    )
 
 
 def test_the_tray_refresh_changes_only_when_an_entry_moves() -> None:

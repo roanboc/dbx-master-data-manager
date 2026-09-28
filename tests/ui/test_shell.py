@@ -167,7 +167,12 @@ def test_the_help_lists_the_keys_and_turning_them_off_stops_them(page: Page, liv
     page.get_by_role("button", name="Keyboard shortcuts").click()
     dialog = page.get_by_role("dialog", name="Keyboard shortcuts")
     expect(dialog).to_be_visible()
-    for what in ("Next task", "Link to the chosen candidate", "Undo", "This help"):
+    for what in (
+        "Next task",
+        "Link to the chosen candidate; in a blind review, it belongs there (a pair: the same)",
+        "Undo",
+        "This help",
+    ):
         expect(dialog.get_by_role("cell", name=what, exact=True)).to_be_visible()
     page.keyboard.press("Escape")
     expect(dialog).to_be_hidden()

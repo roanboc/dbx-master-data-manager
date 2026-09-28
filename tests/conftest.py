@@ -69,6 +69,14 @@ _SETTING_VARIABLES = (
     "MDM_CLOSE_CALL_POINTS",
     "MDM_TRAY_WORKER",
     "MDM_UI_PORT",
+    "MDM_SAMPLE_SHARE",
+    "MDM_SAMPLE_OPEN_CAP",
+    "MDM_BREAKER_AGREEMENT",
+    "MDM_BREAKER_WINDOW",
+    "MDM_BREAKER_MIN_SAMPLES",
+    "MDM_BREAKER_SPIKE_MULTIPLE",
+    "MDM_BREAKER_SPIKE_DAYS",
+    "MDM_BREAKER_SPIKE_MIN",
     # libpq and Settings.from_env read these: a developer's shell must not point a test elsewhere
     "PGHOST",
     "PGPORT",
@@ -109,8 +117,10 @@ def new_prefix() -> str:
 
 
 def base_settings() -> Settings:
-    """The local mode on an in-memory DuckDB, reading the starter models."""
-    return Settings(duckdb_path=":memory:", models_dir=str(MODELS))
+    """The local mode on an in-memory DuckDB, reading the starter models. No decision is drawn for blind
+    review (`sample_share` 0), so a test's tasks are the ones it made; the checkpoint's tests set the share
+    they need with `with_(...)`."""
+    return Settings(duckdb_path=":memory:", models_dir=str(MODELS), sample_share=0.0)
 
 
 def settings_for(engine: str, base: Settings, request: pytest.FixtureRequest) -> Settings:

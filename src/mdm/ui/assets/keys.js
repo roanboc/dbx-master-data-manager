@@ -193,11 +193,13 @@
     );
   }
   function onControl(el) {
-    // Enter and Space belong to a focused control
+    // Enter and Space belong to a focused control (a disclosure's summary among them)
     return !!(
       el &&
       el.closest &&
-      el.closest('button, a[href], [role="button"], [role="tab"], [role="menuitem"], [role="radio"], [role="switch"]')
+      el.closest(
+        'button, a[href], summary, [role="button"], [role="tab"], [role="menuitem"], [role="radio"], [role="switch"]'
+      )
     );
   }
   function inbox() {

@@ -3,6 +3,8 @@ and the checks a steward's commit makes inside its own transaction (owner: SERVI
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -12,9 +14,11 @@ from mdm.backend import ddl
 from mdm.backend.store import SqlStore
 from mdm.models.changes import WorkWrites
 from mdm.models.errors import Conflict
+from mdm.models.quality import QualitySample, SampleReview
 from mdm.models.records import SourceKey
 from mdm.models.tasks import Task
 from mdm.models.workbench import MatchLabel, TaskQuery, TrayEntry, TraySettlement
+from tests.conftest import ONLY_POSTGRES_ENGINE, THREAD_TIMEOUT, join_all
 from tests.helpers import arrive, land, mini_world
 from tests.test_backend_store import state
 
@@ -463,3 +467,264 @@ def test_a_records_changes_are_read_newest_first_by_cursor(hub) -> None:
     assert (
         hub.store.change_set_evidence([commit.change_set_id, "CS-none"])[commit.change_set_id]["records"] > 0
     )
+
+
+# ---------------------------------------------------------------------------------------------- the matcher's checkpoint (story 3.2)
+
+CHECKPOINT_TABLES = ("quality_sample", "quality_agreement", "breaker_state", "arrival_hour")
+SIGNATURE = "given_name= · family_name≈ · phone∅ · postcode≠"
+
+
+def a_sample(n: int, *, entity: str = "person", source: SourceKey | None = None, **changes) -> QualitySample:
+    sample = QualitySample(
+        sample_id=f"QS-{n:04d}",
+        entity=entity,
+        origin="automated",
+        decision="auto_link",
+        source=source if source is not None else SourceKey("crm", f"C{n:04d}"),
+        master_ids=(),
+        event_id=f"ev-{n}",
+        target="PER-000001",
+        declined=(),
+        band="auto",
+        signature=SIGNATURE,
+        score=96.5,
+        rule_version=1,
+        decided_by="automated-matcher",
+        decided_role="data_steward",
+        decided_at=T0,
+        entry_id=None,
+        task_id=f"TSK-{n:04d}",
+        drawn_at=T0,
+    )
+    return replace(sample, **changes)
+
+
+def a_review(sample: QualitySample, agreed: bool, *, at: datetime = T0) -> SampleReview:
+    return SampleReview(
+        sample_id=sample.sample_id,
+        entity=sample.entity,
+        origin=sample.origin,
+        band=sample.band,
+        signature=sample.signature,
+        answer="PER-000001" if agreed else "none",
+        agreed=agreed,
+        reviewed_by="persona:coordinating_steward",
+        reviewed_role="coordinating_steward",
+        reviewed_at=at,
+        review_entry_id="TR-9",
+    )
+
+
+def test_the_checkpoint_tables_exist_and_an_older_store_gains_them(
+    store: SqlStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in CHECKPOINT_TABLES:
+        assert store.table_columns("work", name) == list(ddl.table("work", name).column_names())
+    assert ("entity", "reason", "status", "task_id") in ddl.table("work", "task").indexes
+    store.drop_all()
+    task = ddl.table("work", "task")
+    older = replace(task, indexes=tuple(i for i in task.indexes if i[:3] != ("entity", "reason", "status")))
+    monkeypatch.setattr(
+        ddl, "TABLES", tuple(older if t is task else t for t in ddl.TABLES if t.name not in CHECKPOINT_TABLES)
+    )
+    store.init_schema(create_landing=True)
+    assert store.table_columns("work", "quality_sample") == []
+    monkeypatch.undo()
+    store.init_schema(create_landing=True)  # a story 3.1 store gains the tables and the index
+    for name in CHECKPOINT_TABLES:
+        assert store.table_columns("work", name) == list(ddl.table("work", name).column_names())
+    store.open_tasks_by_reason("person", "review", "breaker_demoted", None, 10)
+
+
+def test_samples_are_written_once_with_their_signature_and_read_back(store: SqlStore) -> None:
+    sample = a_sample(1)
+    store.apply_work(WorkWrites("person", samples=(sample, a_sample(2, band="", signature="", score=None))))
+    store.apply_work(WorkWrites("person", samples=(replace(sample, target="PER-000009"),)))  # drawn again
+    found = store.samples_by_id(["QS-0001", "QS-0002", "QS-none"])
+    assert set(found) == {"QS-0001", "QS-0002"}
+    assert found["QS-0001"] == sample  # the first draw stays, signature with its spaces and marks
+    assert (found["QS-0002"].band, found["QS-0002"].signature, found["QS-0002"].score) == ("", "", None)
+    assert [s.sample_id for s in store.open_samples_for("person", [SourceKey("crm", "C0001")])] == ["QS-0001"]
+    assert store.open_sample_count("person", "automated", 100) == 2
+    assert store.open_sample_count("person", "automated", 1) == 1  # capped
+    assert store.sample_counts("person", 100) == {"open": 2, "void": 0}
+    with pytest.raises(ValueError):
+        store.put_samples([a_sample(3, signature="Tamsin Quorrel")])  # never a value
+    with pytest.raises(ValueError):
+        store.put_samples([a_sample(4, band="review band")])
+
+
+def test_a_review_needs_an_open_sample_and_counts_its_agreement(store: SqlStore) -> None:
+    samples = [a_sample(n) for n in range(1, 5)]
+    store.apply_work(WorkWrites("person", samples=tuple(samples)))
+    store.apply_work(WorkWrites("person", reviews=(a_review(samples[0], True), a_review(samples[1], False))))
+    store.apply_work(WorkWrites("person", reviews=(a_review(samples[2], True, at=T0 + timedelta(hours=1)),)))
+    (row_,) = store.agreement_rows("person", None, 10)
+    assert (row_.origin, row_.band, row_.signature, row_.reviewed, row_.agreed) == (
+        "automated",
+        "auto",
+        SIGNATURE,
+        3,
+        2,
+    )
+    answered = store.samples_by_id(["QS-0001", "QS-0002"])
+    assert (answered["QS-0001"].status, answered["QS-0002"].status) == ("agreed", "disagreed")
+    assert answered["QS-0002"].answer == "none" and answered["QS-0001"].reviewed_at == T0
+    # answered already: settled; voided with its record: void; either rolls the whole transaction back
+    with pytest.raises(Conflict) as settled:
+        store.apply_work(WorkWrites("person", reviews=(a_review(samples[0], False),)))
+    assert settled.value.code == "sample_settled"
+    write(store, a_task(4, kind="quality_sample"))
+    store.apply_work(WorkWrites("person", void_samples=(("QS-0004", "TSK-0004", samples[3].source),)))
+    store.apply_work(
+        WorkWrites("person", void_samples=(("QS-0004", "TSK-0004", samples[3].source),))
+    )  # again
+    assert store.tasks_by_id(["TSK-0004"])["TSK-0004"].status == "closed"
+    with pytest.raises(Conflict) as void:
+        store.apply_work(
+            WorkWrites(
+                "person",
+                reviews=(a_review(samples[3], True),),
+                labels=(a_label("crm:C0004", "PER-1", "match"),),
+            )
+        )
+    assert void.value.code == "sample_void"
+    assert store.labels_for("person", ["crm:C0004"]) == []
+    assert store.sample_counts("person", 100) == {"open": 0, "void": 1}
+    (after,) = store.agreement_rows("person", None, 10)
+    assert (after.reviewed, after.agreed) == (3, 2)
+    # the latest reviews first, and only those decided after a moment when asked
+    latest = store.recent_reviews("person", "automated", "auto", None, 2)
+    assert [(status, sid) for status, _, sid in latest] == [("agreed", "QS-0003"), ("disagreed", "QS-0002")]
+    assert store.recent_reviews("person", "automated", "auto", T0, 10) == []
+    assert store.recent_reviews("person", "steward", "auto", None, 10) == []
+
+
+def test_the_breakers_state_changes_only_by_its_conditional_updates(store: SqlStore) -> None:
+    assert store.breaker_states(["person"]) == {}
+    assert store.ensure_breaker_rows(["person", "organisation"], T0) == 2
+    assert store.ensure_breaker_rows(["person"], T0 + timedelta(days=1)) == 0  # watched from its first row
+    normal = store.breaker_states(["person"])[("person", "auto")]
+    assert (normal.state, normal.watch_since, normal.figures, normal.trigger) == ("normal", T0, {}, None)
+    figures = {"agreed": 17, "reviewed": 20, "threshold": 0.95}
+    later = T0 + timedelta(hours=2)
+    assert store.trip_breaker("person", "auto", "agreement", figures, later, "CS-1")
+    assert not store.trip_breaker("person", "auto", "volume", {}, later, "CS-2")  # demoted already
+    demoted = store.breaker_states(["person"])[("person", "auto")]
+    assert (demoted.state, demoted.trigger, demoted.figures, demoted.trip_change_set, demoted.tripped_at) == (
+        "demoted",
+        "agreement",
+        figures,
+        "CS-1",
+        later,
+    )
+    assert not store.restore_breaker("organisation", "auto", "o", "data_owner", "cause_fixed", later, "CS-3")
+    restored_at = later + timedelta(hours=1)
+    assert store.restore_breaker(
+        "person", "auto", "persona:data_owner", "data_owner", "cause_fixed", restored_at, "CS-4"
+    )
+    restored = store.breaker_states(["person"])[("person", "auto")]
+    assert (restored.state, restored.watch_since, restored.restored_at, restored.restore_change_set) == (
+        "normal",
+        T0,  # the volume history stays unless the restore asks to watch it afresh
+        restored_at,
+        "CS-4",
+    )
+    assert store.trip_breaker("person", "auto", "volume", figures, restored_at, "CS-7")
+    again = restored_at + timedelta(hours=1)
+    assert store.restore_breaker(
+        "person", "auto", "persona:data_owner", "data_owner", "load_expected", again, "CS-8", rewatch=True
+    )
+    assert store.breaker_states(["person"])[("person", "auto")].watch_since == again
+    with pytest.raises(ValueError):
+        store.trip_breaker("person", "auto", "agreement", {"name": "Tamsin Quorrel"}, later, "CS-5")
+    with store.transaction():
+        assert store.hold_band("person", "auto") and store.hold_band("vessel", "auto")  # a new row is normal
+    store.trip_breaker("person", "auto", "volume", {}, later, "CS-6")
+    with store.transaction():
+        assert not store.hold_band("person", "auto")
+
+
+def test_arrival_hours_add_up_and_are_pruned(store: SqlStore) -> None:
+    hour = T0.replace(minute=0)
+    store.add_arrivals([("person", hour, 3), ("person", hour, 2), ("organisation", hour, 0)])
+    store.add_arrivals([("person", hour, 5), ("person", hour + timedelta(hours=1), 1)])
+    assert store.arrival_hours("person", [hour, hour + timedelta(hours=1), hour + timedelta(hours=2)]) == {
+        hour: 10,
+        hour + timedelta(hours=1): 1,
+    }
+    assert store.arrival_hours("organisation", [hour]) == {}
+    assert store.arrivals_counted_by("person", hour) and not store.arrivals_counted_by(
+        "person", hour - timedelta(1)
+    )
+    assert not store.arrivals_counted_by("organisation", hour + timedelta(days=1))  # a zero is never counted
+    store.prune_arrival_hours(hour + timedelta(hours=1))
+    assert store.arrival_hours("person", [hour, hour + timedelta(hours=1)]) == {hour + timedelta(hours=1): 1}
+
+
+def test_the_views_filter_out_a_kind_and_the_samples_a_steward_decided(store: SqlStore) -> None:
+    write(
+        store,
+        a_task(1),
+        a_task(2, kind="quality_sample"),
+        a_task(3, kind="quality_sample"),
+        replace(a_task(4), reason="breaker_demoted"),
+        replace(a_task(5), reason="breaker_demoted"),
+    )
+    store.apply_work(
+        WorkWrites(
+            "person",
+            samples=(
+                a_sample(2, task_id="TSK-0002", origin="steward", decided_by="persona:data_steward"),
+                a_sample(3, task_id="TSK-0003"),
+            ),
+        )
+    )
+    everything = TaskQuery(now=T0, snoozed=None)
+    assert {t.task_id for t in store.task_page(everything, None, 10)} == {f"TSK-{n:04d}" for n in range(1, 6)}
+    others = replace(everything, exclude_kind="quality_sample")
+    assert {t.task_id for t in store.task_page(others, None, 10)} == {"TSK-0001", "TSK-0004", "TSK-0005"}
+    assert store.task_count(others, 100) == 3
+    samples = replace(everything, kind="quality_sample", not_first_decider="persona:data_steward")
+    assert [t.task_id for t in store.task_page(samples, None, 10)] == ["TSK-0003"]
+    assert store.task_count(replace(samples, not_first_decider="persona:coordinating_steward"), 100) == 2
+    waiting = store.open_tasks_by_reason("person", "review", "breaker_demoted", None, 1)
+    rest = store.open_tasks_by_reason("person", "review", "breaker_demoted", waiting[0].task_id, 10)
+    assert [t.task_id for t in waiting + rest] == ["TSK-0004", "TSK-0005"]
+
+
+@ONLY_POSTGRES_ENGINE
+def test_a_commit_holding_the_band_makes_a_trip_wait(store: SqlStore, make_store) -> None:
+    store.ensure_breaker_rows(["person"], T0)
+    order: list[str] = []
+    held = threading.Event()
+    errors: list[BaseException] = []
+
+    def commit() -> None:
+        try:
+            with store.commit_scope():
+                assert store.hold_band("person", "auto")
+                held.set()
+                time.sleep(1.0)  # the trip is waiting on the row meanwhile
+                order.append("commit")
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    def trip() -> None:
+        try:
+            held.wait(THREAD_TIMEOUT)
+            with store.transaction():
+                assert store.trip_breaker("person", "auto", "agreement", {}, T0, "CS-1")
+            order.append("trip")
+        except BaseException as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=commit), threading.Thread(target=trip)]
+    for thread in threads:
+        thread.start()
+    join_all(threads)
+    assert not errors, errors
+    assert order == ["commit", "trip"]
+    with store.transaction():
+        assert not store.hold_band("person", "auto")

@@ -237,6 +237,38 @@ class MatchService:
         weight, levels, rule = fast_weight(compiled, first.match, second.match, first.ids, second.ids)
         return explain(compiled, levels, weight, rule)
 
+    def explain_against(
+        self,
+        entity: str,
+        state: SourceState,
+        master_id: str,
+        *,
+        exclude: SourceKey | None = None,
+        rules: CompiledRules | None = None,
+    ) -> GoldenCandidate | None:
+        """The record explained against the golden record's best-scoring active member other than `exclude`
+        (at most MAX_MEMBERS_CHECKED members read), as arrival would score each pair: for a golden record no
+        stored pair reaches, and for the one that holds the record, whose markers must come from another
+        member. None when it has no such member."""
+        compiled = rules if rules is not None else self.registry.compiled(entity)
+        members = self.store.members(entity, [master_id], capacity.MAX_MEMBERS_CHECKED).get(master_id, [])
+        others = [m for m in members if m != state.source and m != exclude]
+        if not others:
+            return None
+        states = self.store.source_states(entity, others)
+        best: PairScore | None = None
+        for other in sorted(others):
+            found = states.get(other)
+            if found is None or found.status != "active":
+                continue
+            explanation = self.explain_pair(entity, state, found, compiled)
+            pair = PairScore(state.source, other, explanation)
+            if best is None or explanation.score > best.explanation.score:
+                best = pair
+        if best is None:
+            return None
+        return GoldenCandidate(master_id, best, len(others), None)
+
     def masters_conflict(self, entity: str, left: str, right: str) -> str | None:
         """`cannot_link:<attribute>` when a cannot-link rule holds between an active member of one golden
         record and one of the other (at most MAX_MEMBERS_CHECKED each); None otherwise."""

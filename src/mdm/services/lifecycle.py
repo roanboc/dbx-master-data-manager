@@ -106,6 +106,18 @@ class LifecycleService:
     def _members(self, entity: str, master_id: str) -> list[SourceKey]:
         return self.store.members(entity, [master_id], MOVE_LIMIT).get(master_id, [])
 
+    def values_without(self, entity: str, master_id: str, source: SourceKey) -> dict[str, Any]:
+        """The golden record's values as its other active members' approved values survive them, with no
+        steward pin (a pin may have been taken from `source`): what a blind review shows of the golden record
+        that holds the record under review, so no value reads as the same because the record won it. Written
+        nothing; {} when no other member is left."""
+        model = self.registry.published(entity)
+        others = [m for m in self._members(entity, master_id) if m != source]
+        if not others:
+            return {}
+        values, _ = self._survive(model, None, others)
+        return values
+
     def _relationship_items(
         self, model: EntityModel, state: SourceState, master_id: str | None, clause: str = ""
     ) -> list[ChangeItem]:

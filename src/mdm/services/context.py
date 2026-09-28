@@ -15,6 +15,7 @@ from mdm.models.errors import PlatformRefused
 from mdm.models.workbench import HubBadges, ServiceLevels
 from mdm.services.arrival import ArrivalService
 from mdm.services.authority import AuthorityService
+from mdm.services.breaker import BreakerService
 from mdm.services.codelists import CodeListService
 from mdm.services.commit import CommitService
 from mdm.services.decisions import DecisionService
@@ -26,6 +27,7 @@ from mdm.services.lookup import LookupService
 from mdm.services.matching import MatchService
 from mdm.services.privacy import PrivacyService, Vault
 from mdm.services.profiling import ProfileService
+from mdm.services.quality import QualityService
 from mdm.services.registry import ModelRegistry
 from mdm.services.tray import TrayService
 
@@ -53,6 +55,8 @@ class Hub:
     decisions: DecisionService
     tray: TrayService
     lookup: LookupService
+    breaker: BreakerService
+    quality: QualityService
 
     def __init__(
         self,
@@ -92,6 +96,9 @@ class Hub:
         )
         self.lifecycle = LifecycleService(store, self.registry, self.commit, clock)
         self.matching = MatchService(store, self.registry)
+        # the automated matcher's checkpoint (story 3.2): blind review and the quality breaker
+        self.breaker = BreakerService(settings, store, self.registry, clock)
+        self.quality = QualityService(settings, store, self.registry, self.matching, self.lifecycle, clock)
         self.arrival = ArrivalService(
             settings,
             store,
@@ -102,12 +109,24 @@ class Hub:
             self.commit,
             self.matching,
             clock=clock,
+            breaker=self.breaker,
+            quality=self.quality,
         )
-        self.inbox = InboxService(settings, store, self.registry, self.privacy, clock)
+        self.inbox = InboxService(settings, store, self.registry, self.privacy, clock, breaker=self.breaker)
         self.decisions = DecisionService(
-            settings, store, self.registry, self.matching, self.lifecycle, self.privacy, clock
+            settings,
+            store,
+            self.registry,
+            self.matching,
+            self.lifecycle,
+            self.privacy,
+            clock,
+            quality=self.quality,
+            breaker=self.breaker,
         )
-        self.tray = TrayService(settings, store, self.decisions, self.inbox, self.arrival, clock)
+        self.tray = TrayService(
+            settings, store, self.decisions, self.inbox, self.arrival, clock, breaker=self.breaker
+        )
         self.lookup = LookupService(settings, store, self.registry, self.privacy, clock)
         self.estimation = EstimationService(store, self.registry)
         self.profiling = ProfileService(store, self.registry)

@@ -230,10 +230,17 @@ def test_the_timeline_marks_merges_and_the_automated_matcher() -> None:
     items = timeline.render(samples.TIMELINE_PAGE, samples.NOW)
     assert [type(i).__name__ for i in items] == ["Li"] * 3
     updated, merge, created = (text(i) for i in items)
-    assert "4 min ago · commit 6" in updated and "Values updated: phone" in updated
+    assert "Values updated: phone" in updated and "4 min ago" in updated and "commit 6" in updated
     assert "Data steward" in updated and updated.count("Data steward") == 1  # the authority once
     assert "Merge" in merge and "Data steward; checker Data owner" in merge
     assert "Automated matcher · rules v1 · finance.new=auto" in created
+    # one line each: the icon, the headline, the identity word and the time; the commit and who on demand,
+    # open from the start for a change of identity only
+    entries = [c for c in walk(items) if type(c).__name__ == "Details"]
+    assert [bool(getattr(e, "open", False)) for e in entries] == [False, True, False]
+    summaries = [text(c) for c in walk(items) if type(c).__name__ == "Summary"]
+    assert summaries[1] == "ORG-003307 merged into this recordMerge24 h ago"
+    assert all("commit" not in line and "Data steward" not in line for line in summaries)
     labels = [
         c.to_plotly_json()["props"].get("aria-label")
         for c in walk(items)

@@ -36,11 +36,12 @@ from mdm.models.authority import ROLE_LABELS
 from mdm.models.canonical import utcnow
 from mdm.models.errors import Conflict, Forbidden, MdmError, NotFound
 from mdm.models.safety import SAFE_TEXT_RE
-from mdm.models.tasks import KIND_LABELS, TASK_KINDS
+from mdm.models.tasks import KIND_LABELS, TASK_KINDS, WAITS_TEXT, waits_for_restore
 from mdm.models.workbench import (
+    ALL_VIEWS,
     ESCALATION_REASONS,
+    SAMPLES_VIEW,
     SNOOZE_HOURS,
-    TASK_VIEWS,
     TaskPage,
     TaskRow,
     TrayEntry,
@@ -58,21 +59,46 @@ from mdm.ui.context import UiContext
 #: the actions `act` takes: a decision key's action, or a menu item's "snooze:<hours>" / "escalate:<code>"
 ACTS = ("link", "not_a_match", "approve", "reject", "claim", "undo")
 #: the decisions a button names directly (its `Action.decision`)
-DIRECT = ("link", "not_a_match", "keep_apart", "approve_update", "reject_update", "keep_orphan")
-#: a key's action, per case shape, as the decision it stages
+DIRECT = (
+    "link",
+    "not_a_match",
+    "keep_apart",
+    "approve_update",
+    "reject_update",
+    "keep_orphan",
+    "blind_link",
+    "blind_none",
+    "keep_decision",
+)
+#: a key's action, per case shape, as the decision it stages: on a quality sample L places the record in
+#: the golden record chosen (a pair: the same) and N in none of them; on a dispute A keeps the first decision
 BY_SHAPE: Mapping[str, Mapping[str, str]] = {
-    "not_a_match": {"source": "not_a_match", "golden_pair": "keep_apart"},
-    "approve": {"held_update": "approve_update", "golden": "keep_orphan"},
+    "link": {"blind": "blind_link", "blind_pair": "blind_link", "disputed": "link"},
+    "not_a_match": {
+        "source": "not_a_match",
+        "golden_pair": "keep_apart",
+        "blind": "blind_none",
+        "blind_pair": "blind_none",
+    },
+    "approve": {
+        "held_update": "approve_update",
+        "golden": "keep_orphan",
+        "disputed": "keep_decision",
+        "disputed_pair": "keep_decision",
+    },
     "reject": {"held_update": "reject_update"},
 }
+#: the decisions that name the golden record chosen on screen (a candidate, or a blind review's choice)
+NAMES_CHOICE = ("link", "blind_link")
 #: the views that still hold a snoozed task (My queue and Team hide it until it wakes)
 SHOWS_SNOOZED = ("breaching", "snoozed", "escalated")
 #: refusals after which the case on screen is out of date and is rendered again
 STALE_CODES = frozenset(
     {"record_changed", "already_staged", "claimed_by_another", "task_closed", "not_held", "unknown_task"}
 )
-#: the grid's columns: the task (line 1: its kind and title, a button that opens it; line 2: the band chip,
-#: the suggestion and the reason, wrapping), and when it is due with who holds it under it. The cells are
+#: the grid's columns: the task (line 1: its kind, in a mixed list only, and its title, a button that opens
+#: it; line 2, muted, at most two lines with its full text in its title: the band, the reason, the
+#: suggestion and the entity), and when it is due with who holds it under it. The cells are
 #: React elements built from the row's own fields (`assets/inbox.js`), never HTML. No column sorts or
 #: filters: a page is one slice of the queue, ordered by due time.
 COLUMNS: tuple[dict[str, Any], ...] = (
@@ -93,10 +119,11 @@ GRID_OPTIONS = {
     "suppressCellFocus": True,
     "suppressHeaderFocus": True,
     "animateRows": False,
-    "rowHeight": 64,
+    "rowHeight": 56,
     "headerHeight": 32,
     "suppressDragLeaveHidesColumns": True,
-    "localeText": {"noRowsToShow": "Nothing waits in this view."},
+    # an empty view says so once, in the heading and the pane; the grid adds nothing
+    "localeText": {"noRowsToShow": " "},
 }
 ROW_CLASSES = {
     "mdm-staged": "params.data.staged",
@@ -108,20 +135,21 @@ ROW_CLASSES = {
 QUEUE_PART = {"flex": "5 1 0", "minWidth": "min(480px, 100%)"}
 DECIDE_PART = {"flex": "7 1 0", "minWidth": 0, "position": "relative"}
 GRID_STYLE = {"height": "calc(100vh - 250px)", "minHeight": "320px", "width": "100%"}
-HEADING_STYLE = {"fontSize": "1.05rem", "margin": "0 0 6px"}
+HEADING_STYLE = {"fontSize": "0.95rem", "fontWeight": 600, "margin": "0 0 8px"}
 #: the page's own copies of what the shell announces (see `ids`)
 ADDRESS = ids.INBOX_ADDRESS
 SETTLED_HERE = ids.INBOX_SETTLED
 HEALTH_POLL = ids.HEALTH_POLL
 ACT_REQUEST = ids.INBOX_ACT_REQUEST
 CONSUMER_TEXT = "Your role, {role}, decides no tasks, so nothing waits here for you."
-#: what an empty view says in the pane, per view (TASK_VIEWS)
+#: what an empty view says in the pane, per view (ALL_VIEWS)
 EMPTY_VIEWS = {
     "mine": "Nothing waits in My queue.",
     "team": "No task is open.",
     "breaching": "Nothing is breaching.",
     "snoozed": "Nothing is snoozed.",
     "escalated": "Nothing is escalated.",
+    SAMPLES_VIEW: "No quality sample waits for you.",
 }
 #: the actions that act on the task on screen, so they need its case drawn first (undo acts on the tray)
 ON_THE_CASE = ("link", "not_a_match", "approve", "reject", "claim", *DIRECT)
@@ -144,15 +172,16 @@ class ActResult:
 
 
 def parse_query(query: Mapping[str, str | None], entities: Sequence[str] = ()) -> dict[str, str | None]:
-    """The inbox's query as codes: a known view (default My queue), a known kind, a published entity
-    ("" for all) and a task ID of a safe shape."""
+    """The inbox's query as codes: a known view (default My queue), a known kind (none in Quality samples,
+    which holds one kind), a published entity ("" for all) and a task ID of a safe shape."""
     view = query.get("view")
+    view = view if view in ALL_VIEWS else "mine"
     kind = query.get("kind")
     entity = query.get("entity")
     task = query.get("task")
     return {
-        "view": view if view in TASK_VIEWS else "mine",
-        "kind": kind if kind in TASK_KINDS else None,
+        "view": view,
+        "kind": kind if kind in TASK_KINDS and view != SAMPLES_VIEW else None,
         "entity": entity if isinstance(entity, str) and entity in entities else "",
         "task": task
         if isinstance(task, str) and SAFE_TEXT_RE.match(task) and task.startswith("TSK-")
@@ -194,6 +223,12 @@ def query_store(query: Mapping[str, str | None]) -> dict[str, str | None]:
         "kind": query.get("kind"),
         "entity": query.get("entity") or "",
     }
+
+
+def mixed_kinds(query: Mapping[str, Any] | None) -> bool:
+    """Whether the list mixes kinds, so each row names its own: not under a kind, nor in Quality samples."""
+    query = query or {}
+    return not query.get("kind") and query.get("view") != SAMPLES_VIEW
 
 
 def list_name(query: Mapping[str, str | None]) -> str:
@@ -243,6 +278,8 @@ def due_text(row: TaskRow, now: datetime) -> str:
         return "Staged by you" if row.staged.mine else "Staged by another"
     if row.due_at is None:
         return ""
+    if waits_for_restore(row.due_at):
+        return WAITS_TEXT
     text = duration(row.due_at - now)
     return text[:1].upper() + text[1:]
 
@@ -270,24 +307,35 @@ def band_cell(row: TaskRow) -> tuple[str, str]:
     return " ".join(part for part in (score_text(row.score), band_words(row.band)) if part), band
 
 
-def grid_row(row: TaskRow, now: datetime | None = None, *, entity_shown: bool = True) -> dict:
+def second_line(band_text: str, entity_label: str, row: TaskRow) -> str:
+    """The second line's full text, for its `title` (the line itself is cut after two lines): "79 review
+    · hinges on postcode · Link to PER-000239 · Person"."""
+    return " · ".join(part for part in (band_text, row.reason, row.suggestion, entity_label) if part)
+
+
+def grid_row(
+    row: TaskRow, now: datetime | None = None, *, entity_shown: bool = True, kind_shown: bool = True
+) -> dict:
     """A task row as the grid's row dict: codes, IDs and masked text only, never HTML. `entity_shown`
-    false (the header's entity filter is set) leaves the entity out of the second line."""
+    false (the header's entity filter is set) leaves the entity out of the second line; `kind_shown` false
+    (the list holds one kind) leaves the kind out of the first."""
     now = now if now is not None else utcnow()
     band_text, band = band_cell(row)
     staged = row.staged
+    entity_label = row.entity.replace("_", " ").capitalize() if entity_shown else ""
     return {
         "task_id": row.task_id,
         "kind": row.kind,
-        "kind_label": row.kind_label,
+        "kind_label": row.kind_label if kind_shown else "",
         "entity": row.entity,
-        "entity_label": row.entity.replace("_", " ").capitalize() if entity_shown else "",
+        "entity_label": entity_label,
         "title": row.title,
         "subject": row.subject,
         "band": band,
         "band_text": band_text,
         "suggestion": row.suggestion,
         "reason": row.reason,
+        "second_title": second_line(band_text, entity_label, row),
         "due": due_text(row, now),
         "breaching": bool(row.breaching) and staged is None,
         "claimed": claimed_text(row),
@@ -324,7 +372,7 @@ def load(
     now = utcnow()
     chosen = select_after_load(page.rows, moved, selected)
     shown = not query.get("entity")
-    rows = [grid_row(row, now, entity_shown=shown) for row in page.rows]
+    rows = [grid_row(row, now, entity_shown=shown, kind_shown=mixed_kinds(query)) for row in page.rows]
     return (
         rows,
         {"ids": [chosen]} if chosen else [],
@@ -413,7 +461,7 @@ def _stage(
     seen_event: str | None,
     seen_task: str | None,
 ) -> ActResult:
-    target = candidate if decision == "link" else None
+    target = candidate if decision in NAMES_CHOICE else None
     entry, error, failure = _attempt(
         ctx.hub.tray.stage,
         task_id,
@@ -571,6 +619,7 @@ def result_store(
     now: datetime | None = None,
     *,
     entity_shown: bool = True,
+    kind_shown: bool = True,
 ) -> dict:
     """ACT_RESULT: what the advance callback (I8) needs — the task acted on, whether to move on, a counter
     so every act is a change, and the grid row to update or remove (codes, IDs and masked text only)."""
@@ -580,7 +629,9 @@ def result_store(
         "advance": result.advance,
         "n": n,
         "touched": result.touched,
-        "row": grid_row(result.row, now, entity_shown=entity_shown) if result.row is not None else None,
+        "row": grid_row(result.row, now, entity_shown=entity_shown, kind_shown=kind_shown)
+        if result.row is not None
+        else None,
         "remove": result.remove,
     }
 
@@ -599,10 +650,12 @@ def empty_view(ctx: UiContext, query: Mapping[str, Any] | None) -> Component:
         return decide.empty_pane()
     words = EMPTY_VIEWS.get(view, "Nothing waits in this view.")
     team = counts.views.get("team", 0)
-    if view == "team" or team <= 0:
+    if view in ("team", SAMPLES_VIEW) or team <= 0:
         return decide.empty_pane(words)
     tasks = "1 open task" if team == 1 else f"{count_text(team)} open tasks"
-    return decide.empty_pane([f"{words} Team has {tasks}. ", dmc.Anchor("Open Team", href=rail_href("team"))])
+    return decide.empty_pane(
+        [f"{words} Team has {tasks}. ", dmc.Anchor("Open Team", href=rail_href("team"), inherit=True)]
+    )
 
 
 def case_view(
@@ -654,7 +707,13 @@ def reveal_view(
 
 
 def settled_updates(
-    ctx: UiContext, settled: Any, on_page: Sequence[str], selected: str | None, *, entity_shown: bool = True
+    ctx: UiContext,
+    settled: Any,
+    on_page: Sequence[str],
+    selected: str | None,
+    *,
+    entity_shown: bool = True,
+    kind_shown: bool = True,
 ) -> tuple[dict | None, bool]:
     """I9 without Dash: the grid transaction for the settled entries whose rows are on the page (a
     committed one leaves; an undone or failed one is read again, its staged marker cleared), and whether
@@ -680,7 +739,7 @@ def settled_updates(
             continue
         row, gone = _row_again(ctx, task_id)
         if row is not None:
-            update.append(grid_row(row, now, entity_shown=entity_shown))
+            update.append(grid_row(row, now, entity_shown=entity_shown, kind_shown=kind_shown))
         elif gone:
             remove.append({"task_id": task_id})
     if not remove and not update:
@@ -784,6 +843,7 @@ def _page(
                 ],
                 gap="xs",
                 mt="xs",
+                className="mdm-paging",  # a button with no page on its side is hidden, not greyed
             ),
         ]
     )
@@ -1105,7 +1165,13 @@ def register(app) -> None:
             view=str((query or {}).get("view") or "mine"),
         )
         return (
-            result_store(result, task_id, previous, entity_shown=not (query or {}).get("entity")),
+            result_store(
+                result,
+                task_id,
+                previous,
+                entity_shown=not (query or {}).get("entity"),
+                kind_shown=mixed_kinds(query),
+            ),
             (case_version or 0) + 1 if result.bump_case else no_update,
             (tray_version or 0) + 1 if result.bump_tray else no_update,
             list(result.notices) if result.notices else no_update,
@@ -1140,7 +1206,12 @@ def register(app) -> None:
             return no_update, no_update
         on_page = [row.get("task_id") for row in shown or () if isinstance(row, dict)]
         transaction, touched = settled_updates(
-            request_ctx, settled, on_page, selected, entity_shown=not (query or {}).get("entity")
+            request_ctx,
+            settled,
+            on_page,
+            selected,
+            entity_shown=not (query or {}).get("entity"),
+            kind_shown=mixed_kinds(query),
         )
         return (
             transaction if transaction is not None else no_update,

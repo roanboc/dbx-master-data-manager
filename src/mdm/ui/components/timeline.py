@@ -1,6 +1,7 @@
-"""A record's timeline, newest first: when, a spark icon for the automated matcher or a person icon for a
-role, the headline, who and under what authority, "commit 42"; merges and other changes of identity
-marked with a word as well as a solid line, so colour is never the only cue (B.8.9).
+"""A record's timeline, newest first, one line per entry: a spark icon for the automated matcher or a
+person icon for a role, the headline, a change of identity marked with a word (and a solid rule, so colour
+is never the only cue) and when; the commit ("commit 42" or "nothing published") and who, under what
+authority, open on demand, and open from the start for a change of identity (B.8.9).
 
 The actor is "Automated matcher" or a role label and never a person; every text is a field the record
 reader returned, built from codes, IDs and attribute labels.
@@ -12,7 +13,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import dash_mantine_components as dmc
 from dash import html
 from dash.development.base_component import Component
 
@@ -31,7 +31,6 @@ IDENTITY_WORDS = {
 }
 #: what an empty timeline says
 EMPTY = "No change is recorded for this record yet."
-_MUTED = {"color": "var(--mdm-muted)", "fontSize": "0.85rem"}
 
 
 def identity_word(event: TimelineEvent) -> str | None:
@@ -50,39 +49,40 @@ def who_text(event: TimelineEvent) -> str:
 
 
 def item(event: TimelineEvent, now: datetime) -> Component:
-    """One event as a list item."""
+    """One event as a list item: a disclosure whose summary is the icon, the headline, the identity word
+    and the time, and whose body is the commit and who under what authority; open for a change of
+    identity."""
     marked = identity_word(event)
-    when: list[Component] = [
-        html.Time(relative_time(event.at, now), dateTime=event.at.isoformat())
-        if event.at is not None
-        else html.Span("time unknown"),
-        html.Span(f" · commit {event.commit_version}" if event.published else " · nothing published"),
-    ]
-    what: list[Component] = [
+    summary: list[Component] = [
         icon("spark", label="Automated matcher") if event.automated else icon("person", label="A person"),
-        html.Strong(event.headline, className="mdm-tl-headline"),
+        html.Span(event.headline, className="mdm-tl-headline"),
     ]
     if marked:
-        what.append(
-            dmc.Badge(marked, variant="outline", color="gray", size="sm", tt="none", className="mdm-tl-mark")
-        )
-    parts: list[Component] = [
-        html.Div(when, className="mdm-tl-when", style=_MUTED),
+        summary.append(html.Span(marked, className="mdm-tag mdm-tl-mark"))
+    summary.append(
+        html.Time(relative_time(event.at, now), dateTime=event.at.isoformat(), className="mdm-tl-when")
+        if event.at is not None
+        else html.Span("time unknown", className="mdm-tl-when")
+    )
+    details: list[Component] = [
         html.Div(
-            what, className="mdm-tl-what", style={"display": "flex", "gap": "6px", "alignItems": "center"}
-        ),
+            f"commit {event.commit_version}" if event.published else "nothing published",
+            className="mdm-tl-commit",
+        )
     ]
     who = who_text(event)
     if who:
-        parts.append(html.Div(who, className="mdm-tl-who", style=_MUTED))
+        details.append(html.Div(who, className="mdm-tl-who"))
     return html.Li(
-        parts,
+        html.Details(
+            [
+                html.Summary(summary, className="mdm-tl-summary"),
+                html.Div(details, className="mdm-tl-details"),
+            ],
+            open=bool(marked),
+            className="mdm-tl-entry",
+        ),
         className="mdm-tl-item mdm-tl-identity" if marked else "mdm-tl-item",
-        style={
-            "padding": "6px 0 6px 12px",
-            "marginBottom": "6px",
-            "borderLeft": f"3px {'solid' if marked else 'dotted'} var(--mdm-rule-strong)",
-        },
     )
 
 

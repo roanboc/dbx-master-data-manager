@@ -15,6 +15,9 @@ from typing import Any
 
 #: inbox views (the left rail); kinds come from tasks.TASK_KINDS
 TASK_VIEWS = ("mine", "team", "breaching", "snoozed", "escalated")
+#: the quality samples' own view (story 3.2): samples never appear in the task views above
+SAMPLES_VIEW = "samples"
+ALL_VIEWS = (*TASK_VIEWS, SAMPLES_VIEW)
 #: decisions a steward stages in the undo tray in story 3.1 (detach joins in story 3.6, create in 3.7)
 DECISIONS = (
     "link",  # link the task's source record to the chosen golden record
@@ -23,6 +26,10 @@ DECISIONS = (
     "approve_update",  # take a held update into the golden record (the link stays)
     "reject_update",  # leave the golden record as it is; release the hold
     "keep_orphan",  # keep a golden record with no source record
+    # the matcher's checkpoint (story 3.2)
+    "blind_link",  # a quality sample: the record belongs to the chosen golden record (a pair: they are the same)
+    "blind_none",  # a quality sample: it belongs to none of those shown (a pair: they are not the same)
+    "keep_decision",  # a blind review disagreed: keep the first decision
 )
 #: actions that are not staged (claiming a snoozed task wakes it)
 TASK_ACTIONS = ("claim", "release", "snooze", "escalate")
@@ -34,7 +41,18 @@ SNOOZE_HOURS = (1, 4, 24)
 #: why a person reveals personal values: codes only, so no free text reaches the access log (decision 20)
 REVEAL_REASONS = ("deciding_task", "source_defect", "subject_request", "audit_check")
 #: the shapes of a task's case (DecisionService.case), which decide its columns and offered decisions
-CASE_SHAPES = ("source", "golden_pair", "held_update", "held_new", "golden", "information")
+CASE_SHAPES = (
+    "source",
+    "golden_pair",
+    "held_update",
+    "held_new",
+    "golden",
+    "information",
+    "blind",  # a quality sample of a record: decided without the first decision
+    "blind_pair",  # a quality sample of two golden records kept apart
+    "disputed",  # a blind review placed a record differently from the first decision
+    "disputed_pair",  # a blind review found two golden records kept apart the same
+)
 #: the hours of a kind the service levels do not name
 FALLBACK_SERVICE_HOURS = 24
 
@@ -62,6 +80,8 @@ class TaskQuery:
     breaching: bool = False  # due time passed
     escalated: bool | None = None  # True: only escalated
     claimed_by: str | None = None  # an actor name: only the tasks whose claim by this actor still runs
+    exclude_kind: str | None = None  # leave this kind out (the task views leave quality samples out)
+    not_first_decider: str | None = None  # an actor name: leave out the samples this actor decided first
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,9 +125,22 @@ class TaskPage:
 class ViewCounts:
     """Capped counts: a value of capacity.COUNT_CAP means "999+"."""
 
-    views: Mapping[str, int]  # TASK_VIEWS -> count
+    views: Mapping[str, int]  # ALL_VIEWS -> count
     kinds: Mapping[str, int]  # TASK_KINDS -> open count, within the entity filter
     claimed: int = 0  # of My queue, the tasks the actor holds a running claim on
+    samples_breaching: int = 0  # of the Quality samples view, those past their service level
+
+
+@dataclass(frozen=True, slots=True)
+class BreakerView:
+    """What the workbench says about an entity's demoted automatic band: the trigger, since when, and safe
+    numbers only (agreement: `agreed`, `reviewed`, `threshold`; volume: `arrivals`, `mean`, `multiple`,
+    `days`, `hour`)."""
+
+    entity: str
+    trigger: str  # agreement | volume
+    since: datetime
+    figures: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +154,7 @@ class Health:
     arrival_read: int | None  # rows read by the last arrival run
     arrival_tasks: int | None  # tasks it opened
     arrival_automatic: float | None  # share of its settled records the matcher committed, 0..1
+    paused: tuple[BreakerView, ...] = ()  # the entities whose automatic linking the quality breaker paused
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +274,15 @@ class Candidate:
 
 
 @dataclass(frozen=True, slots=True)
+class Choice:
+    """One golden record a blind review offers: its masked title, and no score or band."""
+
+    index: int  # 1..CANDIDATES_SHOWN, the key that chooses it
+    master_id: str
+    title: str
+
+
+@dataclass(frozen=True, slots=True)
 class Action:
     decision: str  # DECISIONS or TASK_ACTIONS or "undo"
     label: str  # "Link to ORG-000123", "Not a match", "Approve the update"
@@ -270,6 +313,10 @@ class TaskCase:
     # the task's version the case was built on (ISO time of its last change): what a decision on a task
     # with no source record is checked against, as `event_id` is for one with a source record
     task_version: str | None = None
+    # the matcher's checkpoint (story 3.2)
+    choices: tuple[Choice, ...] = ()  # a blind case: the golden records offered, in master-ID order
+    blind: bool = False  # the first decision, its score, band and suggestion stay hidden
+    paused: BreakerView | None = None  # the quality breaker paused automatic linking for this entity
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,7 +384,8 @@ class TrayView:
 
 @dataclass(frozen=True, slots=True)
 class TraySettlement:
-    """Written in the commit's own transaction; the store raises Conflict when the entry is no longer staged."""
+    """Written in the commit's own transaction; the store raises Conflict when the entry is no longer staged.
+    A blind answer settles with the outcome `agreed` or `disagreed`."""
 
     entry_id: str
     status: str
