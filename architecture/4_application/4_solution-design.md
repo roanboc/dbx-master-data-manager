@@ -4,7 +4,7 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Layered: the application components, the store and the engines behind them.
 
-**Status:** ● Validated, 2026-09-28.
+**Status:** ◐ Draft catalogue — written for story 3.2 of initiative 3, Steward workbench; not yet validated.
 
 The hub is one Python package, `mdm`, under `src/mdm/`. It runs the same code locally on DuckDB and on Postgres, and on Lakebase once deployed.
 
@@ -60,8 +60,8 @@ The [application components](./2_application-components.md#application-component
 2. The store in `mdm.backend` and the engine in `mdm.engine` never import each other.
 3. Only `src/mdm/services/commit.py` writes `mdm_core`, inside the commit-order lock.
 4. The hub never writes the landing tables, except the local simulator in `src/mdm/demo/`.
-5. No detail, reason, suggestion, evidence, message or log line carries a personal value. Each carries attribute names, codes, IDs, source keys and counts only, through `src/mdm/models/safety.py`, and the store checks each one again where it writes a task, a reject, a staged decision, a label, a change set or an access row.
-6. Personas, the simulator and `mdm demo reset` run only on a local store.
+5. No detail, reason, suggestion, evidence, message or log line carries a personal value. Each carries attribute names, codes, IDs, source keys and counts only, through `src/mdm/models/safety.py`, and the store checks each one again where it writes a task, a reject, a staged decision, a label, a quality sample, a change set or an access row.
+6. Personas, the simulator, `mdm demo reset` and the breaker's demo trip run only on a local store.
 7. The workbench calls services only, through `src/mdm/ui/context.py`. It imports no store or engine module, reads no store attribute and writes no Structured Query Language (SQL).
 8. A personal value reaches the screen only as the services return it, masked by role. It never reaches an address, a component ID, browser storage, a tooltip, a log line or an error page.
 
@@ -139,7 +139,7 @@ flowchart LR
 2. **Key.** Each blocking pass computes keys from the standardised forms, and the hub stores them, so candidates are found by equality. A key shared by more than 1,000 records is dropped, and a record keeps the 200 candidates that share the most passes.
 3. **Compare.** Each comparison puts a pair on a level, from agreement to disagreement, or on no level when a side is empty.
 4. **Score.** Each level carries two probabilities: m, its chance for a true match, and u, its chance for a non-match. Its weight is log2(m ÷ u). A pair's weight w is the prior's weight plus the weights of its levels, and its score is 100 × 2^w ÷ (1 + 2^w).
-5. **Band.** A score at or above the upper band is automatic, and one at or above the lower band goes to review. Below the lower band, the pair is distinct. The starter models set the bands at 90 and 60.
+5. **Band.** A score at or above the upper band is automatic, and one at or above the lower band goes to review. Below the lower band, the pair is distinct. The starter models set the bands at 90 and 60. While the quality breaker has demoted an entity's automatic band, an automatic pair goes to review too ([the matcher's checkpoint](#the-matchers-checkpoint)).
 6. **Hard rules.** A must-link or cannot-link rule on a strong registered ID fires only when both sides hold a valid one. It decides the band, and the waterfall still shows the arithmetic.
 7. **Explain.** A pair at or above the lower band keeps its explanation. It holds the prior, one weight per comparison, and the smallest single change that would move the pair a band up or down.
 8. **Cluster.** Automatic pairs join clusters strongest first. A union that would hold two different valid strong IDs of one scheme is refused. A record with two automatic golden candidates becomes a possible duplicate, because a merge is never automatic.
@@ -171,7 +171,7 @@ flowchart LR
 
 Every change set names an actor and an authority. [Component [`ACMP9`] Authority and privacy](./2_application-components.md#application-components) checks them twice: before planning, and again inside the commit transaction. [Decision 13](../decisions/13_authority-and-personas.md) and [decision 16](../decisions/16_source-policies-and-clauses.md) record the choices.
 
-- A store is local when it is DuckDB, or a test Postgres started with `MDM_ALLOW_PERSONAS=1` on this machine. The store refuses to open with that setting unless its server is on a unix socket or a loopback address and its database is not Lakebase's `databricks_postgres`. Personas, the simulator and `mdm demo reset` run only on a local store.
+- A store is local when it is DuckDB, or a test Postgres started with `MDM_ALLOW_PERSONAS=1` on this machine. The store refuses to open with that setting unless its server is on a unix socket or a loopback address and its database is not Lakebase's `databricks_postgres`. Personas, the simulator, `mdm demo reset` and the breaker's demo trip, a service method for the browser checks and tests, run only on a local store.
 - A persona is refused whenever `MDM_LAKEBASE_ENDPOINT` is set, or a Databricks App or runtime variable is present. A laptop pointed at the operational database therefore cannot take one. `DATABRICKS_CLIENT_ID` alone refuses nothing, because it is how a service principal runs from a laptop.
 - Until initiative 4 maps workspace groups to roles, every person on a shared store is a consumer, as [rule [`RULE11`] Least access by default](../2_business/5_domain-context-and-rules.md#business-rules) asks.
 - The automated matcher's authority names the entity model, match, survivorship and validation rule versions, then every clause its items used. A clause reads `<source>.<policy>=<value>`, such as `crm.critical_update=hold`, or `rule1:<case>` for the cases that are automatic whatever the policy: `auto_band`, `delete` and `retired_id`.
@@ -202,8 +202,107 @@ The six role names in the code are the six [business roles](../2_business/1_busi
 | `work_tasks` | `data_steward`, `coordinating_steward` | The claim; covers claim, release, snooze, escalate, stage and undo |
 | `not_a_match`, `keep_apart`, `keep_orphan`, `approve_update`, `reject_update` | `data_steward`, `coordinating_steward` | The undo tray; an audit change set even when nothing is published |
 | `flush_tray` | Every role but `consumer` | The tray lease; each decision is checked again under its own steward's role |
+| `blind_link`, `blind_none`, `keep_decision` | `data_steward`, `coordinating_steward` | The undo tray; never the steward who made the first decision |
+| `view_breaker` | Every role but `consumer` | — |
+| `restore_breaker` | `data_owner` | A reason code, `cause_fixed`, `false_alarm` or `load_expected`; the command line only |
+| `trip_breaker` | The quality breaker alone | Figures it computes itself from the store |
 
-No automated actor may merge, unmerge, retire, purge, erase or redact. Nor may it publish a model or rules, change a policy or grant a role, as [rule [`RULE6`] Some actions are never automatic](../2_business/5_domain-context-and-rules.md#business-rules) states.
+An automated actor passes only the actions whose row names it, never by its role: the automated matcher takes only `arrival`, and the quality breaker only `trip_breaker`. No automated actor may merge, unmerge, retire, purge, erase or redact. Nor may it publish a model or rules, change a policy or grant a role, as [rule [`RULE6`] Some actions are never automatic](../2_business/5_domain-context-and-rules.md#business-rules) states.
+
+## The matcher's checkpoint
+
+```mermaid
+flowchart LR
+  arrival["Arrival: automatic links and creates"]:::layer
+  tray["The undo tray's flush: a steward's link, Not a match or keep apart"]:::layer
+  draw["A share drawn by a hash"]:::layer
+  blind["Blind review, in the Quality samples view"]:::layer
+  agree["Agreement with the first decision"]:::layer
+  dispute["A review of the first decision"]:::layer
+  hours["Arrivals per entity and clock hour"]:::layer
+  breaker["The quality breaker"]:::layer
+  demoted["The automatic band demoted"]:::layer
+  reviews["Automatic-band arrivals become review tasks"]:::layer
+  guard["The commit refuses an automatic link"]:::layer
+  restore["mdm breaker restore, by a data owner"]:::layer
+  back["Arrival hands the waiting records back"]:::layer
+
+  arrival --> draw
+  tray --> draw
+  draw --> blind --> agree
+  agree -->|disagrees| dispute
+  agree --> breaker
+  arrival --> hours --> breaker
+  breaker -->|trips| demoted
+  demoted --> reviews
+  demoted --> guard
+  demoted --> restore --> back
+
+  classDef layer fill:#c2f0ff,stroke:#0288d1,color:#333
+```
+
+Blind review and the quality breaker are the checkpoint that [decision 1](../decisions/1_automated-matcher-autonomy.md) and [decision 3](../decisions/3_quality-breaker-autonomy.md) give [actor [`ACT6`] Automated matcher](../2_business/1_business-actors-and-roles.md#automated-matcher). Blind review, in `src/mdm/services/quality.py`, measures how often a second steward places a record where the first decision did. [Actor [`ACT8`] Quality breaker](../2_business/1_business-actors-and-roles.md#quality-breaker), in `src/mdm/services/breaker.py`, demotes an entity's automatic band when that agreement falls or arrivals spike.
+
+### What is sampled
+
+- Every automatic link, a record joining a new cluster included, and every link a source asserts: a `master_id=auto` hint, or a retired ID routed to its survivor.
+- Every golden record the matcher creates.
+- A steward's link, keep apart, and "Not a match" when it declined at least one golden record.
+- Approving or rejecting a held update, and keeping a golden record with no source record, are not sampled. Blind review cannot ask them again without showing the answer.
+
+### The draw
+
+- A decision is drawn when a keyed hash of its entity, subject, decision and occasion falls under the share, 2% by default. The subject is the source key, or the two master IDs of a keep apart. The occasion is the record's event, or the keep apart's task.
+- The hash runs in Python, so both engines draw the same decisions, and a larger share only adds to them. Its key, `MDM_SAMPLE_KEY`, is a secret of the deployment, so no steward can tell from what the workbench shows which of their decisions will be drawn.
+- Initial loads are sampled at the same share, because the matcher meets real data there first.
+- At most 200 automated samples are open per entity at once. Draws past the cap are skipped and counted, in landing order. Stewards' samples arrive at the pace of people, and have no cap.
+
+### What a blind review shows
+
+- The record, and up to three golden records in master ID order, with no score. First come the golden records the first decision named, then the best others in any band, so a missed match can be caught.
+- The golden record that holds the record shows only what its other members give it. Its column never agrees because the record itself won a value.
+- The first decision, who made it, the suggestion and every score, band, waterfall and impact line stay hidden, and so does every link to the record.
+- "Belongs to" a golden record and "Belongs to none of these" carry equal weight, and neither is filled.
+- The steward who made the first decision cannot answer, claim, snooze or escalate its sample.
+
+### Agreement
+
+- An answer is compared with the first decision, never with where the record is now. A link or a create agrees when the answer names the survivor of its target, or "none of these" when that golden record was not shown.
+- "Not a match" agrees when the answer is not a golden record it declined. Keep apart agrees when the answer is that the two are not the same.
+- A disagreement opens a review of the first decision, saying what the first decision did and what the blind review answered. A steward keeps the first decision, or links an unlinked record to the answer. The steward who gave the blind answer may keep the first decision, but never links the record to their own answer.
+- A blind answer writes no match label, so it never binds the matcher ([decision 22](../decisions/22_labels-bind-the-matcher.md)).
+- A sample whose record is deleted before its review is voided, and counts nothing. So is a keep apart whose golden records were merged or retired since. A record deleted after its review closes the review its disagreement opened.
+- Agreement is counted per entity, origin, band and signature.
+
+### The breaker's two triggers
+
+- The agreement trigger reads an entity's latest 100 reviewed automatic links, first decided since the last restore. Creates, hint links and stewards' samples never trip it.
+- It trips once at least 20 are reviewed and the one-sided 95% upper bound on agreement, Wilson's, is below 95%. The [declared capacity](../5_technology/3_capacity-and-throughput.md#declared-capacity) gives the counts that trip it.
+- The volume trigger compares each clock hour's arrivals with the mean of the same hour over the previous 7 days, so a nightly batch meets its own hour. It trips above 5 times that mean and at least 1,000 arrivals, once arrivals were counted 7 days ago. Initial loads are not counted, so days of an initial load alone are no history.
+- A trip writes the demoted state and an audit change set by the quality breaker, with its reason, `agreement_low` or `volume_spike`, and its figures.
+
+### While the band is demoted
+
+- Nothing links or joins a new cluster automatically. Every automatic-band candidate becomes a review task with the reason `breaker_demoted`, naming the trip.
+- A distinct arrival still creates under its source's policy. An update, a deletion, a retired-ID routing and a hint link behave as before.
+- The commit refuses an automatic link while the band is demoted. It holds the band until it ends, so a trip waits for a commit in flight.
+- Two new records that would have formed one golden record wait for the restore, naming each other. "Not a match" is disabled for them, with the reason. Nobody can settle them before a restore, so they wait for a data owner instead of a service level, and never breach.
+- No code widens a band or changes a rule set to demote or restore one.
+
+### The restore
+
+- Only a data owner restores a band, on the command line: `mdm breaker restore --entity <entity> --reason <code>`. The code is `cause_fixed`, `false_alarm` or `load_expected`, so no free text reaches the audit.
+- On a shared store every person is a consumer until initiative 4 maps workspace groups to roles, so a restore is refused there until then.
+- A restore returns exactly the published bands. The agreement trigger then reads only samples first decided after it.
+- The volume trigger keeps its history after an agreement restore. After a volume trip restored for `load_expected`, it watches afresh for 7 days, so the load becomes its history. After any other volume restore, it rests for the rest of that hour.
+- Arrival's next run hands every record still waiting with `breaker_demoted` back to its queue, and closes its task. It leaves a task whose decision waits in the undo tray.
+
+### Where it shows
+
+- Quality samples have a view of their own, and stay out of the other views and the health figures. The view lists every open sample except those the viewer decided first. Its count turns red when one breaches its service level of 72 hours.
+- The inbox names each entity whose automatic linking is paused, and the decide pane says why a record waits.
+- `mdm breaker status` prints each entity's band, its agreement, its open, overdue and voided samples, and its arrivals this hour.
+- The share, the cap and the thresholds are settings, `MDM_SAMPLE_*` and `MDM_BREAKER_*`, until initiative 4's governance policy holds them. On a shared store the checkpoint cannot be switched off: arrival, the tray's flush and the workbench refuse to start with a share of 0, an agreement threshold below 50%, or no key.
 
 ## The workbench
 
@@ -245,6 +344,9 @@ flowchart LR
 - The relationships of a record are grouped by type and other end, naming every asserting source; the published table keeps one row per source assertion.
 - A failure is logged by its type only, and the error page shows no detail.
 - The workbench's actor, and what `mdm ui` answers, follow [authority and personas](#authority-and-personas) ([decision 21](../decisions/21_workbench-actor.md)).
+- A quality sample opens in blind mode, from the Quality samples view: its record and the golden records it might belong to, with no first decision, suggestion or score ([the matcher's checkpoint](#the-matchers-checkpoint)).
+- A review a blind answer opened shows the first decision and the answer, with their explanations. It offers "Keep the first decision", and a link to the answer for an unlinked record.
+- While the quality breaker has paused an entity's automatic linking, the inbox says so in one line, and the decide pane explains it. No control on screen restores a band.
 
 ## Adding an entity
 

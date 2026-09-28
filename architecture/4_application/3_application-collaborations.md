@@ -4,7 +4,7 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Application layer: Application Collaboration and Application Interaction, drawn as sequences.
 
-**Status:** ● Validated, 2026-09-28.
+**Status:** ◐ Draft catalogue — written for story 3.2 of initiative 3, Steward workbench; not yet validated.
 
 Three sequences carry every change the hub publishes: an arrival, a steward's decision, and the commit each ends in. The record actions of [component [`ACMP8`] Record lifecycle](./2_application-components.md#application-components) end in the same commit.
 
@@ -58,6 +58,7 @@ What can fail, and what happens:
 9. The runs are further apart than the gap timeout, and a row committed late in between. The next run probes the gap before it can declare it lost, so the row is read at once.
 10. The database dropped the pool's idle connections, through an idle timeout, a scale to zero or a failover. The pool checks each connection before it hands it out and replaces a dead one, so the lease and the transactions start on live connections.
 11. A steward releases or approves a record while intake is moving its state. Intake never writes the hold or the approved values of a record it has already stored, so the steward's commit stands.
+12. The quality breaker demotes the automatic band while a page is committing. The commit holds the band until it ends, so the next chunk refuses its automatic links with `breaker_demoted`. Arrival plans the page again, and those records become review tasks.
 
 ## Commit
 
@@ -130,7 +131,7 @@ sequenceDiagram
   end
 ```
 
-The inbox and the decide pane are [application service [`ASVC8`] Steward work](./1_application-services.md#application-services), and the tray is [application service [`ASVC9`] Undo tray](./1_application-services.md#application-services), performed by a steward ([business process [`BPROC3`] Decide a steward task](../2_business/3_business-processes.md#business-processes)). Locally the workbench's own process runs the flush every two seconds; on the platform a job runs `mdm tray flush` ([decision 19](../decisions/19_undo-tray.md)).
+The inbox and the decide pane are [application service [`ASVC8`] Steward work](./1_application-services.md#application-services), and the tray is [application service [`ASVC9`] Undo tray](./1_application-services.md#application-services), performed by a steward ([business process [`BPROC3`] Decide a steward task](../2_business/3_business-processes.md#business-processes)). Locally the workbench's own process runs the flush every two seconds; on the platform a job runs `mdm tray flush` ([decision 19](../decisions/19_undo-tray.md)). A quality sample is decided blind, and its answer commits through the tray like any decision. The same transaction settles the sample with its agreement, and the quality breaker then checks the agreement again.
 
 What can fail, and what happens:
 
@@ -145,3 +146,4 @@ What can fail, and what happens:
 9. A declined record's source holds new records. Arrival opens a held task instead of creating one. A record with another candidate in the review band opens its review task again, under its old ID. A task opened again starts afresh, with a new due time and no claim, snooze or escalation.
 10. Arrival is running when a declined record is queued again. The record waits in the queue for that run, and the decision stays committed.
 11. A steward rejects a held update. The golden record keeps its value, but the source still asserts the new one, so its next event is held again. A source defect goes to the coordinating steward with E, "A source defect".
+12. A quality sample's record is deleted at its source while a blind answer waits. Arrival voids the sample and closes its task, and the answer settles failed with `sample_void`.

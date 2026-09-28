@@ -14,13 +14,16 @@ history in a vault, and names the authority behind every commit. The same test
 suite runs on both engines locally and in continuous integration (CI), on
 invented data only.
 
-The steward workbench, initiative 3, has begun: locally, a steward decides
-tasks one at a time in an inbox, undoes a decision within its window, and
-reads any record with its provenance, masked by role. Its later stories add
-the automated matcher's checkpoint, decisions by pattern, routing, search,
-record actions with maker and checker, and authoring
-([scope](./architecture/scope/3_steward-workbench.md)). Nothing is deployed
-yet: tuning, governance and the deployment to Databricks follow in
+The steward workbench, initiative 3, is under way. Locally, a steward
+decides tasks one at a time in an inbox, undoes a decision within its window,
+and reads any record with its provenance, masked by role. The automated
+matcher's checkpoint is built too: blind review samples the matcher's and the
+stewards' decisions, and the quality breaker demotes an entity's automatic
+band when agreement falls or arrivals spike. The matcher may therefore meet
+real data once initiative 4 deploys it. The later stories add decisions by
+pattern, routing, search, record actions with maker and checker, and
+authoring ([scope](./architecture/scope/3_steward-workbench.md)). Nothing is
+deployed yet: tuning, governance and the deployment to Databricks follow in
 initiative 4. Release 1 proves Person and Organisation end to end. The
 [roadmap](./architecture/6_transition/2_sequence.md) orders the rest.
 
@@ -58,6 +61,17 @@ The persona switcher in the header works on a local store only. Press `?` for
 the keys. `mdm ui` holds the DuckDB file while it runs, so stop it before other
 `mdm` commands on the same store.
 
+A share of decisions comes back as quality samples, in a view of their own,
+and a steward decides each one blind: the first decision, its suggestion and
+its score stay hidden. When agreement falls or arrivals spike, the quality
+breaker pauses automatic linking for that entity, and the inbox says so. Only
+a data owner restores it, on the command line:
+
+```bash
+uv run mdm breaker status                                        # each entity's band, agreement, samples and arrivals
+uv run mdm breaker restore --entity person --reason cause_fixed  # a data owner, after the cause is fixed
+```
+
 The screenshots show the invented demo world, taken with the stub assistant
 and a ten-minute undo window, so the countdown holds still while it is
 captured.
@@ -80,11 +94,19 @@ _The tray in the dark colour scheme._
 
 ![A golden record with the Why open under one of its values](docs/screenshots/record-light.png)
 
-_A golden record with the Why open under one of its values: the survivorship sentence, the runners-up and the rule version._
+_A golden record, each value followed by the source, rule and age behind it, with the Why open under one of them: the survivorship sentence, the runners-up and the rule version._
 
 ![The same golden record and its Why in the dark colour scheme](docs/screenshots/record-dark.png)
 
 _The same record in the dark colour scheme._
+
+![A quality sample open in blind mode, with the record and the golden records it might belong to](docs/screenshots/sample-light.png)
+
+_A quality sample decided blind: the record and the golden records it might belong to, with the steward's first pick made and nothing staged; no score, suggestion or first decision is shown._
+
+![The same quality sample in the dark colour scheme](docs/screenshots/sample-dark.png)
+
+_The same quality sample in the dark colour scheme._
 
 ## What it does
 
@@ -96,15 +118,16 @@ _The same record in the dark colour scheme._
 - Gives stewards an inbox, decided one task at a time with the explanation
   beside it, and an undo tray, so a mistake is undone before listening
   systems see it.
+- Samples a share of the automated matcher's and the stewards' decisions for
+  blind review, and demotes an entity's automatic band when agreement falls or
+  arrivals spike, until a data owner restores it.
 - Masks personal values by role on every screen, and logs every reveal with
   its reason.
 - Gives the same answers on DuckDB and on Postgres.
 
 ## What it will do
 
-- Let stewards decide alike tasks together after a forced sample, with a
-  checkpoint that samples the automated matcher's decisions and can demote
-  its automatic band.
+- Let stewards decide alike tasks together after a forced sample.
 - Put search, record actions with maker and checker, and record authoring on
   screen.
 - Run on the platform, on Lakebase, with the same answers as locally.

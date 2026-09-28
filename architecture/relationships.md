@@ -130,8 +130,9 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACT6` | `BPROC1` | assigned to | It performs the process |
 | `ACT7` | `ROLE3` | assigned to | Pending — future initiative (initiative 3): the work router, story 3.4 |
 | `ACT7` | `ROLE3` | escalates to | Pending — future initiative (initiative 3): breach escalation, story 3.4 |
-| `ACT8` | `ROLE3` | assigned to | Pending — future initiative (initiative 3): the matcher's checkpoint, story 3.2 |
-| `ACT8` | `ROLE1` | escalates to | Pending — future initiative (initiative 3): the matcher's checkpoint, story 3.2 |
+| `ACT8` | `ROLE3` | assigned to | |
+| `ACT8` | `ROLE1` | escalates to | |
+| `ACT8` | `BPROC1` | assigned to | It checks agreement and arrivals, and demotes the automatic band |
 | `ACT9` | `ROLE2` | serves | Pending — future initiative (initiative 5) |
 | `ACT9` | `ROLE4` | serves | Pending — future initiative (initiative 5) |
 | `ACT9` | `ROLE2` | escalates to | Pending — future initiative (initiative 5) |
@@ -193,7 +194,7 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `BPROC1` | `VS1.2` | realizes | |
 | `BPROC1` | `VS1.3` | realizes | What the published rules settle; stewards decide the rest |
 | `BPROC1` | `BOBJ2` | accesses | |
-| `BPROC1` | `BOBJ8` | accesses | Writes the tasks the rules cannot settle |
+| `BPROC1` | `BOBJ8` | accesses | Writes the tasks the rules cannot settle, and the quality samples it draws |
 | `BPROC2` | `BSVC7` | realizes | |
 | `BPROC2` | `VS1.4` | realizes | |
 | `BPROC2` | `BOBJ3` | accesses | |
@@ -275,15 +276,23 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `DOBJ2.3` | `DOBJ3.3` | flows to | Validation rules |
 | `DOBJ2.3` | `DOBJ3.4` | flows to | Records to settle, queued with the state |
 | `DOBJ3.1` | `DOBJ3.2` | flows to | Review band, holds, possible duplicates |
+| `DOBJ3.1` | `DOBJ3.7` | flows to | A share of the automated links and creates, drawn in the transaction that settles them |
 | `DOBJ3.1` | `DOBJ5.1` | flows to | Automatic change sets |
 | `DOBJ3.2` | `BOBJ8` | realizes | The tasks arrival writes, with due times, claims, snoozes and escalations; explained ranks follow in story 3.4 |
 | `DOBJ3.2` | `DOBJ3.5` | flows to | A steward's decision, staged |
+| `DOBJ3.4` | `DOBJ3.8` | flows to | Arrivals per entity and hour |
 | `DOBJ3.5` | `BOBJ9` | realizes | A change set while it waits out its undo window |
 | `DOBJ3.5` | `DOBJ3.4` | flows to | A declined record, queued again |
 | `DOBJ3.5` | `DOBJ3.6` | flows to | The match decision, in the same transaction |
+| `DOBJ3.5` | `DOBJ3.7` | flows to | A blind answer, and a sampled steward decision, in the same transaction |
 | `DOBJ3.5` | `DOBJ5.1` | flows to | After the deadline, through the commit path; audited even when nothing is published |
 | `DOBJ3.6` | `DOBJ3.1` | flows to | A declined golden record's members leave the record's candidates |
 | `DOBJ3.6` | `RES5` | associated with | The hub's copy, kept as stewards decide |
+| `DOBJ3.7` | `BOBJ8` | realizes | A quality sample, and the task that asks for it |
+| `DOBJ3.7` | `DOBJ3.2` | flows to | A sample's task; a review when it disagrees |
+| `DOBJ3.7` | `DOBJ3.8` | flows to | Agreement of the latest automated samples |
+| `DOBJ3.8` | `DOBJ3.2` | flows to | While demoted, automatic-band arrivals become review tasks; handed back after a restore |
+| `DOBJ3.8` | `DOBJ5.1` | flows to | Each trip and restore, audited |
 | `DOBJ4.1` | `BOBJ3` | realizes | |
 | `DOBJ4.1` | `DOBJ5.2` | flows to | Before and after, in the commit transaction |
 | `DOBJ4.2` | `BOBJ4` | realizes | |
@@ -309,7 +318,8 @@ under the source's document. Nothing above the first `##` names an identifier.
 
 | From | To | Relationship | Notes |
 | ---- | -- | ------------ | ----- |
-| `ASVC1` | `ASVC9` | serves | Settles a declined record again |
+| `ASVC1` | `ASVC8` | serves | The quality breaker's pause, named in the inbox and the decide pane |
+| `ASVC1` | `ASVC9` | serves | Settles a declined record again; checks agreement after a blind answer |
 | `ASVC1` | `BSVC2` | realizes | |
 | `ASVC1` | `BSVC5` | realizes | Bulk loading of source history |
 | `ASVC1` | `CAP6.1` | realizes | Quality rules on arrival |
@@ -365,9 +375,10 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACMP4` | `ACMP7` | serves | |
 | `ACMP4` | `ACMP8` | serves | Survivorship recomputed after a lifecycle action |
 | `ACMP4` | `ACMP11` | serves | Check digits for invented registered IDs |
+| `ACMP4` | `ACMP15` | serves | The sample draw and the agreement bound |
 | `ACMP4` | `ASVC2` | realizes | |
 | `ACMP5` | `ACMP1` | serves | |
-| `ACMP5` | `ACMP15` | serves | Candidates, explanations, and arrival for a declined record |
+| `ACMP5` | `ACMP15` | serves | Candidates and explanations, a blind review's golden records among them, and arrival for a declined record |
 | `ACMP5` | `ASVC1` | realizes | |
 | `ACMP5` | `ASVC2` | realizes | |
 | `ACMP6` | `ACMP1` | serves | |
@@ -383,7 +394,7 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACMP7` | `ACMP16` | serves | Published models |
 | `ACMP7` | `ASVC3` | realizes | |
 | `ACMP8` | `ACMP1` | serves | |
-| `ACMP8` | `ACMP15` | serves | Plans and commits a link and a held update's approval |
+| `ACMP8` | `ACMP15` | serves | Plans and commits a link and a held update's approval; commits a blind answer; a golden record's values without the sampled record |
 | `ACMP8` | `ASVC5` | realizes | |
 | `ACMP9` | `ACMP1` | serves | |
 | `ACMP9` | `ACMP5` | serves | The vault for arriving personal values |
@@ -410,10 +421,12 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACMP14` | `ACMP12` | serves | The tray's labels |
 | `ACMP14` | `ACMP15` | serves | |
 | `ACMP14` | `ACMP16` | serves | |
-| `ACMP15` | `ACMP1` | serves | `mdm tray flush` |
+| `ACMP15` | `ACMP1` | serves | `mdm tray flush`, `mdm breaker` |
+| `ACMP15` | `ACMP5` | serves | The breaker's state and the sample draws |
 | `ACMP15` | `ACMP12` | serves | |
 | `ACMP15` | `ASVC8` | realizes | |
 | `ACMP15` | `ASVC9` | realizes | |
+| `ACMP15` | `ASVC1` | realizes | The draw of quality samples and the quality breaker, with `mdm breaker` |
 | `ACMP16` | `ACMP12` | serves | |
 | `ACMP16` | `ASVC10` | realizes | |
 

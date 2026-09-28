@@ -16,13 +16,14 @@ _[← Scope document](../3_steward-workbench.md)_
 
 ## Acceptance criteria
 
-- [ ] A share of automated links and creates, and of committed steward decisions, opens a `quality_sample` task. The share is a setting, 2% by default (Blueprint §3; adopted when built), chosen by a hash of the record so both engines agree.
-- [ ] A quality sample is decided in the decide pane without showing the first decision or the suggestion.
-- [ ] Agreement is kept per entity, signature and band. A disagreement opens a review of the original decision.
-- [ ] The quality breaker demotes an entity's automatic band when agreement falls below a threshold, or when arrivals per hour exceed a multiple of the trailing mean. It never widens a band, and each trip is logged with its reason.
-- [ ] While the band is demoted, arrivals in the automatic band become review tasks naming the breaker. Only a data owner restores the band, with `mdm breaker restore`, on record.
-- [ ] The thresholds are settings until initiative 4's governance policy holds them.
-- [ ] Tests run on both engines. The checkpoint in the automated matcher's profile reads as existing, and gap [`GAP3`] narrows.
+- [x] A share of automated links and creates, and of committed steward decisions, opens a `quality_sample` task. The share is a setting, 2% by default (Blueprint §3; adopted when built), chosen by a hash of the record so both engines agree.
+  Sampled (adopted): the matcher's links and creates, and a steward's link, keep apart, and "Not a match" that declined a golden record; approving or rejecting a held update and keeping an orphan are not sampled, because blind review cannot ask them again without showing the answer.
+- [x] A quality sample is decided in the decide pane without showing the first decision or the suggestion.
+- [x] Agreement is kept per entity, signature and band. A disagreement opens a review of the original decision.
+- [x] The quality breaker demotes an entity's automatic band when agreement falls below a threshold, or when arrivals per hour exceed a multiple of the trailing mean. It never widens a band, and each trip is logged with its reason.
+- [x] While the band is demoted, arrivals in the automatic band become review tasks naming the breaker. Only a data owner restores the band, with `mdm breaker restore`, on record.
+- [x] The thresholds are settings until initiative 4's governance policy holds them.
+- [x] Tests run on both engines. The checkpoint in the automated matcher's profile reads as existing, and gap [`GAP3`] narrows.
 
 ## Definition of done
 
@@ -42,3 +43,4 @@ python3 scripts/scan_public_safe.py --root . --terms .public-safe-terms.txt
 
 - Withdrawing bulk rights from a signature — [story 3.3](./3_signature-batches.md)
 - Agreement figures on the operations board — initiative 4
+- Keeping the blind reviewer from looking the record up elsewhere: the decide pane offers no way to its placement, and the reviewer is trusted not to search for it
