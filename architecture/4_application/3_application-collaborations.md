@@ -4,9 +4,9 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Application layer: Application Collaboration and Application Interaction, drawn as sequences.
 
-**Status:** ● Validated, 2026-09-28.
+**Status:** ◐ Draft catalogue — written for story 3.3 of initiative 3, Steward workbench; not yet validated.
 
-Three sequences carry every change the hub publishes: an arrival, a steward's decision, and the commit each ends in. The record actions of [component [`ACMP8`] Record lifecycle](./2_application-components.md#application-components) end in the same commit.
+Four sequences carry every change the hub publishes: an arrival, a steward's decision, a batch of alike reviews, and the commit each ends in. The record actions of [component [`ACMP8`] Record lifecycle](./2_application-components.md#application-components) end in the same commit.
 
 ## Arrival
 
@@ -147,3 +147,59 @@ What can fail, and what happens:
 10. Arrival is running when a declined record is queued again. The record waits in the queue for that run, and the decision stays committed.
 11. A steward rejects a held update. The golden record keeps its value, but the source still asserts the new one, so its next event is held again. A source defect goes to the coordinating steward with E, "A source defect".
 12. A quality sample's record is deleted at its source while a blind answer waits. Arrival voids the sample and closes its task, and the answer settles failed with `sample_void`.
+
+## Deciding a batch
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant ui as ⊞ Steward workbench [ACMP12]
+  participant stw as ⊞ Stewardship services [ACMP15]
+  participant eng as ⊞ Matching engine [ACMP4]
+  participant lif as ⊞ Record lifecycle [ACMP8]
+  participant com as ⊞ Commit service [ACMP6]
+  participant sto as ⊞ SQL store [ACMP3]
+
+  ui->>stw: open Alike reviews
+  stw->>sto: read the capped groups of the open reviews due soonest
+  ui->>stw: draw a forced sample from one group
+  stw->>stw: check each review live, with the decide pane's search and choice of candidate
+  stw->>eng: size, stratify and draw the forced sample
+  ui->>stw: decide the sample one by one in the inbox, through the tray, as in Deciding a task
+  opt a sample decision disagrees
+    ui->>stw: the steward who decides it names the comparison that misled, with the decision
+    stw->>sto: after it commits, one transaction splits off the reviews that share the record's value, and logs each record read on a personal comparison
+  end
+  ui->>stw: show every change
+  stw->>stw: leave out a review a cannot-link rule keeps apart from its target or an earlier review of the same target
+  stw->>lif: plan each target's golden values once, with all its joiners
+  opt above 250 decisions
+    ui->>stw: a second steward confirms, after seeing every row as prepared
+  end
+  stw->>sto: one transaction stages the batch and locks every review
+  loop one chunk a flush pass
+    stw->>sto: check each review of the chunk again, with keyed reads
+    stw->>lif: plan the chunk's links, one golden update per target
+    stw->>com: commit the chunk under the maker's role, with the second steward
+    com->>sto: one transaction holds the batch and its bulk rights, publishes the chunk, closes its tasks, writes its labels and samples, releases its locks, and records the chunk
+  end
+  opt Stop, or a withdrawal of bulk rights
+    stw->>sto: the next chunk's transaction refuses, and the batch ends
+  end
+```
+
+Drawing, checking and staging a batch are [application service [`ASVC8`] Steward work](./1_application-services.md#application-services). Its commit is [application service [`ASVC9`] Undo tray](./1_application-services.md#application-services), within [business process [`BPROC3`] Decide a steward task](../2_business/3_business-processes.md#business-processes). The batch is one staged decision, and the flush commits one chunk of it a pass, after the single decisions due ([decision 23](../decisions/23_batches-in-the-undo-tray.md)). Other stewards' decisions flush between its chunks. Every transaction on a batch takes the batch row first. Each chunk is its own change set, with its own commit version and an ID formed from the batch ID.
+
+What can fail, and what happens:
+
+1. Another steward decided, claimed or staged a review first. Staging leaves that review out with its reason, so a batch never commits over another steward's claim.
+2. A record, task or target moved before its chunk, or a cannot-link rule now keeps a record apart from its target. That review fails alone, its lock is released, and its task returns to the queue.
+3. Every remaining review fails after the first chunk. The batch ends committed with what it linked, and counts the reviews that failed alone.
+4. A chunk conflicts inside its transaction. It rolls back as a whole, and is planned again once in the pass.
+5. The process crashes between chunks. The next pass resumes at the next chunk, and no chunk commits twice.
+6. A steward presses Undo after the first chunk. The first chunk settled the entry, so it is too late. An Undo and a chunk that meet wait for each other on the batch, never in a deadlock.
+7. A steward stops a committing batch. It ends before its next chunk, whatever the throttle, and its uncommitted reviews return to the queue.
+8. The quality breaker withdraws the pattern's bulk rights. A committing batch of that pattern stops before its next chunk, whatever the throttle.
+9. A second steward never confirms. The batch waits outside the tray, and holds no lock.
+10. A persona's batch meets a shared store. It never commits, since personas act only on a local store.
+11. A chunk fails in three passes in a row. The batch stops with `chunk_failed`. A chunk that commits starts the count again.

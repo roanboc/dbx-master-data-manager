@@ -12,8 +12,8 @@ The software that turns landing rows into published golden records, and the two 
 | - | -------- | -------- | ------------------- |
 | 1 | [1_application-services.md](./1_application-services.md) | Application Services | What does the software offer the business layer? |
 | 2 | [2_application-components.md](./2_application-components.md) | Application Components, each named by its source path | Which components provide those services, and where is each in the code? |
-| 3 | [3_application-collaborations.md](./3_application-collaborations.md) | The arrival, commit and decision sequences | How do the components work together, and what happens when a step fails? |
-| 4 | [4_solution-design.md](./4_solution-design.md) | The layers, the store on two engines, matching, authority and personas, and the workbench | How is the code structured, and why? |
+| 3 | [3_application-collaborations.md](./3_application-collaborations.md) | The arrival, commit, decision and batch sequences | How do the components work together, and what happens when a step fails? |
+| 4 | [4_solution-design.md](./4_solution-design.md) | The layers, the store on two engines, matching, authority and personas, the matcher's checkpoint, signature batches and the workbench | How is the code structured, and why? |
 | 5 | [5_interface-contracts.md](./5_interface-contracts.md) | The landing and listener interfaces | What exactly does each interface promise the integration platform and the change notifier? |
 
 ## Metamodel
