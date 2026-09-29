@@ -3,7 +3,7 @@
 _[← Scope index](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Implementation & Migration.
-**Delivered as:** branch `claude/master-data-management-app-mhba1t`; story 3.1 in [pull request #3](https://github.com/roanboc/dbx-master-data-manager/pull/3); story 3.2 in [pull request #4](https://github.com/roanboc/dbx-master-data-manager/pull/4); stories 3.3 to 3.7 in later pull requests, each on its own.
+**Delivered as:** branch `claude/master-data-management-app-mhba1t`; story 3.1 in [pull request #3](https://github.com/roanboc/dbx-master-data-manager/pull/3); story 3.2 in [pull request #4](https://github.com/roanboc/dbx-master-data-manager/pull/4); story 3.3 in [pull request #5](https://github.com/roanboc/dbx-master-data-manager/pull/5); stories 3.4 to 3.7 in later pull requests, each on its own.
 
 Initiative 2, Foundations, merged on 27 September 2026 as
 [pull request #2](https://github.com/roanboc/dbx-master-data-manager/pull/2).

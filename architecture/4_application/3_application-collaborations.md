@@ -4,7 +4,7 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Application layer: Application Collaboration and Application Interaction, drawn as sequences.
 
-**Status:** ◐ Draft catalogue — written for story 3.3 of initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-29.
 
 Four sequences carry every change the hub publishes: an arrival, a steward's decision, a batch of alike reviews, and the commit each ends in. The record actions of [component [`ACMP8`] Record lifecycle](./2_application-components.md#application-components) end in the same commit.
 

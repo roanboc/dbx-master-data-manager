@@ -4,7 +4,7 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Layered: the application components, the store and the engines behind them.
 
-**Status:** ◐ Draft catalogue — written for story 3.3 of initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-29.
 
 The hub is one Python package, `mdm`, under `src/mdm/`. It runs the same code locally on DuckDB and on Postgres, and on Lakebase once deployed.
 

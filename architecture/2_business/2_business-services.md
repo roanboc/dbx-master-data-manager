@@ -4,7 +4,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Business layer: Business Service.
 
-**Status:** ◐ Draft catalogue — written for story 3.3 of initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-29.
 
 ## Business services
 

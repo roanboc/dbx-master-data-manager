@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-29
 **Touches:** [data object [`DOBJ3.9`] Signature batch](../3_information/2_data-objects.md#resolution-work)
 

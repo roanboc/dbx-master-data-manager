@@ -2,7 +2,7 @@
 
 _[← Decisions index](./README.md)_
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-29
 **Touches:** [authority and personas](../4_application/4_solution-design.md#authority-and-personas)
 

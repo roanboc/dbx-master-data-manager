@@ -4,7 +4,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Business layer: Business Rule, with the glossary of the domain.
 
-**Status:** ◐ Draft catalogue — written for story 3.3 of initiative 3, Steward workbench; not yet validated.
+**Status:** ● Validated, 2026-09-29.
 
 ## Glossary
 
@@ -19,7 +19,7 @@ _[← Business layer](./README.md) · [Model home](../README.md)_
 | Authority | What allowed a commit: a row of the approval matrix, a source's policy, a checker, or a published rule version | Blueprint §5.5 | |
 | Automation grant | A data owner's time-limited permission, from Release 2, to widen the automatic band for one pattern, with a cap, a sample and a ledger | Blueprint §4 | |
 | Band | The range a match score falls in: automatic, review or distinct | Blueprint §5.2; proposed by DMBOK2 Revised ch. 10 (thresholds) | |
-| Batch | Alike review tasks of one pattern, decided together after a unanimous forced sample, staged as one decision and committed in chunks under one batch ID; after a disagreement, the reviews whose record shares the disagreeing record's value on the comparison the deciding steward names leave it, to be decided one by one | Blueprint §3 flow (c); adopted — a batch only links; [answer of 2026-09-28](../reference/2026-09-28-forced-sample-split-answer.md#the-answer), for what a disagreement splits off; adopted — the steward who decides the disagreeing sample names the comparison with that decision; proposed — at most 1,000 reviews a batch | The largest batch is proposed |
+| Batch | Alike review tasks of one pattern, decided together after a unanimous forced sample, staged as one decision and committed in chunks under one batch ID; after a disagreement, the reviews whose record shares the disagreeing record's value on the comparison the deciding steward names leave it, to be decided one by one | Blueprint §3 flow (c); adopted — a batch only links; [answer of 2026-09-28](../reference/2026-09-28-forced-sample-split-answer.md#the-answer), for what a disagreement splits off; adopted — the steward who decides the disagreeing sample names the comparison with that decision; proposed — at most 1,000 reviews a batch | |
 | Blind review | A steward re-deciding a sample of committed decisions without seeing the first decision | Blueprint §3 | |
 | Blocking | Finding candidate pairs through stored keys, so not every pair is compared | Blueprint §5.2 | |
 | Bootstrap authority | The flagged authority under which administrator changes commit until a second administrator exists | Blueprint §5.5 | |
