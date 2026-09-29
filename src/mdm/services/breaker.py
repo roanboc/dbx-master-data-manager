@@ -9,6 +9,15 @@ the automatic band would have linked into a review (`breaker_demoted`), and the 
 link. A data owner restores the band with `mdm breaker restore` and a reason code; arrival then hands the
 waiting records back.
 
+A signature's bulk rights (story 3.3, reading 14) live beside the automatic band, one row per entity and
+signature under a band `bulk:<16 hex>`. Only blind review of that signature's batch samples withdraws them:
+after a blind answer on a batch sample commits, `check_signature` reads the latest `bulk_window` reviewed batch
+samples of the signature first decided since its last restore, and withdraws the rights when at least
+`bulk_min_samples` are in and the one-sided 95% upper bound on their agreement is below `bulk_agreement`. A
+volume spike never touches them, and an automatic-band demotion leaves them alone (decision 3). Only a data
+owner restores them, on the command line, and only samples decided later count. Every read here is keyed on
+the entity and the band, so an entity's many bulk rows never slow the automatic band's reads.
+
 The breaker only reduces automation: no method here sets a band, a threshold or a rule set, and nothing but a
 restore lifts a demotion. Its thresholds are settings until the governance policy of initiative 4 holds them.
 """
@@ -28,9 +37,19 @@ from mdm.models.authority import QUALITY_BREAKER, Actor, Authority
 from mdm.models.canonical import iso, utcnow
 from mdm.models.changes import new_change_set
 from mdm.models.errors import Conflict, Forbidden, NotFound, PlatformRefused
-from mdm.models.quality import AUTO_BAND, RESTORE_REASONS, BreakerState, BreakerStatus
+from mdm.models.quality import (
+    AUTO_BAND,
+    BULK_BAND_RE,
+    BULK_PREFIX,
+    BULK_RESTORE_REASONS,
+    RESTORE_REASONS,
+    BreakerState,
+    BreakerStatus,
+    BulkStatus,
+    bulk_band,
+)
 from mdm.models.safety import safe_detail, safe_message
-from mdm.models.workbench import BreakerView, TaskQuery
+from mdm.models.workbench import BreakerView, BulkRightView, TaskQuery
 from mdm.services.authority import require
 from mdm.services.registry import ModelRegistry
 from mdm.services.support import token
@@ -39,6 +58,10 @@ log = logging.getLogger("mdm.breaker")
 
 #: the reason each trigger's audit change set carries
 TRIP_REASONS: Mapping[str, str] = {"agreement": "agreement_low", "volume": "volume_spike"}
+#: the reason a withdrawal of a signature's bulk rights carries
+BULK_TRIP_REASON = "bulk_agreement_low"
+#: the figures the workbench may show of a withdrawal: safe numbers only
+BULK_FIGURES = ("agreed", "reviewed", "threshold", "window")
 #: the figures the workbench may show of each trigger: safe numbers only
 VIEW_FIGURES: Mapping[str, tuple[str, ...]] = {
     "agreement": ("agreed", "reviewed", "threshold"),
@@ -70,8 +93,110 @@ class BreakerService:
     # ------------------------------------------------------------------ reads
 
     def state(self, entity: str) -> BreakerState | None:
-        """The entity's automatic band as stored; None when no row was written yet (a normal band)."""
-        return self.store.breaker_states([entity]).get((entity, AUTO_BAND))
+        """The entity's automatic band as stored; None when no row was written yet (a normal band). One keyed
+        read of the automatic band's row, never the entity's bulk rows."""
+        return self.store.breaker_state(entity, AUTO_BAND)
+
+    # ------------------------------------------------------------------ a signature's bulk rights (story 3.3)
+
+    def bulk(self, entity: str, signature: str) -> BreakerState | None:
+        """The signature's bulk-rights row as stored; None when none was written yet (the rights are held)."""
+        if not signature:
+            return None
+        return self.store.breaker_state(entity, bulk_band(entity, signature))
+
+    def bulk_withdrawn(self, entity: str, signature: str) -> BulkRightView | None:
+        """What the workbench says of a signature whose bulk rights are withdrawn; None while they are held."""
+        found = self.bulk(entity, signature)
+        return self._bulk_view(found) if found is not None and found.demoted else None
+
+    @staticmethod
+    def _bulk_view(found: BreakerState) -> BulkRightView:
+        figures = {k: found.figures[k] for k in BULK_FIGURES if k in found.figures}
+        return BulkRightView(
+            entity=found.entity,
+            key=found.band,
+            since=found.tripped_at or found.updated_at,
+            figures=safe_detail(**figures),
+        )
+
+    def bulk_agreement(self, entity: str, signature: str) -> tuple[int, int]:
+        """(agreed, reviewed) of the latest `bulk_window` reviewed batch samples of the signature, first decided
+        since its last restore."""
+        found = self.bulk(entity, signature)
+        after = found.restored_at if found is not None else None
+        rows = self.store.recent_reviews_of_signature(
+            entity, "batch", signature, after, self.settings.bulk_window
+        )
+        return sum(1 for status, _, _ in rows if status == "agreed"), len(rows)
+
+    def check_signature(self, entity: str, signature: str | None) -> BreakerState | None:
+        """After a blind answer on a batch sample commits: withdraws the signature's bulk rights when at least
+        `bulk_min_samples` of its latest `bulk_window` reviewed batch samples are in and the upper bound on
+        their agreement is below `bulk_agreement` (reading 14). Returns the withdrawn state when it withdrew
+        them now. Steward and automated samples of the signature never count: they measure other decisions."""
+        if not signature:
+            return None
+        band = bulk_band(entity, signature)
+        found = self.store.breaker_state(entity, band)
+        if found is not None and found.demoted:
+            return None
+        agreed, reviewed = self.bulk_agreement(entity, signature)
+        threshold = self.settings.bulk_agreement
+        if reviewed < self.settings.bulk_min_samples or not below(
+            agreed, reviewed, threshold, capacity.BREAKER_Z
+        ):
+            return None
+        figures = {
+            "agreed": agreed,
+            "reviewed": reviewed,
+            "threshold": threshold,
+            "window": self.settings.bulk_window,
+            "bound": round(agreement_upper(agreed, reviewed, capacity.BREAKER_Z), 3),
+        }
+        return self._trip(entity, "agreement", figures, band=band, signature=signature)
+
+    def _withdrawn_rows(self, entity: str) -> list[BreakerState]:
+        """One entity's withdrawn bulk rows, keyset-paged by band."""
+        out: list[BreakerState] = []
+        for page in capacity.pages(
+            lambda after, limit: self.store.withdrawn_bulk(entity, after, limit), key=lambda b: b.band
+        ):
+            out.extend(page)
+        return out
+
+    def withdrawn(self, entities: Sequence[str]) -> tuple[BulkRightView, ...]:
+        """Every signature whose bulk rights are withdrawn, by entity and key: paged per entity."""
+        return tuple(
+            self._bulk_view(found)
+            for entity in sorted(set(entities))
+            for found in self._withdrawn_rows(entity)
+        )
+
+    def demo_withdraw(
+        self, entity: str, group_key: str, *, figures: Mapping[str, Any] | None = None
+    ) -> BreakerState | None:
+        """Withdraws a signature group's bulk rights on a local store, as a trip would, marked `demo` in the
+        audit: the browser checks and the tests only. The signature is read from the group's first open
+        review. `PlatformRefused(demo_only)` on a shared store, `NotFound(unknown_group)` for a group with no
+        open review."""
+        if not self.settings.local_mode:
+            raise PlatformRefused("demo_only")
+        self._published(entity)
+        first = self.store.group_members(group_key, None, 1)
+        if not first or first[0].entity != entity or not first[0].signature:
+            raise NotFound("unknown_group", group=token(group_key))
+        signature = first[0].signature
+        shown = dict(figures or {"agreed": 3, "reviewed": 5, "threshold": self.settings.bulk_agreement})
+        shown.setdefault("window", self.settings.bulk_window)
+        return self._trip(
+            entity,
+            "agreement",
+            safe_detail(**shown),
+            demo=True,
+            band=bulk_band(entity, signature),
+            signature=signature,
+        )
 
     def demoted(self, entity: str) -> BreakerState | None:
         """The entity's automatic band when the breaker demoted it, else None: one keyed read."""
@@ -196,13 +321,23 @@ class BreakerService:
     # ------------------------------------------------------------------ trip and restore
 
     def _trip(
-        self, entity: str, trigger: str, figures: Mapping[str, Any], *, demo: bool = False
+        self,
+        entity: str,
+        trigger: str,
+        figures: Mapping[str, Any],
+        *,
+        demo: bool = False,
+        band: str = AUTO_BAND,
+        signature: str | None = None,
     ) -> BreakerState | None:
-        """Demotes the band and audits it in one transaction, as the quality breaker; None when it was demoted
-        already. Only the two checks (and the local demo) call it: no caller supplies a figure."""
+        """Demotes the band (the automatic band, or a signature's bulk rights) and audits it in one transaction,
+        as the quality breaker; None when it was demoted already. Only the checks (and the local demos) call
+        it: no caller supplies a figure. A withdrawal of bulk rights carries reason `bulk_agreement_low`, and
+        the band's key and the figures as evidence, never the signature."""
         require(QUALITY_BREAKER, "trip_breaker")
         now = self.clock()
-        evidence = safe_detail(band=AUTO_BAND, **figures, **({"demo": True} if demo else {}))
+        bulk = band.startswith(BULK_PREFIX)
+        evidence = safe_detail(band=band, **figures, **({"demo": True} if demo else {}))
         cs = new_change_set(
             entity,
             "breaker_trip",
@@ -210,18 +345,21 @@ class BreakerService:
             Authority("role", QUALITY_BREAKER.role),
             (),
             planning_version=self.store.last_commit_version(),
-            reason=TRIP_REASONS[trigger],
+            reason=BULK_TRIP_REASON if bulk else TRIP_REASONS[trigger],
             evidence=evidence,
         )
         with self.store.transaction():
-            self.store.ensure_breaker_rows([entity], now)
+            self.store.ensure_breaker_rows([entity], now, band, signature)
             if not self.store.trip_breaker(
-                entity, AUTO_BAND, trigger, safe_detail(**figures), now, cs.change_set_id
+                entity, band, trigger, safe_detail(**figures), now, cs.change_set_id
             ):
                 return None
             self.store.append_change_set(cs, None, 0)
-        log.warning(safe_message("breaker_tripped", entity=token(entity), trigger=trigger))
-        return self.state(entity)
+        if bulk:
+            log.warning(safe_message("bulk_withdrawn", entity=token(entity), band=band))
+        else:
+            log.warning(safe_message("breaker_tripped", entity=token(entity), trigger=trigger))
+        return self.store.breaker_state(entity, band)
 
     def demo_trip(
         self, entity: str, *, figures: Mapping[str, Any], trigger: str = "agreement"
@@ -241,14 +379,20 @@ class BreakerService:
         except NotFound:
             raise NotFound("unknown_entity", entity=token(entity)) from None
 
-    def restore(self, entity: str, *, actor: Actor, reason: str) -> BreakerState:
+    def restore(self, entity: str, *, actor: Actor, reason: str, bulk: str | None = None) -> BreakerState:
         """A data owner restores the demoted band with a reason code (`RESTORE_REASONS`): the state and an
         audit change set by that person in one transaction. The volume trigger keeps its history, except after
         a volume trip restored for an expected load, when it is watched afresh from now so the load becomes
         its history; after any other volume restore it rests for the rest of the hour. Nothing else changes:
         no rule set, no band. Arrival hands the records that waited back on its next run. `Forbidden` for
-        another role or a bad code, `NotFound(unknown_entity)`, `Conflict(not_demoted)`."""
+        another role or a bad code, `NotFound(unknown_entity)`, `Conflict(not_demoted)`.
+
+        With `bulk`, a signature's bulk rights (`bulk:<16 hex>`, else `Forbidden(bad_bulk_key)`) are restored
+        instead, for `cause_fixed` or `false_alarm` only (`load_expected` is `Forbidden(bad_restore_reason)`):
+        a `breaker_restore` change set naming the band and the trip, and only samples decided later count."""
         require(actor, "restore_breaker")
+        if bulk is not None:
+            return self._restore_bulk(entity, bulk, actor=actor, reason=reason)
         if reason not in RESTORE_REASONS:
             raise Forbidden("bad_restore_reason")
         self._published(entity)
@@ -281,6 +425,37 @@ class BreakerService:
             self.store.append_change_set(cs, None, 0)
         log.warning(safe_message("breaker_restored", entity=token(entity), reason=reason))
         restored = self.state(entity)
+        assert restored is not None
+        return restored
+
+    def _restore_bulk(self, entity: str, bulk: str, *, actor: Actor, reason: str) -> BreakerState:
+        if not BULK_BAND_RE.match(bulk):
+            raise Forbidden("bad_bulk_key")
+        if reason not in BULK_RESTORE_REASONS:
+            raise Forbidden("bad_restore_reason")
+        self._published(entity)
+        found = self.store.breaker_state(entity, bulk)
+        if found is None or not found.demoted:
+            raise Conflict([token(entity), bulk], code="not_demoted")
+        now = self.clock()
+        cs = new_change_set(
+            entity,
+            "breaker_restore",
+            actor,
+            Authority("role", actor.role),
+            (),
+            planning_version=self.store.last_commit_version(),
+            reason=reason,
+            evidence=safe_detail(band=bulk, trip_change_set=found.trip_change_set),
+        )
+        with self.store.transaction():
+            if not self.store.restore_breaker(
+                entity, bulk, actor.name, actor.role, reason, now, cs.change_set_id
+            ):
+                raise Conflict([token(entity), bulk], code="not_demoted")
+            self.store.append_change_set(cs, None, 0)
+        log.warning(safe_message("bulk_restored", entity=token(entity), band=bulk, reason=reason))
+        restored = self.store.breaker_state(entity, bulk)
         assert restored is not None
         return restored
 
@@ -335,6 +510,16 @@ class BreakerService:
                     hour=hour,
                     history_ready=ready,
                     cap_reached=automated_open >= self.settings.sample_open_cap,
+                    withdrawn=tuple(
+                        BulkStatus(
+                            entity=entity,
+                            key=row.band,
+                            signature=row.signature or "",
+                            since=row.tripped_at or row.updated_at,
+                            figures=dict(row.figures),
+                        )
+                        for row in self._withdrawn_rows(entity)
+                    ),
                 )
             )
         return out

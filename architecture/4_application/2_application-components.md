@@ -4,7 +4,7 @@ _[← Application layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Application layer: Application Component.
 
-**Status:** ◐ Draft catalogue — written for story 3.2 of initiative 3, Steward workbench; not yet validated.
+**Status:** ◐ Draft catalogue — written for story 3.3 of initiative 3, Steward workbench; not yet validated.
 
 ## Application components
 
@@ -59,6 +59,7 @@ flowchart TB
 
   acmp5 -->|serves| acmp15
   acmp15 -->|serves| acmp5
+  acmp6 -->|serves| acmp15
   acmp7 -->|serves| acmp15
   acmp8 -->|serves| acmp15
   acmp9 -->|serves| acmp15
@@ -104,17 +105,17 @@ Each edge points from the component that serves to the one it serves. The SQL st
 | `ACMP1` | **Entry points** — the `mdm` command line and the wiring every entry point shares | `src/mdm/cli.py`<br>`src/mdm/__main__.py`<br>`src/mdm/services/__init__.py`<br>`src/mdm/services/context.py` | Exists | [Blueprint](../reference/README.md#founding-material) §5.1 | |
 | `ACMP2` | **Domain model and settings** — dataclasses with no Structured Query Language (SQL) and no input or output, the settings read from `MDM_*` variables, the declared capacity and the package version | `src/mdm/models/`<br>`src/mdm/config.py`<br>`src/mdm/capacity.py`<br>`src/mdm/__init__.py` | Exists | Blueprint §5.1; [decision 14](../decisions/14_declared-capacity.md) | |
 | `ACMP3` | **SQL store** — every SQL statement, written once, over two engines; the data definition language (DDL); the write guard; the Lakebase credentials | `src/mdm/backend/` | Exists | [Decision 6](../decisions/6_one-sql-store-two-engines.md) | |
-| `ACMP4` | **Matching engine** — standardise, key, compare, estimate, score, explain, cluster, survive and check quality; draw quality samples and bound agreement; pure Python, with no input or output | `src/mdm/engine/` | Exists | [Decision 10](../decisions/10_explainable-scorer-and-weight-estimation.md) | |
+| `ACMP4` | **Matching engine** — standardise, key, compare, estimate, score, explain, cluster, survive and check quality; draw quality samples and bound agreement; size, stratify and draw a forced sample, split a batch, and pack its chunks; pure Python, with no input or output | `src/mdm/engine/`<br>`src/mdm/engine/batch.py`, for batches | Exists | [Decision 10](../decisions/10_explainable-scorer-and-weight-estimation.md) | |
 | `ACMP5` | **Arrival and matching services** — the landing reader, the source policy, arrival and the match test | `src/mdm/services/arrival.py`<br>`src/mdm/services/landing.py`<br>`src/mdm/services/policy.py`<br>`src/mdm/services/matching.py` | Exists | Blueprint §5.3 | |
-| `ACMP6` | **Commit service** — the only writer of the published tables, and the change-feed reader; it refuses an automatic-band link while the quality breaker has demoted the band | `src/mdm/services/commit.py`<br>`src/mdm/services/feed.py` | Exists | [Decision 8](../decisions/8_commit-order-lock-and-change-feed.md) | |
+| `ACMP6` | **Commit service** — the only writer of the published tables, and the change-feed reader; it refuses an automatic-band link while the quality breaker has demoted the band; it holds a batch and its pattern's bulk rights in each chunk's transaction, and records each chunk exactly once | `src/mdm/services/commit.py`<br>`src/mdm/services/feed.py` | Exists | [Decision 8](../decisions/8_commit-order-lock-and-change-feed.md) | |
 | `ACMP7` | **Model registry** — entity models, rule sets, code-list copies, weight estimation and profiling | `src/mdm/services/registry.py`<br>`src/mdm/services/codelists.py`<br>`src/mdm/services/estimation.py`<br>`src/mdm/services/profiling.py` | Exists | Blueprint §2 | |
-| `ACMP8` | **Record lifecycle** — link, detach, merge, unmerge, retire and reinstate | `src/mdm/services/lifecycle.py` | Exists | Blueprint §2 | |
-| `ACMP9` | **Authority and privacy** — actors, roles, personas, the authority check, masking, reveals and the vault | `src/mdm/services/authority.py`<br>`src/mdm/services/privacy.py` | Exists | [Decision 13](../decisions/13_authority-and-personas.md), [decision 12](../decisions/12_personal-value-vault.md) | |
+| `ACMP8` | **Record lifecycle** — link, detach, merge, unmerge, retire and reinstate; it plans a batch's links and a compensation's detaches | `src/mdm/services/lifecycle.py` | Exists | Blueprint §2 | |
+| `ACMP9` | **Authority and privacy** — actors, roles, personas, the authority check, masking, reveals and the vault | `src/mdm/services/authority.py`<br>`src/mdm/services/privacy.py` | Exists | [Decision 13](../decisions/13_authority-and-personas.md), [decision 12](../decisions/12_personal-value-vault.md); adopted — a second data-steward persona in the local mode, for a batch's blind reviews ([decision 24](../decisions/24_second-data-steward-persona.md)) | |
 | `ACMP10` | **Assistant** — provider choice, masked prompts, the stub and the case narrative | `src/mdm/agent/` | Exists | [Answer 2](../reference/2026-09-26-request-and-answers.md#answers); [decision 17](../decisions/17_masked-prompts-and-the-stub.md) | |
 | `ACMP11` | **Integration platform simulator** — invented Person and Organisation source changes written into the landing tables as the integration platform would, in the local mode only; the demo evaluation | `src/mdm/demo/` | Exists; refuses any store but a local one | Blueprint §5.6; adopted — a stand-in for an External party | |
 | `ACMP14` | **Service helpers** — the small helpers every service shares: safe tokens, fingerprints, relationship IDs and plain JSON forms, and the labels, value text and masking used for display; they read and write no store | `src/mdm/services/support.py`<br>`src/mdm/services/display.py` | Exists | Blueprint §5.1 | |
-| `ACMP12` | **Steward workbench** — the web interface: the shell, the inbox with the decide pane, the undo tray, and the record and source record views; it calls the services only | `src/mdm/ui/`<br>`app.py` | Exists | Blueprint §3; [decision 18](../decisions/18_workbench-shell-and-keys.md) | |
-| `ACMP15` | **Stewardship services** — the inbox, the decisions a task offers and their cases, and the undo tray with its flush; the matcher's checkpoint: blind review and the quality breaker | `src/mdm/services/inbox.py`<br>`src/mdm/services/decisions.py`<br>`src/mdm/services/tray.py`<br>`src/mdm/services/quality.py`<br>`src/mdm/services/breaker.py` | Exists | Blueprint §3, §4, §5.1; adopted — the checkpoint joins the stewardship services | |
+| `ACMP12` | **Steward workbench** — the web interface: the shell, the inbox with the decide pane, the undo tray, the Alike reviews page and the batch page, and the record and source record views; it calls the services only | `src/mdm/ui/`<br>`app.py` | Exists | Blueprint §3; [decision 18](../decisions/18_workbench-shell-and-keys.md) | |
+| `ACMP15` | **Stewardship services** — the inbox, the decisions a task offers and their cases, and the undo tray with its flush; the matcher's checkpoint: blind review and the quality breaker; signature batches with their forced samples, and their compensation | `src/mdm/services/inbox.py`<br>`src/mdm/services/decisions.py`<br>`src/mdm/services/tray.py`<br>`src/mdm/services/quality.py`<br>`src/mdm/services/breaker.py`<br>`src/mdm/services/batches.py` | Exists | Blueprint §3, §4, §5.1; adopted — the checkpoint joins the stewardship services; adopted — batches join the stewardship services, which share their callers and tables | |
 | `ACMP16` | **Record reader** — the read side of a golden or source record: resolution of IDs, provenance and the strategy that decided each value, sources, timeline and relationships | `src/mdm/services/lookup.py` | Exists | Blueprint §3 | |
 | `ACMP13` | **Deployment bundle and jobs** — the app, the scheduled jobs and the operational database as bundle resources | `databricks.yml`<br>`resources/` | **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)) | Blueprint §5.6 | |
 
@@ -161,4 +162,4 @@ flowchart LR
   classDef component fill:#9adcf0,stroke:#0288d1,color:#333
 ```
 
-The [application services](./1_application-services.md#application-services) are the light cyan stadiums. The steward workbench realizes the record lifecycle on screen: a link, and approving a held update, through the undo tray. The entry points, the domain model, the store, the simulator and the deployment bundle realize no service of their own. They serve the components that do.
+The [application services](./1_application-services.md#application-services) are the light cyan stadiums. The steward workbench realizes the record lifecycle on screen: a link, approving a held update, and a batch's links, through the undo tray. The entry points, the domain model, the store, the simulator and the deployment bundle realize no service of their own. They serve the components that do.

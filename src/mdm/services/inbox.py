@@ -19,7 +19,8 @@ from typing import Any
 from mdm import capacity
 from mdm.backend.store import SqlStore
 from mdm.config import Settings
-from mdm.models.authority import Actor
+from mdm.models.authority import Actor, allowed
+from mdm.models.batch import BATCH_DECISIONS, BATCH_ID_RE, SIGNATURE_KEY_RE
 from mdm.models.canonical import iso, utcnow
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Conflict, Forbidden, NotFound
@@ -129,20 +130,32 @@ class TaskRows:
         return out
 
     def staged(self, tasks: Sequence[Task], actor: Actor) -> dict[str, StagedRef]:
-        """Task ID -> the staged decision on it, labelled from IDs and source keys."""
+        """Task ID -> the staged decision on it, labelled from IDs and source keys. A review a signature batch
+        holds (staged, or still committing) names the batch, and is the actor's when they made the batch or
+        confirmed it as its second steward."""
         if not tasks:
             return {}
         held = self.store.staged_by_locks([task_lock(t.task_id) for t in tasks])
+        batch_ids = sorted({e.task_id for e in held.values() if e.decision in BATCH_DECISIONS})
+        checkers = (
+            {b.batch_id: b.checker for b in self.store.batches(batch_ids).values()} if batch_ids else {}
+        )
         out: dict[str, StagedRef] = {}
         for task in tasks:
             entry = held.get(task_lock(task.task_id))
             if entry is not None:
+                batch = entry.task_id if entry.decision in BATCH_DECISIONS else None
+                # the batch's second steward may undo it as its maker may; the entry keeps their name too
+                mine = entry.actor == actor.name or (
+                    batch is not None and actor.name in (checkers.get(batch), entry.checker)
+                )
                 out[task.task_id] = StagedRef(
                     entry_id=entry.entry_id,
                     decision=entry.decision,
                     label=display.tray_label(entry.decision, entry.subject, entry.target),
                     deadline=entry.deadline,
-                    mine=entry.actor == actor.name,
+                    mine=mine,
+                    batch_id=batch,
                 )
         return out
 
@@ -205,10 +218,26 @@ class InboxService:
     # ------------------------------------------------------------------ reads
 
     def _query(
-        self, view: str, actor: Actor, entity: str | None, kind: str | None, now: datetime
+        self,
+        view: str,
+        actor: Actor,
+        entity: str | None,
+        kind: str | None,
+        now: datetime,
+        *,
+        group: str | None = None,
+        batch: str | None = None,
     ) -> TaskQuery:
         if kind is not None and kind not in TASK_KINDS:
             raise NotFound("unknown_kind", kind=token(kind))
+        if group is not None or batch is not None:
+            # a signature group's, or a batch's forced sample: the view is set aside, and every open review of
+            # the group (or every open sample review of the batch) is listed, snoozed or not, whoever holds it
+            if group is not None and not SIGNATURE_KEY_RE.match(group):
+                raise Forbidden("bad_filter")
+            if batch is not None and not BATCH_ID_RE.match(batch):
+                raise Forbidden("bad_filter")
+            return TaskQuery(now, entity, "review", snoozed=None, signature_key=group, batch_id=batch)
         samples = "quality_sample"
         if view == "mine":
             return TaskQuery(
@@ -242,14 +271,19 @@ class InboxService:
         kind: str | None = None,
         after: tuple[str, str] | None = None,
         limit: int = capacity.INBOX_PAGE,
+        group: str | None = None,
+        batch: str | None = None,
     ) -> TaskPage:
         """One page of the view (`ALL_VIEWS`), ordered by `(due time, task ID)` after the cursor `after`
         (ISO due time, task ID); titles masked, staged markers from the tray's locks, score, band,
-        suggestion and reason from the stored evidence (never scored again). `view_tasks`."""
+        suggestion and reason from the stored evidence (never scored again). With a signature group's key
+        (`group`) or a batch ID (`batch`), checked by shape (`Forbidden(bad_filter)`), the view is set aside and
+        every open review of the group, or every open forced-sample review of the batch, is listed, whoever
+        holds it and whether it is snoozed or not (story 3.3). `view_tasks`."""
         require(actor, "view_tasks")
         limit = capacity.require_limit(limit, capacity.COUNT_CAP)
         now = self.clock()
-        query = self._query(view, actor, entity, kind, now)
+        query = self._query(view, actor, entity, kind, now, group=group, batch=batch)
         cursor: tuple[datetime, str] | None = None
         if after is not None:
             try:
@@ -292,6 +326,13 @@ class InboxService:
             kinds=kinds,
             claimed=self.store.task_count(mine, cap),
             samples_breaching=self.store.task_count(overdue, cap),
+            # signature batches (story 3.3), each capped: the Alike reviews link, the batches waiting for this
+            # actor as second steward, and the actor's live tray entries (theirs and the batches they confirmed)
+            alike=self.store.task_count(TaskQuery(now, entity, "review", snoozed=None, grouped=True), cap),
+            batches_to_confirm=(
+                self.store.to_confirm_count(actor.name, entity, cap) if allowed(actor, "confirm_batch") else 0
+            ),
+            tray_live=self.store.tray_live_count(actor.name, now, cap),
         )
 
     def health(self, *, actor: Actor) -> Health:
@@ -362,6 +403,15 @@ class InboxService:
         held = self.store.staged_by_locks([task_lock(task_id)]).get(task_lock(task_id))
         if held is None:
             return None
+        if held.decision in BATCH_DECISIONS:  # a batch's review, waiting or committing (story 3.3)
+            # the batch's maker or its second steward may undo it, so it is theirs to undo
+            batch = self.store.batches([held.task_id]).get(held.task_id)
+            return Conflict(
+                [token(task_id)],
+                code="already_staged",
+                mine=held.actor == actor.name or (batch is not None and batch.checker == actor.name),
+                batch=token(held.task_id),
+            )
         return Conflict([token(task_id)], code="already_staged", mine=held.actor == actor.name)
 
     def _refused(self, task_id: str, now: datetime, actor: Actor) -> Conflict:

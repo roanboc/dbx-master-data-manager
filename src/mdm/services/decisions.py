@@ -13,6 +13,11 @@ built with no score, band, suggestion, waterfall, preview or first decision; the
 record shows only what its other members bring. A disagreement opens a `disputed` case (a pair, a
 `disputed_pair`), decided in the open. The steward who made the first decision never reviews it. A committed
 link, "not a match" or keep apart is drawn for blind review in its own transaction.
+
+Signature batches (story 3.3): a review a batch holds takes no decision of its own; an open forced-sample review
+shows its sample line, and a decision on it that disagrees with the case's default names the comparison that
+misled (`split_on`), kept with the staged decision; its outcome (agreed, disagreed or void) is written in the
+decision's own transaction. The batch's second steward never answers the batch's blind reviews (`own_batch`).
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -29,16 +34,9 @@ from mdm import capacity
 from mdm.backend.store import SqlStore
 from mdm.config import Settings
 from mdm.models.authority import ROLE_LABELS, Actor, allowed
+from mdm.models.batch import BATCH_DECISIONS, SPLIT_ALL, BatchSampleWrite
 from mdm.models.canonical import iso, utcnow
-from mdm.models.changes import (
-    ChangeItem,
-    CommitResult,
-    EndRelationship,
-    LinkSource,
-    UpdateGolden,
-    UpsertRelationship,
-    WorkWrites,
-)
+from mdm.models.changes import ChangeItem, CommitResult, UpdateGolden, WorkWrites
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Conflict, Forbidden, MdmError, NotFound, PlatformRefused
 from mdm.models.match import Band, GoldenCandidate
@@ -65,8 +63,8 @@ from mdm.models.workbench import (
     Impact,
     MatchLabel,
     Preview,
-    PreviewRow,
     Revealed,
+    SampleLine,
     Staging,
     TaskCase,
     TaskRow,
@@ -149,6 +147,7 @@ NOTICE_NO_CANDIDATE = "No golden record scores against this record now. Not a ma
 NOTICE_BLIND_NONE = "No golden record comes near this record. Press N if it belongs to none."
 NOTICE_OWN_DECISION = "You made the first decision on this record, so another steward reviews it."
 NOTICE_OWN_ANSWER = "You gave the blind answer, so another steward decides whether to link to it."
+NOTICE_OWN_BATCH = "You confirmed the batch this record's link came from, so another steward reviews it."
 NOTICE_BREAKER_WAIT = (
     "There is no golden record to decline: it waits until a data owner restores automatic linking, and "
     "arrival then settles it."
@@ -196,6 +195,39 @@ def why_blocked(blocked_by: str | None) -> str | None:
     if kind == "cannot_link" and attribute:
         return f"A cannot-link rule blocks this link: the {plural_name(comparison_name(attribute))} differ."
     return "A rule blocks this link."
+
+
+def offered_candidates(golden: Sequence[GoldenCandidate], named: Collection[str]) -> list[GoldenCandidate]:
+    """The golden candidates a case offers, best first, at most `CANDIDATES_SHOWN`: the golden records the task
+    names first, then the best others outside the distinct band (a distinct record is no candidate). `golden`
+    is `MatchService.golden_candidates` for the record, best first, "not a match" labels already declined.
+    The decide pane and a batch's live check share it, so a batch suggests what the pane suggests."""
+    shown = capacity.CANDIDATES_SHOWN
+    chosen = [g for g in golden if g.master_id in named][:shown]
+    others = [g for g in golden if g.master_id not in named and g.best.explanation.band != Band.DISTINCT]
+    chosen += others[: shown - len(chosen)]
+    chosen.sort(key=lambda g: (-g.best.explanation.score, g.master_id))
+    return chosen
+
+
+def default_of(offered: Sequence[GoldenCandidate], close_points: float) -> tuple[str | None, bool]:
+    """(the default candidate, whether it is a close call) of the candidates offered, best first: a candidate
+    a cannot-link rule blocks is shown, never linked, so it is neither the default nor half of a close call;
+    the best two open ones within `close_points` of each other are a close call, with no default."""
+    open_ones = [c for c in offered if c.blocked_by is None]
+    close = len(open_ones) >= 2 and (
+        open_ones[0].best.explanation.score - open_ones[1].best.explanation.score <= close_points
+    )
+    default = open_ones[0].master_id if open_ones and not close else None
+    return default, close
+
+
+def batch_held_sentence(batch_id: str, mine: bool = True) -> str:
+    """Why a review a batch holds takes no decision of its own: its maker or second steward (`mine`) may undo
+    the batch; anyone else picks another task, as the `already_staged` refusal says."""
+    if mine:
+        return f"It is part of batch {batch_id}. Undo the batch to decide it on its own."
+    return f"It is part of another steward's batch, {batch_id}. Pick another task."
 
 
 def shape_of(task: Task) -> str:
@@ -263,6 +295,7 @@ class _Prepared:
     first_decider: str | None = None  # who made the decision a sample measures or a review disputes
     answered_by: str | None = None  # who gave the blind answer a review disputes: never links to it
     sample_id: str | None = None
+    checker: str | None = None  # a batch sample: the batch's second steward, who never answers it either
 
 
 class DecisionService:
@@ -385,6 +418,7 @@ class DecisionService:
                 first_decider=sample.decided_by,
                 answered_by=sample.reviewed_by,
                 sample_id=sample.sample_id,
+                checker=sample.checked_by,
             )
         return prepared
 
@@ -411,14 +445,12 @@ class DecisionService:
             else None,
         )
         # a candidate a cannot-link rule blocks is shown, never linked: it is neither the default nor half
-        # of a close call
-        open_ones = [c for c in candidates if c.blocked_by is None]
-        close = (
-            shape == "source"
-            and len(open_ones) >= 2
-            and open_ones[0].score - open_ones[1].score <= self.settings.close_call_points
+        # of a close call (a source subject's candidates are its golden candidates, in the same order)
+        default, close = (
+            default_of(candidates_found, self.settings.close_call_points)
+            if shape == "source"
+            else (None, False)
         )
-        default = open_ones[0].master_id if open_ones and not close and shape == "source" else None
         preview = self._shape_preview(task, model, state, shape, columns)
         notice = self._notice(task, shape, state, candidates)
         personal = set(model.personal_attributes())
@@ -751,6 +783,7 @@ class DecisionService:
             first_decider=sample.decided_by,
             answered_by=sample.reviewed_by if shape == "disputed" else None,
             sample_id=sample.sample_id,
+            checker=sample.checked_by,
         )
 
     def _masked_text(self, model: EntityModel) -> Callable[[str, Any], str | None]:
@@ -776,14 +809,7 @@ class DecisionService:
             declined={state.source: declined} if declined else None,
         ).get(state.source, [])
         named_ids = (task.evidence or {}).get("master_ids") or task.master_ids
-        named = {m for m in named_ids if isinstance(m, str)}
-        shown = capacity.CANDIDATES_SHOWN
-        chosen = [g for g in golden if g.master_id in named][:shown]
-        # the best others, when they score at least in the review band: a distinct record is no candidate
-        others = [g for g in golden if g.master_id not in named and g.best.explanation.band != Band.DISTINCT]
-        chosen += others[: shown - len(chosen)]
-        chosen.sort(key=lambda g: (-g.best.explanation.score, g.master_id))
-        return chosen
+        return offered_candidates(golden, {m for m in named_ids if isinstance(m, str)})
 
     def _columns(
         self, task: Task, model: EntityModel, state: SourceState | None, shape: str
@@ -1037,29 +1063,6 @@ class DecisionService:
 
     # ------------------------------------------------------------------ previews and the impact line
 
-    def _preview_rows(
-        self, model: EntityModel, now: Mapping[str, Any], after: Mapping[str, Any]
-    ) -> tuple[tuple[PreviewRow, ...], tuple[str, ...]]:
-        rows: list[PreviewRow] = []
-        changed: list[str] = []
-        for attribute in model.column_attributes():
-            name = attribute.name
-            before = display.value_text(model, name, now.get(name))
-            later = display.value_text(model, name, after.get(name))
-            differs = before != later
-            label = display.attribute_label(model, name)
-            if differs:
-                changed.append(label)
-            rows.append(
-                PreviewRow(
-                    label=label,
-                    now=self.privacy.masked_text(model, name, now.get(name)),
-                    after=self.privacy.masked_text(model, name, after.get(name)),
-                    changed=differs,
-                )
-            )
-        return tuple(rows), tuple(changed)
-
     def _impact(
         self,
         model: EntityModel,
@@ -1068,23 +1071,7 @@ class DecisionService:
         master_id: str,
         golden: GoldenRow | None,
     ) -> Preview:
-        now = golden.values if golden is not None else {}
-        after = dict(now)
-        for item in items:
-            if isinstance(item, UpdateGolden) and item.master_id == master_id:
-                after = dict(item.values)
-        rows, changed = self._preview_rows(model, now, after)
-        links = [i for i in items if isinstance(i, LinkSource)]
-        impact = Impact(
-            xrefs_added=sum(1 for i in links if i.target == master_id),
-            xrefs_removed=sum(1 for i in links if i.expected_master_id not in (None, master_id)),
-            golden_changed=changed,
-            relationships_changed=sum(
-                1 for i in items if isinstance(i, (UpsertRelationship, EndRelationship))
-            ),
-            held_released=len(work.release),
-        )
-        return Preview(master_id=master_id, rows=rows, impact=impact)
+        return display.impact_of(model, items, work, master_id, golden, self._masked_text(model))
 
     def _link_preview(
         self, task: Task, model: EntityModel, state: SourceState, master_id: str, golden: GoldenRow | None
@@ -1197,12 +1184,17 @@ class DecisionService:
         # the steward whose decision a blind review measures, or a review disputes, never decides it; the
         # steward who gave the disputed blind answer may keep the first decision, never link to their answer
         own = prepared.first_decider is not None and prepared.first_decider == actor.name
+        checked = prepared.checker is not None and prepared.checker == actor.name
         answered = prepared.answered_by is not None and prepared.answered_by == actor.name
         blocked: str | None = None
         if not can_decide:
             blocked = f"Your role, {role}, can see tasks but not decide them."
         elif own:
             blocked = NOTICE_OWN_DECISION
+        elif checked:
+            blocked = NOTICE_OWN_BATCH
+        elif staged is not None and staged.batch_id is not None:
+            blocked = batch_held_sentence(staged.batch_id, staged.mine)
         elif staged is not None:
             blocked = (
                 "Your decision on this task is in the tray. Undo it there to change it."
@@ -1233,6 +1225,8 @@ class DecisionService:
         work_blocked = None if can_decide else f"Your role, {role}, can see tasks but not work on them."
         if work_blocked is None and own:
             work_blocked = NOTICE_OWN_DECISION
+        if work_blocked is None and checked:
+            work_blocked = NOTICE_OWN_BATCH
         # while a decision on the task waits in the tray, nobody claims, snoozes or escalates it: the flush
         # would close it under them
         claim_blocked = work_blocked or (blocked if staged is not None else None)
@@ -1274,6 +1268,48 @@ class DecisionService:
             choices=prepared.choices,
             blind=prepared.blind,
             paused=next(iter(self.breaker.paused([task.entity])), None),
+            sample=self._sample_line(task),
+        )
+
+    # ------------------------------------------------------------------ a batch's forced sample (story 3.3)
+
+    def _open_sample(self, task_id: str) -> tuple[Any, Any] | None:
+        """(the batch, its open sample review) when the task is an open forced-sample review of a batch that is
+        still `sampling`; None otherwise. Read on every call, never cached."""
+        items = [
+            i
+            for i in self.store.items_by_task([task_id]).get(task_id, [])
+            if i.role == "sample" and i.status == "open"
+        ]
+        if not items:
+            return None
+        batches = self.store.batches(sorted({i.batch_id for i in items}))
+        for item in items:
+            batch = batches.get(item.batch_id)
+            if batch is not None and batch.status == "sampling":
+                return batch, item
+        return None
+
+    def _sample_line(self, task: Task) -> SampleLine | None:
+        """The forced-sample line of the decide pane: the batch, this review's place among the sample's, how
+        many are decided, and the pattern's comparisons in rule order, which "Which comparison misled?"
+        offers."""
+        found = self._open_sample(task.task_id)
+        if found is None:
+            return None
+        batch, item = found
+        sample = self.store.batch_items(batch.batch_id, ("sample",), None, None, capacity.BATCH_MAX)
+        order = [i.task_id for i in sample]
+        try:
+            model: EntityModel | None = self.registry.published(batch.entity)
+        except NotFound:
+            model = None
+        return SampleLine(
+            batch_id=batch.batch_id,
+            position=order.index(item.task_id) + 1 if item.task_id in order else 1,
+            size=max(batch.sample_size, len(order)),
+            decided=sum(1 for i in sample if i.status in ("agreed", "disagreed")),
+            choices=display.signature_marks(model, batch.signature),
         )
 
     # ------------------------------------------------------------------ reveal
@@ -1352,6 +1388,7 @@ class DecisionService:
         target: str | None = None,
         seen_event: str | None = None,
         seen_task: str | None = None,
+        split_on: str | None = None,
     ) -> Staging:
         """Whether the decision can be staged, writing nothing: the role allows it, the task is open, of a
         shape that offers it, not staged, not claimed by another; the case the steward decided on is the
@@ -1360,7 +1397,15 @@ class DecisionService:
         refused like a stale one (`Conflict(record_changed)`, `Conflict(task_changed)`); a link names an
         offered candidate, explicitly in a close call (`Forbidden(close_call)`), and never one a cannot-link
         rule blocks (`Forbidden(cannot_link)`). Returns what the tray keeps, with its locks and the row
-        versions of the golden records it names, which the flush checks again."""
+        versions of the golden records it names, which the flush checks again.
+
+        A signature batch (story 3.3): a task a batch's lock holds, while it waits in the tray or commits, is
+        `Conflict(already_staged, batch=…)`. On an open forced-sample review of a `sampling` batch, a decision
+        that disagrees ("Not a match", or a link to a candidate other than the case's default) names the
+        comparison that misled in `split_on` (a comparison of the batch's pattern, or `all`):
+        `Forbidden(split_choice_needed)` without one, `Forbidden(bad_split_choice)` for any other code. An
+        agreeing link, a link on a close call (void), or a task that is no sample review takes none. The
+        stage subject keeps the case's default, `split_on` and, on a sample review, its batch (`sample_batch`)."""
         require(actor, "work_tasks")
         if decision not in DECISIONS:
             raise Forbidden("decision_not_offered", decision=token(decision))
@@ -1373,12 +1418,23 @@ class DecisionService:
         if prepared.shape in _CHECKPOINT_SHAPES:
             if prepared.first_decider == actor.name:
                 raise Forbidden("own_decision")
+            if prepared.checker is not None and prepared.checker == actor.name:
+                raise Forbidden("own_batch")
             if decision == "link" and prepared.answered_by == actor.name:
                 raise Forbidden("own_answer")
             if decision not in {a.decision for a in prepared.offered}:
                 raise Forbidden("decision_not_offered", decision=decision)
         held = self.store.staged_by_locks([task_lock(task_id)]).get(task_lock(task_id))
         if held is not None:
+            if held.decision in BATCH_DECISIONS:
+                # the batch's maker or its second steward may undo it, so it is theirs to undo
+                batch = self.store.batches([held.task_id]).get(held.task_id)
+                raise Conflict(
+                    [token(task_id)],
+                    code="already_staged",
+                    mine=held.actor == actor.name or (batch is not None and batch.checker == actor.name),
+                    batch=token(held.task_id),
+                )
             raise Conflict([token(task_id)], code="already_staged", mine=held.actor == actor.name)
         holder = self.rows.claim_holder(task, now)
         if holder is not None and holder != actor.name:
@@ -1393,6 +1449,8 @@ class DecisionService:
         elif seen_task is None or seen_task != iso(task.updated_at):
             raise Conflict([token(task_id)], code="task_changed")
         if decision in ("blind_link", "blind_none", "keep_decision"):
+            if split_on is not None:
+                raise Forbidden("bad_split_choice")
             return self._checkpoint_staging(task, decision, prepared, state, target)
         chosen = None
         score = band = signature = None
@@ -1453,6 +1511,8 @@ class DecisionService:
             row = rows.get(master)
             if row is None or row.status != "active":
                 raise Conflict([token(master)], code="target_changed")
+        default = prepared.default_candidate if decision in ("link", "not_a_match") else None
+        sample_batch = self._check_split(task, decision, target, default, split_on)
         subject = safe_detail(
             source=source_token(task.source) if task.source else None,
             candidates=candidates if decision == "not_a_match" or decision == "link" else [],
@@ -1463,6 +1523,9 @@ class DecisionService:
             kind=task.kind,
             reason=token(task.reason),
             row_versions={master: rows[master].row_version for master in named},
+            default=default,
+            split_on=split_on,
+            sample_batch=sample_batch,
         )
         return Staging(
             task_id=task_id,
@@ -1474,6 +1537,28 @@ class DecisionService:
             event_id=state.event_id if state is not None and task.source is not None else None,
             locks=tuple(dict.fromkeys(locks)),
         )
+
+    def _check_split(
+        self, task: Task, decision: str, target: str | None, default: str | None, split_on: str | None
+    ) -> str | None:
+        """On an open forced-sample review of a `sampling` batch, a disagreeing decision names the comparison
+        that misled; nothing else names one (reading 5). Returns the batch whose sample the decision is part
+        of, which the stage subject keeps (`sample_batch`): only a decision staged on the sample pane counts
+        as a sample outcome."""
+        found = self._open_sample(task.task_id) if decision in ("link", "not_a_match") else None
+        disagrees = found is not None and (
+            decision == "not_a_match" or (default is not None and target is not None and target != default)
+        )
+        if not disagrees:
+            if split_on is not None:
+                raise Forbidden("bad_split_choice")
+            return found[0].batch_id if found is not None else None
+        if split_on is None:
+            raise Forbidden("split_choice_needed")
+        batch, _ = found
+        if split_on != SPLIT_ALL and split_on not in display.signature_comparisons(batch.signature):
+            raise Forbidden("bad_split_choice")
+        return batch.batch_id
 
     @staticmethod
     def _locks(task: Task) -> list[str]:
@@ -1619,6 +1704,7 @@ class DecisionService:
             close_task_ids=(entry.task_id,),
             samples=(drawn[0],) if drawn is not None else (),
             tasks=(drawn[1],) if drawn is not None else (),
+            batch_samples=self._sample_outcome(entry, subject),
         )
         reason = f"workbench:{entry.decision}"
         evidence = safe_detail(
@@ -1664,6 +1750,39 @@ class DecisionService:
                 entity, entry.decision, actor=actor, reason=reason, work=work, evidence=evidence
             )
         return result, tuple(s for s, _, _ in requeue)
+
+    def _sample_outcome(self, entry: TrayEntry, subject: Mapping[str, Any]) -> tuple[BatchSampleWrite, ...]:
+        """A forced-sample review's outcome, written in the decision's own transaction (reading 4): `agreed`
+        for a link to the case's default when it was staged, `disagreed` for another link or "not a match",
+        with the comparison it named, and `void` for a link staged on a close call, which suggested nothing.
+        Only a decision staged while the review was that batch's open sample review counts (its subject's
+        `sample_batch`): one staged on a bulk candidate that a top-up drew later writes nothing, so its task
+        closes, the refresh voids the review and the next draw replaces it."""
+        if entry.decision not in ("link", "not_a_match"):
+            return ()
+        found = self._open_sample(entry.task_id)
+        if found is None:
+            return ()
+        batch, _ = found
+        if subject.get("sample_batch") != batch.batch_id:
+            return ()
+        default = subject.get("default") if isinstance(subject.get("default"), str) else None
+        if entry.decision == "not_a_match":
+            status = "disagreed"
+        elif default is None:
+            status = "void"
+        else:
+            status = "agreed" if entry.target == default else "disagreed"
+        split_on = subject.get("split_on") if status == "disagreed" else None
+        return (
+            BatchSampleWrite(
+                batch.batch_id,
+                entry.task_id,
+                status,
+                entry.entry_id,
+                split_on=split_on if isinstance(split_on, str) else None,
+            ),
+        )
 
     def _execute_blind(
         self, entry: TrayEntry, task: Task, actor: Actor, now: datetime

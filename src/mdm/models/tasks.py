@@ -5,7 +5,11 @@ evidence, event and `updated_at` instead of opening another
 (`mdm_work.open_task`). `reason` is a code (`critical_update_held`,
 `review_band`, `cannot_link_conflict`, …); suggestion and evidence are safe
 details only. The workbench's columns (due time, claim, snooze, escalation)
-default to none, so a task built before initiative 3 reads as before.
+default to none, so a task built before initiative 3 reads as before. A review
+a steward could link to a golden record its pattern names carries the
+comparison signature and the match rule version it was scored under (story
+3.3), from which its signature group's key is derived; `''` is no signature,
+and None a task written before story 3.3.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from mdm.models.batch import signature_key as _signature_key
 from mdm.models.records import SourceKey
 
 TASK_KINDS = (
@@ -79,6 +84,15 @@ class Task:
     escalated_at: datetime | None = None
     escalated_by: str | None = None
     escalation: str | None = None  # a code of models.workbench.ESCALATION_REASONS
+    # signature batches (story 3.3): what arrival saw when it wrote the review; a later event rewrites both
+    signature: str | None = None  # '' for none; None before story 3.3 (the backfill gives it one)
+    rule_version: int | None = None  # the match rule version the signature was scored under
+
+    @property
+    def signature_key(self) -> str | None:
+        """The key of the task's signature group (`SIG-` and 16 hex), or None; the store derives its column
+        from this, so the key never drifts from the signature."""
+        return _signature_key(self.entity, self.rule_version, self.signature)
 
 
 def task_key(kind: str, entity: str, source: SourceKey | None, master_ids: Sequence[str] = ()) -> str:

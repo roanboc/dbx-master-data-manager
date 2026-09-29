@@ -18,8 +18,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from mdm.models.batch import (
+    BATCH_CHECKER_ABOVE,
+    BATCH_MAX,
+    BATCH_UNDO_DAYS,
+    BATCH_UNDO_DAYS_MAX,
+    FORCED_SAMPLE_BASE,
+    FORCED_SAMPLE_BASE_MAX,
+    FORCED_SAMPLE_PER,
+    FORCED_SAMPLE_PER_MAX,
+)
 from mdm.models.errors import ConfigError
-from mdm.models.quality import BREAKER_WINDOW_CAP, SAMPLE_KEY_MIN, SAMPLE_OPEN_CAP_MAX, SHARED_AGREEMENT_FLOOR
+from mdm.models.quality import (
+    BREAKER_WINDOW_CAP,
+    BULK_AGREEMENT,
+    BULK_MIN_SAMPLES,
+    BULK_WINDOW,
+    SAMPLE_KEY_MIN,
+    SAMPLE_OPEN_CAP_MAX,
+    SHARED_AGREEMENT_FLOOR,
+)
 from mdm.models.tasks import TASK_KINDS
 from mdm.models.workbench import FALLBACK_SERVICE_HOURS
 
@@ -94,6 +112,15 @@ class Settings:
     breaker_spike_multiple: float = 5.0  # MDM_BREAKER_SPIKE_MULTIPLE: times the same hour's mean (proposed)
     breaker_spike_days: int = 7  # MDM_BREAKER_SPIKE_DAYS: days of that hour it averages (proposed)
     breaker_spike_min: int = 1000  # MDM_BREAKER_SPIKE_MIN: arrivals an hour needs before it trips (proposed)
+    # signature batches (story 3.3): settings until initiative 4's governance policy holds them
+    forced_sample_base: int = FORCED_SAMPLE_BASE  # MDM_FORCED_SAMPLE_BASE: a forced sample's base (adopted)
+    forced_sample_per: int = FORCED_SAMPLE_PER  # MDM_FORCED_SAMPLE_PER: one more per this many (adopted)
+    # MDM_BATCH_CHECKER_ABOVE: above this many decisions a batch needs a second steward (adopted)
+    batch_checker_above: int = BATCH_CHECKER_ABOVE
+    batch_undo_days: int = BATCH_UNDO_DAYS  # MDM_BATCH_UNDO_DAYS: days a batch can be compensated (adopted)
+    bulk_agreement: float = BULK_AGREEMENT  # MDM_BULK_AGREEMENT: the agreement bulk rights need (proposed)
+    bulk_window: int = BULK_WINDOW  # MDM_BULK_WINDOW: the latest batch samples the trigger reads (proposed)
+    bulk_min_samples: int = BULK_MIN_SAMPLES  # MDM_BULK_MIN_SAMPLES: reviews before it withdraws (proposed)
     app_port: int = 0  # DATABRICKS_APP_PORT: the platform's own, read and never set; 0 = not in an App
     platform_signals: tuple[str, ...] = ()  # set by from_env: the PLATFORM_VARIABLES present
 
@@ -213,6 +240,13 @@ class Settings:
             ),
             "breaker_spike_days": integer("MDM_BREAKER_SPIKE_DAYS", cls.breaker_spike_days, minimum=1),
             "breaker_spike_min": integer("MDM_BREAKER_SPIKE_MIN", cls.breaker_spike_min, minimum=1),
+            "forced_sample_base": integer("MDM_FORCED_SAMPLE_BASE", cls.forced_sample_base, minimum=1),
+            "forced_sample_per": integer("MDM_FORCED_SAMPLE_PER", cls.forced_sample_per, minimum=1),
+            "batch_checker_above": integer("MDM_BATCH_CHECKER_ABOVE", cls.batch_checker_above, minimum=1),
+            "batch_undo_days": integer("MDM_BATCH_UNDO_DAYS", cls.batch_undo_days, minimum=1),
+            "bulk_agreement": number("MDM_BULK_AGREEMENT", cls.bulk_agreement, 0.0, 1.0),
+            "bulk_window": integer("MDM_BULK_WINDOW", cls.bulk_window, minimum=1),
+            "bulk_min_samples": integer("MDM_BULK_MIN_SAMPLES", cls.bulk_min_samples, minimum=1),
             "app_port": integer("DATABRICKS_APP_PORT", cls.app_port),
             "platform_signals": tuple(name for name in PLATFORM_VARIABLES if name in env),
         }
@@ -251,9 +285,12 @@ class Settings:
         """On a shared store the matcher's checkpoint cannot be switched off: blind review draws a share above
         0, the agreement trigger asks for at least `SHARED_AGREEMENT_FLOOR`, and the draw is keyed by a secret
         of at least `SAMPLE_KEY_MIN` characters, so no steward can tell which of their decisions will be
-        drawn. A local store may do without all three. Arrival and the tray's flush, which make and draw the
-        decisions, and the workbench's server call it before they start. `ConfigError` names the variable
-        only."""
+        drawn. Nor can a batch's checks be weakened (story 3.3): the forced sample cannot shrink (a base of
+        at least 5, one more per at most 150), the second steward cannot start later (above at most 250
+        decisions), and the bulk trigger cannot switch off (at least `SHARED_AGREEMENT_FLOOR`). A local store
+        may do without all of these. Arrival and the tray's flush, which make and draw the decisions, the
+        workbench's server, and a batch's draw and stage call it before they start. `ConfigError` names the
+        variable only."""
         if self.local_mode:
             return
         if self.sample_share <= 0.0:
@@ -262,6 +299,14 @@ class Settings:
             raise ConfigError("bad_setting", variable="MDM_BREAKER_AGREEMENT")
         if len(self.sample_key) < SAMPLE_KEY_MIN:
             raise ConfigError("bad_setting", variable="MDM_SAMPLE_KEY")
+        if self.forced_sample_base < FORCED_SAMPLE_BASE:
+            raise ConfigError("bad_setting", variable="MDM_FORCED_SAMPLE_BASE")
+        if self.forced_sample_per > FORCED_SAMPLE_PER:
+            raise ConfigError("bad_setting", variable="MDM_FORCED_SAMPLE_PER")
+        if self.batch_checker_above > BATCH_CHECKER_ABOVE:
+            raise ConfigError("bad_setting", variable="MDM_BATCH_CHECKER_ABOVE")
+        if self.bulk_agreement < SHARED_AGREEMENT_FLOOR:
+            raise ConfigError("bad_setting", variable="MDM_BULK_AGREEMENT")
 
     def _validate_checkpoint(self) -> None:
         """The matcher's checkpoint: each setting within its bounds, naming the variable only."""
@@ -290,6 +335,26 @@ class Settings:
             raise ConfigError("bad_setting", variable="MDM_BREAKER_SPIKE_DAYS")
         if not _whole(self.breaker_spike_min) or self.breaker_spike_min < 1:
             raise ConfigError("bad_setting", variable="MDM_BREAKER_SPIKE_MIN")
+        self._validate_batches()
+
+    def _validate_batches(self) -> None:
+        """Signature batches (story 3.3): each setting within its bounds, naming the variable only."""
+        if not _whole(self.forced_sample_base) or not 1 <= self.forced_sample_base <= FORCED_SAMPLE_BASE_MAX:
+            raise ConfigError("bad_setting", variable="MDM_FORCED_SAMPLE_BASE")
+        if not _whole(self.forced_sample_per) or not 1 <= self.forced_sample_per <= FORCED_SAMPLE_PER_MAX:
+            raise ConfigError("bad_setting", variable="MDM_FORCED_SAMPLE_PER")
+        if not _whole(self.batch_checker_above) or not 1 <= self.batch_checker_above <= BATCH_MAX:
+            raise ConfigError("bad_setting", variable="MDM_BATCH_CHECKER_ABOVE")
+        if not _whole(self.batch_undo_days) or not 1 <= self.batch_undo_days <= BATCH_UNDO_DAYS_MAX:
+            raise ConfigError("bad_setting", variable="MDM_BATCH_UNDO_DAYS")
+        if not _number_between(self.bulk_agreement, 0.0, 1.0):
+            raise ConfigError("bad_setting", variable="MDM_BULK_AGREEMENT")
+        if not _whole(self.bulk_min_samples) or self.bulk_min_samples < 1:
+            raise ConfigError("bad_setting", variable="MDM_BULK_MIN_SAMPLES")
+        if not _whole(self.bulk_window) or not (
+            self.bulk_min_samples <= self.bulk_window <= BREAKER_WINDOW_CAP
+        ):
+            raise ConfigError("bad_setting", variable="MDM_BULK_WINDOW")
 
     def with_(self, **changes: Any) -> Settings:
         """A copy with `changes` applied and validated (`dataclasses.replace`)."""

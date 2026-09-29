@@ -42,13 +42,36 @@ from mdm import capacity
 from mdm.backend import ddl, guard
 from mdm.backend.ddl import Column, Table, schema_name
 from mdm.config import Settings
-from mdm.models.authority import Actor
+from mdm.models.authority import AccessRow, Actor
+from mdm.models.batch import (
+    BATCH_STATUSES,
+    BEFORE_TRAY,
+    BULK_STATUSES,
+    ITEM_ROLES,
+    OPEN_BATCH_STATUSES,
+    SAMPLE_OUTCOMES,
+    SPLIT_STATUS,
+    Batch,
+    BatchChunk,
+    BatchChunkWrite,
+    BatchItem,
+    BatchSampleWrite,
+)
+from mdm.models.batch import signature_key as batch_signature_key
 from mdm.models.canonical import canonical_json, iso, utcnow
 from mdm.models.changes import ChangeRow, ChangeSet, CommitLogRow, WorkWrites
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import Conflict, GuardError, MdmError, NotFound, PlatformRefused
 from mdm.models.match import PairScore
-from mdm.models.quality import AgreementRow, BreakerState, QualitySample, SampleReview
+from mdm.models.quality import (
+    AUTO_BAND,
+    BULK_PREFIX,
+    SAMPLE_ORIGINS,
+    AgreementRow,
+    BreakerState,
+    QualitySample,
+    SampleReview,
+)
 from mdm.models.records import (
     Gap,
     GoldenRow,
@@ -71,6 +94,10 @@ from mdm.models.workbench import MatchLabel, TaskQuery, TrayEntry
 
 _TENTH = Decimal("1E-10")
 _T = ddl.table
+#: every status a batch review may hold, the only ones a statement renders as literals
+_ITEM_STATUSES = frozenset((*SAMPLE_OUTCOMES, *BULK_STATUSES, SPLIT_STATUS))
+#: the bands a signature's agreement is kept under (quality_agreement): the pair's band, or '' for none
+_AGREEMENT_BANDS = ("auto", "review", "distinct", "")
 
 
 # ---------------------------------------------------------------------------------------------- encoding
@@ -191,7 +218,17 @@ def _key_token(text: str) -> str:
 
 
 class SqlStore(ABC):
-    """The hub's store on one engine, in the schemas `<prefix>_<group>`."""
+    """The hub's store on one engine, in the schemas `<prefix>_<group>`.
+
+    **One lock order for batches (story 3.3).** Every method that writes a batch's rows, and every
+    transaction a service opens around them, takes the batch row first, with a conditional update, before it
+    touches `batch_item`, `tray_lock` or `tray_entry`: `_hold_batch` in a chunk's `apply_work`, `hold_batch`,
+    `fail_items`, `undo_batch`, `finish_batch`, `end_batch`, `apply_split`, `set_batch` and `request_stop`,
+    and a stage, whose `set_batch` to `staged` comes before `stage_tray`. `settle_tray` alone locks `tray_entry` before
+    `tray_lock`; inside a batch transaction the batch row is already held, so no two batch transactions wait
+    on each other in opposite orders. On Postgres they wait for one another and never deadlock, and DuckDB's
+    single writer serialises them anyway.
+    """
 
     engine: str = ""  # "duckdb" | "postgres"
 
@@ -1452,11 +1489,22 @@ class SqlStore(ABC):
         `Conflict(sample_settled)` otherwise) with its agreement counted; last, each tray settlement (an entry
         no longer staged is `Conflict(tray_entry_settled)`). A `Conflict` rolls back everything the
         transaction wrote.
+
+        A batch's chunk (story 3.3) adds three steps, which do nothing when their fields are empty. First of
+        all, before `expect_events`, `_hold_batch` holds the batch row (`staged` or `committing`, no stop
+        asked; else `Conflict(batch_stopped)` or `Conflict(batch_changed)`) and, for a link, its signature's
+        bulk rights (`Conflict(bulk_withdrawn)`), so a stop or a withdrawal waits for a chunk in flight and
+        stops the next. After the blind answers: the labels a compensation withdraws (`unlabel`); then
+        `_write_batch_chunk` (the chunk row exactly once, else `Conflict(chunk_committed)`; its reviews from
+        `planned` to `committed`, else `Conflict(item_settled)`; the batch's counts; its locks released);
+        then the forced-sample outcomes (`batch_samples`, never raising). The tray settlements stay last, and
+        one with `keep_locks` leaves the entry's locks to the batch.
         """
         if work.empty():
             return
         entity = work.entity
         with self.transaction():
+            self._hold_batch(entity, work.batch)
             self._expect_events(entity, work.expect_events)
             self._close_tasks(work.close_task_ids)
             self._delete_keyed(
@@ -1496,6 +1544,9 @@ class SqlStore(ABC):
             self.put_samples(work.samples)
             self._void_samples(work.void_samples)
             self._write_reviews(work.reviews)
+            self.withdraw_labels(entity, work.unlabel)
+            self._write_batch_chunk(work.batch)
+            self._write_batch_samples(work.batch_samples)
             for settlement in work.tray:
                 if not self.settle_tray(
                     settlement.entry_id,
@@ -1503,6 +1554,7 @@ class SqlStore(ABC):
                     change_set_id=settlement.change_set_id,
                     outcome=settlement.outcome,
                     at=self.clock(),
+                    keep_locks=settlement.keep_locks,
                 ):
                     raise Conflict([_key_token(settlement.entry_id)], code="tray_entry_settled")
 
@@ -1569,6 +1621,10 @@ class SqlStore(ABC):
             "escalated_by": task.escalated_by,
             "escalation": task.escalation,
             "decided_at": None,
+            # signature batches (story 3.3): the key is derived from the task, never passed separately
+            "signature": safe_signature(task.signature),
+            "rule_version": task.rule_version,
+            "signature_key": task.signature_key,
         }
 
     #: what a task opened again under its old ID takes from the new row: it starts afresh (a new due time,
@@ -1590,6 +1646,9 @@ class SqlStore(ABC):
         "escalated_by",
         "escalation",
         "decided_at",
+        "signature",
+        "rule_version",
+        "signature_key",
     )
 
     def _write_tasks(self, tasks: Sequence[Task]) -> None:
@@ -1626,6 +1685,9 @@ class SqlStore(ABC):
                             dict(task.evidence),
                             task.event_id,
                             task.updated_at,
+                            safe_signature(task.signature),
+                            task.rule_version,
+                            task.signature_key,
                         )
                     )
             else:
@@ -1640,7 +1702,17 @@ class SqlStore(ABC):
             )
         self._update_keyed(
             task_table,
-            ("reason", "master_ids", "suggestion", "evidence", "event_id", "updated_at"),
+            (
+                "reason",
+                "master_ids",
+                "suggestion",
+                "evidence",
+                "event_id",
+                "updated_at",
+                "signature",
+                "rule_version",
+                "signature_key",
+            ),
             ("task_id",),
             updates,
         )
@@ -1754,6 +1826,9 @@ class SqlStore(ABC):
         "escalated_at",
         "escalated_by",
         "escalation",
+        "signature",
+        "rule_version",
+        "signature_key",
     )
 
     def _task_of(self, row: Sequence[Any]) -> Task:
@@ -1780,6 +1855,8 @@ class SqlStore(ABC):
             escalated_at=d["escalated_at"],
             escalated_by=d["escalated_by"],
             escalation=d["escalation"],
+            signature=d["signature"],
+            rule_version=d["rule_version"],
         )
 
     def tasks(
@@ -1859,12 +1936,26 @@ class SqlStore(ABC):
             sql += " AND kind <> ?"
             params.append(query.exclude_kind)
         if query.not_first_decider is not None:
-            # keyed by the sample table's (task_id) index: the samples this actor decided first stay out
+            # keyed by the sample table's (task_id) index: the samples this actor decided first, or confirmed
+            # as a batch's second steward, stay out
             sql += (
                 f" AND NOT EXISTS (SELECT 1 FROM {self.t('work', 'quality_sample')} AS qs "
-                f"WHERE qs.task_id = {self.t('work', 'task')}.task_id AND qs.decided_by = ?)"
+                f"WHERE qs.task_id = {self.t('work', 'task')}.task_id AND (qs.decided_by = ? OR qs.checked_by = ?))"
             )
-            params.append(query.not_first_decider)
+            params.extend([query.not_first_decider, query.not_first_decider])
+        # signature batches (story 3.3)
+        if query.signature_key is not None:
+            sql += " AND signature_key = ?"
+            params.append(query.signature_key)
+        if query.grouped:
+            sql += " AND signature_key IS NOT NULL"
+        if query.batch_id is not None:
+            # keyed by batch_item's key: only the batch's forced-sample reviews
+            sql += (
+                f" AND EXISTS (SELECT 1 FROM {self.t('work', 'batch_item')} AS bi WHERE bi.batch_id = ? "
+                f"AND bi.task_id = {self.t('work', 'task')}.task_id AND bi.role = 'sample')"
+            )
+            params.append(query.batch_id)
         return sql, params
 
     def task_page(self, query: TaskQuery, after: tuple[datetime, str] | None, limit: int) -> list[Task]:
@@ -1952,6 +2043,91 @@ class SqlStore(ABC):
         )
         return sorted((self._task_of(r) for r in rows), key=lambda t: t.task_id)
 
+    # signature groups (story 3.3)
+
+    def signature_groups(self, entity: str, rule_version: int, window: int) -> list[tuple[str, str, int]]:
+        """(group key, signature, reviews) of the signature groups among the `window` open reviews of one entity
+        and match rule version due soonest, largest first (then by key): one capped aggregate on the task
+        table's (signature_key, status, due_at, task_id) index, never an unbounded read."""
+        rows = self._fetch_all(
+            "/*mdm:paged*/ SELECT signature_key, MIN(signature), COUNT(*) FROM (SELECT signature_key, signature "
+            f"FROM {self.t('work', 'task')} WHERE status = 'open' AND kind = 'review' AND entity = ? "
+            "AND rule_version = ? AND signature_key IS NOT NULL ORDER BY due_at, task_id LIMIT ?) AS capped "
+            "GROUP BY signature_key ORDER BY COUNT(*) DESC, signature_key",
+            [entity, int(rule_version), int(window)],
+        )
+        return [(str(key), str(signature), int(n)) for key, signature, n in rows]
+
+    def older_rules_count(self, entity: str, rule_version: int, cap: int) -> int:
+        """Open reviews of one entity that carry a group key under another match rule version, counted up to
+        `cap`: the reviews scored under an earlier version, which are not grouped."""
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'task')} WHERE status = 'open' "
+            "AND kind = 'review' AND entity = ? AND signature_key IS NOT NULL AND rule_version <> ? LIMIT ?) "
+            "AS capped",
+            [entity, int(rule_version), int(cap)],
+        )
+        return int(rows[0][0])
+
+    def group_members(self, signature_key: str, after: tuple[datetime, str] | None, limit: int) -> list[Task]:
+        """The open reviews of one signature group by (due time, task ID) after the cursor `after`, at most
+        `limit`: keyed by the group key's index, never an offset."""
+        sql = (
+            f"/*mdm:paged*/ SELECT {', '.join(self._TASK_COLUMNS)} FROM {self.t('work', 'task')} "
+            "WHERE signature_key = ? AND status = 'open' AND kind = 'review'"
+        )
+        params: list[Any] = [safe(signature_key)]
+        if after is not None:
+            sql += " AND (due_at, task_id) > (?, ?)"
+            params.extend([after[0], after[1]])
+        rows = self._fetch_all(sql + " ORDER BY due_at, task_id LIMIT ?", [*params, int(limit)])
+        return [self._task_of(r) for r in rows]
+
+    def open_tasks_without_signature(self, after: str | None, limit: int) -> list[Task]:
+        """Open reviews of a source record with no signature yet (written before story 3.3), by task ID after
+        `after`, at most `limit`: the backfill's pages."""
+        sql = (
+            f"/*mdm:paged*/ SELECT {', '.join(self._TASK_COLUMNS)} FROM {self.t('work', 'task')} "
+            "WHERE status = 'open' AND kind = 'review' AND source_system IS NOT NULL AND signature IS NULL"
+        )
+        params: list[Any] = []
+        if after is not None:
+            sql += " AND task_id > ?"
+            params.append(after)
+        rows = self._fetch_all(sql + " ORDER BY task_id LIMIT ?", [*params, int(limit)])
+        return [self._task_of(r) for r in rows]
+
+    def set_task_signatures(self, rows: Sequence[tuple[str, str, int | None]]) -> int:
+        """(task ID, signature, rule version) for tasks that have no signature yet; the group key is derived
+        from each task's entity, rule version and signature, as `Task.signature_key` derives it. `''` stores
+        no signature, so the backfill never scans the task again. Returns the tasks given one."""
+        wanted = dict((task_id, (signature, version)) for task_id, signature, version in rows)
+        if not wanted:
+            return 0
+        with self.transaction():
+            entities = dict(
+                self._select_keyed(
+                    _T("work", "task"),
+                    ("task_id", "entity"),
+                    ("task_id",),
+                    [(t,) for t in wanted],
+                    order_by=("task_id",),
+                    where="t.signature IS NULL",
+                )
+            )
+            updates = []
+            for task_id, entity in entities.items():
+                signature, version = wanted[task_id]
+                key = batch_signature_key(entity, version, signature)
+                updates.append((task_id, safe_signature(signature or ""), version, key))
+            return self._update_keyed(
+                _T("work", "task"),
+                ("signature", "rule_version", "signature_key"),
+                ("task_id",),
+                updates,
+                where="t.signature IS NULL",
+            )
+
     def _not_staged(self) -> str:
         """The condition that no staged decision holds the task's tray lock: one parameter, `task:<task ID>`
         (a keyed read of the lock table)."""
@@ -2038,6 +2214,7 @@ class SqlStore(ABC):
         "settled_at",
         "change_set_id",
         "outcome",
+        "checker",
     )
 
     def _tray_of(self, row: Sequence[Any]) -> TrayEntry:
@@ -2066,6 +2243,7 @@ class SqlStore(ABC):
             change_set_id=d["change_set_id"],
             commit_version=int(version) if version is not None else None,
             outcome=d["outcome"],
+            checker=d["checker"],
         )
 
     def _tray_select(self) -> str:
@@ -2116,6 +2294,7 @@ class SqlStore(ABC):
                         "settled_at": entry.settled_at,
                         "change_set_id": entry.change_set_id,
                         "outcome": entry.outcome,
+                        "checker": entry.checker,
                     }
                 ],
             )
@@ -2128,9 +2307,12 @@ class SqlStore(ABC):
         change_set_id: str | None,
         outcome: str,
         at: datetime,
+        keep_locks: bool = False,
     ) -> bool:
         """Settles a staged entry (`committed`, `undone` or `failed`, with an outcome code) and frees its locks;
-        False when it is no longer staged. Joins an open transaction."""
+        False when it is no longer staged. Joins an open transaction. With `keep_locks` the locks stay: a
+        batch's first chunk settles its entry `committed` with outcome `committing`, and the batch releases its
+        reviews' locks chunk by chunk."""
         with self.transaction():
             changed = self._execute(
                 f"/*mdm:keyed*/ UPDATE {self.t('work', 'tray_entry')} SET status = ?, change_set_id = ?, "
@@ -2139,10 +2321,24 @@ class SqlStore(ABC):
             )
             if changed != 1:
                 return False
-            self._execute(
-                f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'tray_lock')} WHERE entry_id = ?", [entry_id]
-            )
+            if not keep_locks:
+                self._execute(
+                    f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'tray_lock')} WHERE entry_id = ?", [entry_id]
+                )
         return True
+
+    def finish_tray_batch(self, entry_id: str, outcome: str, at: datetime) -> bool:
+        """The tray entry of a batch whose chunks committed (`committed`, outcome `committing`) gets its final
+        outcome and settlement time; its status list is untouched, so its CHECK holds. False when the entry is
+        not `committed`. Joins an open transaction."""
+        return (
+            self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'tray_entry')} SET outcome = ?, settled_at = ? "
+                "WHERE entry_id = ? AND status = 'committed'",
+                [safe(outcome), at, entry_id],
+            )
+            == 1
+        )
 
     def fail_tray(self, entry_id: str, outcome: str, at: datetime, task_id: str, actor: str) -> bool:
         """One transaction: the entry settled `failed` with `outcome` and, when that changed it, the task's
@@ -2191,30 +2387,65 @@ class SqlStore(ABC):
         )
         return [self._tray_of(r) for r in rows]
 
+    #: an entry still live: staged, or a batch's whose chunks still commit
+    _TRAY_LIVE = "(t.status = 'staged' OR (t.status = 'committed' AND t.outcome = 'committing'))"
+
     def tray_of_actor(
         self, actor: str, since: datetime, limit: int, *, staged_since: datetime | None = None
     ) -> list[TrayEntry]:
-        """The actor's entries still staged or settled since `since`, newest first, at most `limit`; only
-        those staged since `staged_since` (default: a day before `since`, longer than any undo window and
-        flush delay), so the walk of the (actor, staged_at) index stops there."""
+        """The actor's entries still staged, still committing (a batch's, outcome `committing`) or settled
+        since `since`, newest first, at most `limit`; only those staged since `staged_since` (default: a day
+        before `since`, longer than any undo window and flush delay), so the walk of the (actor, staged_at)
+        index stops there.
+
+        It also lists the entries of the batches the actor confirmed as their second steward (story 3.3), in
+        a second branch walked on the entry's own (checker, staged_at) index, so an entry the maker undid stays
+        listed with its outcome, as in the maker's tray; each branch is paged, and the two are merged newest
+        first under one limit. Each entry comes once: a maker never confirms their own batch."""
         floor = staged_since if staged_since is not None else since - timedelta(days=1)
+        live = f"({self._TRAY_LIVE} OR t.settled_at >= ?)"
+        columns = ", ".join("t." + c for c in self._TRAY_COLUMNS)
+        audit = self._tray_audit_join()
+        own = (
+            f"SELECT {columns}, c.commit_version FROM {self.t('work', 'tray_entry')} AS t{audit} "
+            f"WHERE t.actor = ? AND t.staged_at >= ? AND {live} ORDER BY t.staged_at DESC, t.entry_id LIMIT ?"
+        )
+        confirmed = (
+            f"SELECT {columns}, c.commit_version FROM {self.t('work', 'tray_entry')} AS t{audit} "
+            f"WHERE t.checker = ? AND t.staged_at >= ? AND {live} ORDER BY t.staged_at DESC, t.entry_id LIMIT ?"
+        )
+        names = ", ".join(f"u.{c}" for c in (*self._TRAY_COLUMNS, "commit_version"))
         rows = self._fetch_all(
-            f"/*mdm:paged*/ {self._tray_select()}{self._tray_audit_join()} "
-            "WHERE t.actor = ? AND t.staged_at >= ? AND (t.status = 'staged' OR t.settled_at >= ?) "
-            "ORDER BY t.staged_at DESC, t.entry_id LIMIT ?",
-            [actor, floor, since, int(limit)],
+            f"/*mdm:paged*/ SELECT {names} FROM (SELECT * FROM ({own}) AS mine UNION ALL "
+            f"SELECT * FROM ({confirmed}) AS theirs) AS u ORDER BY u.staged_at DESC, u.entry_id LIMIT ?",
+            [actor, floor, since, int(limit), actor, floor, since, int(limit), int(limit)],
         )
         return [self._tray_of(r) for r in rows]
 
+    def tray_live_count(self, actor: str, now: datetime, cap: int) -> int:
+        """The actor's live entries (staged, or a batch's still committing), those of the batches they
+        confirmed as second steward included, counted up to `cap`: the same two branches as `tray_of_actor`,
+        each capped, staged within the day before `now`."""
+        floor = now - timedelta(days=1)
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ SELECT (SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'tray_entry')} AS t "
+            f"WHERE t.actor = ? AND t.staged_at >= ? AND {self._TRAY_LIVE} LIMIT ?) AS mine), "
+            f"(SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'tray_entry')} AS t "
+            f"WHERE t.checker = ? AND t.staged_at >= ? AND {self._TRAY_LIVE} LIMIT ?) AS theirs)",
+            [actor, floor, int(cap), actor, floor, int(cap)],
+        )
+        return min(int(cap), int(rows[0][0]) + int(rows[0][1]))
+
     def staged_by_locks(self, locks: Sequence[str]) -> dict[str, TrayEntry]:
-        """Lock subject -> the staged entry holding it, for the subjects held."""
+        """Lock subject -> the entry holding it, for the subjects held: a staged entry, or a batch's entry whose
+        chunks still commit (`committed` with outcome `committing`), whose remaining locks still hold."""
         table = _T("work", "tray_lock")
         unique = self._unique_keys([(s,) for s in locks])
         sql = (
             f"/*mdm:keyed*/ SELECT l.subject, {', '.join('t.' + c for c in self._TRAY_COLUMNS)} "
             f"FROM {self._q(table)} AS l JOIN {self._row_source()} ON {self._key_join(table, ('subject',), 'l')} "
             f"JOIN {self.t('work', 'tray_entry')} AS t ON t.entry_id = l.entry_id "
-            "WHERE t.status = 'staged' ORDER BY l.subject"
+            f"WHERE {self._TRAY_LIVE} ORDER BY l.subject"
         )
         out: dict[str, TrayEntry] = {}
         for chunk in capacity.chunks(unique, capacity.KEY_CHUNK):
@@ -2310,6 +2541,31 @@ class SqlStore(ABC):
             )
         return out
 
+    def label_counts(self, entity: str, signature: str, cap: int) -> dict[str, int]:
+        """{"match": n, "not_a_match": n}: the labels that carry `signature` (the latest per pair, under any rule
+        version), each counted up to `cap` on the (entity, signature, label) index. Keep-apart labels carry no
+        signature, so only match and "not a match" count. The signature is bound as a parameter."""
+        checked = safe_signature(signature) or ""
+        out: dict[str, int] = {}
+        for label in ("match", "not_a_match"):
+            rows = self._fetch_all(
+                f"/*mdm:paged*/ SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'match_label')} "
+                "WHERE entity = ? AND signature = ? AND label = ? LIMIT ?) AS capped",
+                [entity, checked, label, int(cap)],
+            )
+            out[label] = int(rows[0][0])
+        return out
+
+    def withdraw_labels(self, entity: str, keys: Sequence[tuple[str, str, str]]) -> int:
+        """(left_ref, right_ref, entry_id): each label deleted while it is still the one that entry wrote, so a
+        label another decision wrote since stays (a compensation withdraws its batch's labels). Joins an open
+        transaction; returns the labels withdrawn."""
+        return self._delete_keyed(
+            _T("work", "match_label"),
+            ("entity", "left_ref", "right_ref", "entry_id"),
+            [(entity, left, right, safe(entry_id)) for left, right, entry_id in keys],
+        )
+
     def queue_rows(self, entity: str, sources: Sequence[SourceKey]) -> list[tuple[SourceKey, str, int]]:
         """The arrival queue's rows of these records, in landing order."""
         rows = self._select_keyed(
@@ -2353,6 +2609,7 @@ class SqlStore(ABC):
         "reviewed_at",
         "review_entry_id",
         "dispute_task_id",
+        "checked_by",
     )
 
     @staticmethod
@@ -2388,6 +2645,7 @@ class SqlStore(ABC):
             "reviewed_at": sample.reviewed_at,
             "review_entry_id": safe(sample.review_entry_id),
             "dispute_task_id": safe(sample.dispute_task_id),
+            "checked_by": sample.checked_by,  # an actor name, as decided_by and reviewed_by are
         }
 
     def _sample_of(self, row: Sequence[Any]) -> QualitySample:
@@ -2420,6 +2678,7 @@ class SqlStore(ABC):
             reviewed_at=d["reviewed_at"],
             review_entry_id=d["review_entry_id"],
             dispute_task_id=d["dispute_task_id"],
+            checked_by=d["checked_by"],
         )
 
     def put_samples(self, samples: Sequence[QualitySample]) -> int:
@@ -2490,7 +2749,40 @@ class SqlStore(ABC):
         )
         return [(str(st), _utc(at), str(sid)) for st, at, sid in rows]
 
+    def recent_reviews_of_signature(
+        self, entity: str, origin: str, signature: str, decided_after: datetime | None, limit: int
+    ) -> list[tuple[str, datetime, str]]:
+        """(status, reviewed_at, sample ID) of the latest reviewed samples of one entity, origin and signature,
+        newest first, at most `limit`; with `decided_after`, only samples first decided after it: the bulk
+        trigger's window, a walk of the (entity, origin, signature, reviewed_at, sample_id) index."""
+        sql = (
+            f"/*mdm:paged*/ SELECT status, reviewed_at, sample_id FROM {self.t('work', 'quality_sample')} "
+            "WHERE entity = ? AND origin = ? AND signature = ? AND reviewed_at IS NOT NULL"
+        )
+        params: list[Any] = [entity, origin, safe_signature(signature) or ""]
+        if decided_after is not None:
+            sql += " AND decided_at > ?"
+            params.append(decided_after)
+        rows = self._fetch_all(
+            sql + " ORDER BY reviewed_at DESC, sample_id DESC LIMIT ?", [*params, int(limit)]
+        )
+        return [(str(st), _utc(at), str(sid)) for st, at, sid in rows]
+
     _AGREEMENT_COLUMNS = ("entity", "origin", "band", "signature", "reviewed", "agreed", "updated_at")
+
+    def agreement_of(self, entity: str, signature: str) -> list[AgreementRow]:
+        """The agreement counts of one entity and signature, of every origin and band that has a row, by
+        (origin, band): one keyed read of quality_agreement on its key."""
+        checked = safe_signature(signature) or ""
+        keys = [(entity, origin, band, checked) for origin in SAMPLE_ORIGINS for band in _AGREEMENT_BANDS]
+        rows = self._select_keyed(
+            _T("work", "quality_agreement"),
+            ("entity", "origin", "band", "signature", "reviewed", "agreed"),
+            ("entity", "origin", "band", "signature"),
+            keys,
+            order_by=("origin", "band"),
+        )
+        return [AgreementRow(e, o, b, sig, int(n), int(a)) for e, o, b, sig, n, a in rows]
 
     def agreement_rows(
         self, entity: str, after: tuple[str, str, str] | None, limit: int
@@ -2620,25 +2912,52 @@ class SqlStore(ABC):
         "restore_reason",
         "restore_change_set",
         "updated_at",
+        "signature",
     )
 
     def _breaker_of(self, row: Sequence[Any]) -> BreakerState:
         d = self._decode_row(_T("work", "breaker_state"), self._BREAKER_COLUMNS, row)
         return BreakerState(**{**d, "figures": d["figures"] or {}})
 
-    def breaker_states(self, entities: Sequence[str]) -> dict[tuple[str, str], BreakerState]:
-        """(entity, band) -> its breaker state, for the entities that have a row."""
+    def breaker_states(
+        self, entities: Sequence[str], *, band: str = AUTO_BAND
+    ) -> dict[tuple[str, str], BreakerState]:
+        """(entity, band) -> its breaker state, for the entities that have a row of `band` (the automatic band
+        by default): keyed on the full key, so it reads one row per entity, never an entity's bulk rows."""
         rows = self._select_keyed(
             _T("work", "breaker_state"),
             self._BREAKER_COLUMNS,
-            ("entity",),
-            [(e,) for e in entities],
+            ("entity", "band"),
+            [(e, band) for e in entities],
             order_by=("entity", "band"),
         )
         return {(r[0], r[1]): self._breaker_of(r) for r in rows}
 
-    def ensure_breaker_rows(self, entities: Sequence[str], at: datetime, band: str = "auto") -> int:
-        """A `normal` row for each entity that has none, watched from `at`; returns the rows written."""
+    def breaker_state(self, entity: str, band: str) -> BreakerState | None:
+        """One band's breaker state (the automatic band, or a signature's bulk rights); None when it has no row
+        yet. Keyed on the full key."""
+        return self.breaker_states([entity], band=band).get((entity, band))
+
+    def withdrawn_bulk(self, entity: str, after: str | None, limit: int) -> list[BreakerState]:
+        """One entity's signatures whose bulk rights are withdrawn (demoted `bulk:` bands), by band after
+        `after`, at most `limit`: keyset-paged on the key, never the automatic band. The prefix is matched with
+        LIKE, so the bound assumes nothing about how punctuation sorts under the database's collation."""
+        sql = (
+            f"/*mdm:paged*/ SELECT {', '.join(self._BREAKER_COLUMNS)} FROM {self.t('work', 'breaker_state')} "
+            "WHERE entity = ? AND band LIKE ? AND state = 'demoted'"
+        )
+        params: list[Any] = [entity, BULK_PREFIX + "%"]
+        if after is not None:
+            sql += " AND band > ?"
+            params.append(after)
+        rows = self._fetch_all(sql + " ORDER BY band LIMIT ?", [*params, int(limit)])
+        return [self._breaker_of(r) for r in rows]
+
+    def ensure_breaker_rows(
+        self, entities: Sequence[str], at: datetime, band: str = AUTO_BAND, signature: str | None = None
+    ) -> int:
+        """A `normal` row of `band` for each entity that has none, watched from `at`; a bulk-rights row keeps
+        its signature (through `safe_signature`). Returns the rows written."""
         wanted = sorted(set(entities))
         if not wanted:
             return 0
@@ -2652,6 +2971,7 @@ class SqlStore(ABC):
                     "watch_since": at,
                     "figures": {},
                     "updated_at": at,
+                    "signature": safe_signature(signature),
                 }
                 for e in wanted
             ],
@@ -2712,12 +3032,13 @@ class SqlStore(ABC):
             == 1
         )
 
-    def hold_band(self, entity: str, band: str) -> bool:
+    def hold_band(self, entity: str, band: str, signature: str | None = None) -> bool:
         """Inside the commit's transaction: True while the band is normal, holding its row until the
         transaction ends (Postgres by the row lock of a no-op update, DuckDB on the store lock), so a trip
         waits for a commit in flight and a commit never outruns a trip; False when it is demoted. A band with
-        no row gets a normal one first, so there is always a row to hold."""
-        self.ensure_breaker_rows([entity], self.clock(), band)
+        no row gets a normal one first, so there is always a row to hold; a signature's bulk-rights row keeps
+        its signature."""
+        self.ensure_breaker_rows([entity], self.clock(), band, signature)
         held = self._update_keyed(
             _T("work", "breaker_state"),
             (),
@@ -2728,7 +3049,7 @@ class SqlStore(ABC):
         )
         if held == 1:
             return True
-        found = self.breaker_states([entity]).get((entity, band))
+        found = self.breaker_state(entity, band)
         return found is None or found.state != "demoted"
 
     # arrivals per entity and clock hour, for the breaker's volume trigger
@@ -2791,6 +3112,671 @@ class SqlStore(ABC):
         return self._execute(
             f"/*mdm:small*/ DELETE FROM {self.t('work', 'arrival_hour')} WHERE hour_start < ?", [before]
         )
+
+    # ------------------------------------------------------------------ work group: signature batches (story 3.3)
+    #
+    # Every transaction that touches a batch takes its batch row first (the class docstring's lock order).
+
+    _BATCH_COLUMNS = _T("work", "batch").column_names()
+    _ITEM_COLUMNS = _T("work", "batch_item").column_names()
+    _CHUNK_COLUMNS = _T("work", "batch_chunk").column_names()
+    #: the batch columns that hold an actor's name, written as a tray entry's actor is (never through safe())
+    _BATCH_ACTORS = frozenset({"maker", "checker", "stop_requested_by"})
+
+    @staticmethod
+    def _statuses(values: Sequence[str], allowed: Sequence[str] | frozenset[str]) -> str:
+        """`(…)` of status literals for a conditional statement: each must be one the service knows, so no
+        text reaches a statement except a known code."""
+        chosen = tuple(dict.fromkeys(values))
+        if not chosen or any(v not in allowed for v in chosen):
+            raise ValueError("not a known status")
+        return "(" + ", ".join(f"'{v}'" for v in chosen) + ")"
+
+    def _batch_value(self, column: str, value: Any) -> Any:
+        """A batch column's value as it is written: an actor's name as given, the signature through
+        `safe_signature`, figures and every other text through `safe`."""
+        if value is None or column in self._BATCH_ACTORS:
+            return value
+        if column == "signature":
+            return safe_signature(value) or ""
+        if column == "figures":
+            return safe(dict(value))
+        if isinstance(value, str):
+            return safe(value)
+        return value
+
+    def _batch_row(self, batch: Batch) -> dict[str, Any]:
+        return {c: self._batch_value(c, getattr(batch, c)) for c in self._BATCH_COLUMNS}
+
+    def _batch_of(self, row: Sequence[Any]) -> Batch:
+        d = self._decode_row(_T("work", "batch"), self._BATCH_COLUMNS, row)
+        return Batch(
+            **{
+                **d,
+                "persona": bool(d["persona"]),
+                "signature": d["signature"] or "",
+                "figures": d["figures"] or {},
+            }
+        )
+
+    def _item_value(self, column: str, value: Any) -> Any:
+        """A batch review's column value as it is written: texts through `safe`, changes as a safe list."""
+        if value is None:
+            return None
+        if column == "changes":
+            return safe(list(value))
+        if isinstance(value, str):
+            return safe(value)
+        return value
+
+    def _item_row(self, item: BatchItem, at: datetime) -> dict[str, Any]:
+        row: dict[str, Any] = {}
+        for column in self._ITEM_COLUMNS:
+            if column == "source_system":
+                value: Any = item.source.system
+            elif column == "source_key":
+                value = item.source.key
+            elif column == "updated_at":
+                value = item.updated_at or at
+            else:
+                value = getattr(item, column)
+            row[column] = self._item_value(column, value)
+        return row
+
+    def _item_of(self, row: Sequence[Any]) -> BatchItem:
+        d = self._decode_row(_T("work", "batch_item"), self._ITEM_COLUMNS, row)
+        system, key = d.pop("source_system"), d.pop("source_key")
+        return BatchItem(
+            **{
+                **d,
+                "source": SourceKey(system, key),
+                "score": float(d["score"]) if d["score"] is not None else None,
+                "review": bool(d["review"]),
+                "changes": tuple(d["changes"] or ()),
+                "split_applied": bool(d["split_applied"]),
+            }
+        )
+
+    def _chunk_of(self, row: Sequence[Any]) -> BatchChunk:
+        return BatchChunk(**self._decode_row(_T("work", "batch_chunk"), self._CHUNK_COLUMNS, row))
+
+    def insert_batch(self, batch: Batch, items: Sequence[BatchItem]) -> None:
+        """One transaction: for a link batch, its group's `open_batch` row (a group holding one already is
+        `Conflict(batch_open, batch=<the holder>)`); for a compensation, which takes no `open_batch` row, the
+        mark on its original first (`set_compensated_by`; a mark already there is
+        `Conflict(already_compensated)`), so the mark and the compensation exist together or not at all; then
+        the batch row and its reviews, chunked. A refusal writes nothing."""
+        with self.transaction():
+            if batch.kind == "link":
+                if not batch.signature_key:
+                    raise ValueError("a link batch needs its group's key")
+                taken = self._insert(
+                    _T("work", "open_batch"),
+                    [{"signature_key": safe(batch.signature_key), "batch_id": safe(batch.batch_id)}],
+                    on_conflict_nothing=("signature_key",),
+                )
+                if taken != 1:
+                    holder = self._fetch_all(
+                        f"/*mdm:keyed*/ SELECT batch_id FROM {self.t('work', 'open_batch')} WHERE signature_key = ?",
+                        [batch.signature_key],
+                    )
+                    raise Conflict(
+                        [batch.signature_key], code="batch_open", batch=holder[0][0] if holder else None
+                    )
+            if batch.compensates is not None and not self.set_compensated_by(
+                batch.compensates, batch.batch_id
+            ):
+                raise Conflict([_key_token(batch.compensates)], code="already_compensated")
+            self._insert(_T("work", "batch"), [self._batch_row(batch)])
+            at = batch.updated_at
+            self._insert(_T("work", "batch_item"), [self._item_row(item, at) for item in items])
+
+    def set_compensated_by(self, original_id: str, batch_id: str) -> bool:
+        """Marks the original batch with the compensation that reverses it, only while it has no mark; False
+        otherwise. Called only inside `insert_batch`."""
+        return (
+            self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch')} SET compensated_by = ?, updated_at = ? "
+                "WHERE batch_id = ? AND compensated_by IS NULL",
+                [safe(batch_id), self.clock(), original_id],
+            )
+            == 1
+        )
+
+    def clear_compensated_by(self, original_id: str, batch_id: str) -> bool:
+        """Clears the original batch's mark only when it names `batch_id`, so a compensation clears only its
+        own mark; False otherwise. Joins an open transaction."""
+        return (
+            self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch')} SET compensated_by = NULL, updated_at = ? "
+                "WHERE batch_id = ? AND compensated_by = ?",
+                [self.clock(), original_id, batch_id],
+            )
+            == 1
+        )
+
+    def batches(self, batch_ids: Sequence[str]) -> dict[str, Batch]:
+        """Batches by ID, in any status: keyed."""
+        rows = self._select_keyed(
+            _T("work", "batch"),
+            self._BATCH_COLUMNS,
+            ("batch_id",),
+            [(b,) for b in batch_ids],
+            order_by=("batch_id",),
+        )
+        return {r[0]: self._batch_of(r) for r in rows}
+
+    def open_batches_of_groups(self, keys: Sequence[str]) -> dict[str, Batch]:
+        """Group key -> its open batch, for the groups that have one: keyed through `open_batch`, and only a
+        batch in an open status."""
+        table = _T("work", "open_batch")
+        unique = self._unique_keys([(k,) for k in keys])
+        columns = ", ".join("b." + c for c in self._BATCH_COLUMNS)
+        sql = (
+            f"/*mdm:keyed*/ SELECT o.signature_key, {columns} FROM {self._q(table)} AS o "
+            f"JOIN {self._row_source()} ON {self._key_join(table, ('signature_key',), 'o')} "
+            f"JOIN {self.t('work', 'batch')} AS b ON b.batch_id = o.batch_id "
+            f"WHERE b.status IN {self._statuses(OPEN_BATCH_STATUSES, BATCH_STATUSES)} ORDER BY o.signature_key"
+        )
+        out: dict[str, Batch] = {}
+        for chunk in capacity.chunks(unique, capacity.KEY_CHUNK):
+            for row in self._fetch_all(sql, [self._key_doc(table, ("signature_key",), chunk)]):
+                out[row[0]] = self._batch_of(row[1:])
+        return out
+
+    def batch_items(
+        self,
+        batch_id: str,
+        roles: Sequence[str],
+        statuses: Sequence[str] | None,
+        after_position: int | None,
+        limit: int,
+    ) -> list[BatchItem]:
+        """One batch's reviews of `roles` (and `statuses`, when given) by position after `after_position`, at
+        most `limit`: paged on the (batch_id, role, status, position) index. Positions are unique within a
+        batch."""
+        sql = (
+            f"/*mdm:paged*/ SELECT {', '.join(self._ITEM_COLUMNS)} FROM {self.t('work', 'batch_item')} "
+            f"WHERE batch_id = ? AND role IN {self._statuses(roles, ITEM_ROLES)}"
+        )
+        params: list[Any] = [batch_id]
+        if statuses is not None:
+            sql += f" AND status IN {self._statuses(statuses, _ITEM_STATUSES)}"
+        if after_position is not None:
+            sql += " AND position > ?"
+            params.append(int(after_position))
+        rows = self._fetch_all(sql + " ORDER BY position, task_id LIMIT ?", [*params, int(limit)])
+        return [self._item_of(r) for r in rows]
+
+    def items_by_task(self, task_ids: Sequence[str]) -> dict[str, list[BatchItem]]:
+        """Task ID -> its reviews in every batch that holds it (a sample outcome, an earlier split, the case's
+        sample line), by batch ID: keyed on the (task_id, status) index."""
+        rows = self._select_keyed(
+            _T("work", "batch_item"),
+            self._ITEM_COLUMNS,
+            ("task_id",),
+            [(t,) for t in task_ids],
+            order_by=("task_id", "batch_id"),
+        )
+        out: dict[str, list[BatchItem]] = {}
+        for row in rows:
+            item = self._item_of(row)
+            out.setdefault(item.task_id, []).append(item)
+        return out
+
+    def update_items(
+        self,
+        batch_id: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        from_status: str | Sequence[str],
+    ) -> int:
+        """Each row (`task_id` and the columns to set, every row naming the same columns) written to the
+        batch's review while it is in `from_status`; returns the reviews changed. `updated_at` is stamped
+        unless given. Texts go through `safe`. Inside a batch transaction the caller holds the batch row first
+        (`hold_batch` or `set_batch`); the status is a service constant, rendered as a literal."""
+        if not rows:
+            return 0
+        names = [c for c in rows[0] if c != "task_id"]
+        for row in rows:
+            if set(row) != {"task_id", *names}:
+                raise ValueError("rows for batch_item name different columns")
+        unknown = set(names) - set(self._ITEM_COLUMNS) | ({"batch_id"} & set(names))
+        if unknown:
+            raise MdmError("unknown_column", table="batch_item", columns=tuple(sorted(unknown)))
+        if "updated_at" not in names:
+            names.append("updated_at")
+        now = self.clock()
+        statuses = (from_status,) if isinstance(from_status, str) else tuple(from_status)
+        values = [
+            (
+                batch_id,
+                row["task_id"],
+                *(self._item_value(c, row[c] if c in row else now) for c in names),
+            )
+            for row in rows
+        ]
+        return self._update_keyed(
+            _T("work", "batch_item"),
+            tuple(names),
+            ("batch_id", "task_id"),
+            values,
+            where=f"t.status IN {self._statuses(statuses, _ITEM_STATUSES)}",
+        )
+
+    def set_batch(self, batch_id: str, *, from_statuses: Sequence[str], **fields: Any) -> bool:
+        """Writes `fields` (batch columns) to the batch while it is in one of `from_statuses`; True when it
+        changed. `updated_at` is stamped unless given. It is a conditional update of the batch row, so it holds
+        the row first, as the lock order asks; it joins an open transaction."""
+        unknown = set(fields) - set(self._BATCH_COLUMNS) | ({"batch_id"} & set(fields))
+        if unknown or not fields:
+            raise MdmError("unknown_column", table="batch", columns=tuple(sorted(unknown)))
+        values = dict(fields)
+        values.setdefault("updated_at", self.clock())
+        names = tuple(values)
+        return (
+            self._update_keyed(
+                _T("work", "batch"),
+                names,
+                ("batch_id",),
+                [(batch_id, *(self._batch_value(c, values[c]) for c in names))],
+                where=f"t.status IN {self._statuses(from_statuses, BATCH_STATUSES)}",
+            )
+            == 1
+        )
+
+    def hold_batch(self, batch_id: str, statuses: Sequence[str]) -> Batch | None:
+        """Inside the caller's transaction: holds the batch row with a no-op conditional update while it is in
+        one of `statuses`, and returns it read back; None when it is in no such status (nothing held). The
+        first statement of every batch transaction that `apply_work`'s own hold does not open."""
+        with self.transaction():
+            held = self._update_keyed(
+                _T("work", "batch"),
+                (),
+                ("batch_id",),
+                [(batch_id,)],
+                extra_set="status = t.status",
+                where=f"t.status IN {self._statuses(statuses, BATCH_STATUSES)}",
+            )
+            if held != 1:
+                return None
+            return self.batches([batch_id]).get(batch_id)
+
+    def fail_items(
+        self, batch_id: str, failures: Sequence[tuple[str, str, str]], subjects: Sequence[str]
+    ) -> int:
+        """One transaction, the batch held first (`staged` or `committing`; else nothing is written and 0 is
+        returned): each (task ID, status, reason) review still `planned` moved to `failed` (a link) or `kept`
+        (a compensation) with its reason, then `subjects` deleted from the tray's locks, so each task returns
+        to the queue. Returns the reviews moved."""
+        with self.transaction():
+            if self.hold_batch(batch_id, ("staged", "committing")) is None:
+                return 0
+            moved = self.update_items(
+                batch_id,
+                [{"task_id": t, "status": status, "reason": reason} for t, status, reason in failures],
+                from_status="planned",
+            )
+            self.release_locks(subjects)
+            return moved
+
+    def undo_batch(
+        self, batch_id: str, entry_id: str, at: datetime, *, after_hold: Callable[[], None] | None = None
+    ) -> bool:
+        """One transaction: first the conditional update that takes a `staged` batch with this entry back to
+        `ready` (its entry, stage time, checker and failed passes cleared); no row changed returns False, having written
+        nothing (on Postgres it waits for a chunk that holds the batch, and then matches nothing, since the
+        chunk left it `committing`). Then `after_hold()` when given (a test's fault point), the entry settled
+        `undone` with its locks freed (`Conflict(already_settled)` when it is no longer staged, rolling back),
+        and the reviews' blind-review flags cleared."""
+        with self.transaction():
+            changed = self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch')} SET status = 'ready', entry_id = NULL, "
+                "staged_at = NULL, checker = NULL, checker_role = NULL, checked_at = NULL, attempts = 0, "
+                "updated_at = ? WHERE batch_id = ? AND status = 'staged' AND entry_id = ?",
+                [at, batch_id, entry_id],
+            )
+            if changed != 1:
+                return False
+            if after_hold is not None:
+                after_hold()
+            if not self.settle_tray(entry_id, "undone", change_set_id=None, outcome="undone", at=at):
+                raise Conflict([_key_token(entry_id)], code="already_settled", batch=batch_id)
+            self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch_item')} SET review = false, updated_at = ? "
+                "WHERE batch_id = ? AND review = true",
+                [at, batch_id],
+            )
+        return True
+
+    def apply_split(
+        self,
+        batch_id: str,
+        sample_task_id: str,
+        task_ids: Sequence[str],
+        reason: str,
+        accesses: Sequence[AccessRow],
+    ) -> int | None:
+        """One transaction, the batch held first (`sampling`), then the gate: the disagreeing review's
+        `split_applied` set only while it is still false, so a split applies once however many refreshes reach
+        it. None when the batch is in no such status or the split applied already: nothing is written, no
+        review moves and no access row is appended. Then the reviews moved to role `split` with `reason`
+        (`split:<comparison>`) while they are still a sample or bulk review, so a review split meanwhile stays;
+        a bulk review's status becomes `split`, and a sample review keeps its outcome; and the access rows
+        appended (one per split record on a personal comparison). Returns the reviews moved."""
+        now = self.clock()
+        with self.transaction():
+            if self.hold_batch(batch_id, ("sampling",)) is None:
+                return None
+            gated = self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch_item')} SET split_applied = true, updated_at = ? "
+                "WHERE batch_id = ? AND task_id = ? AND split_applied = false",
+                [now, batch_id, sample_task_id],
+            )
+            if gated != 1:
+                return None
+            moved = self._update_keyed(
+                _T("work", "batch_item"),
+                ("reason", "updated_at"),
+                ("batch_id", "task_id"),
+                [(batch_id, t, safe(reason), now) for t in sorted(set(task_ids))],
+                extra_set=f"role = 'split', status = CASE WHEN t.role = 'bulk' THEN '{SPLIT_STATUS}' ELSE t.status END",
+                where="t.role IN ('sample', 'bulk')",
+            )
+            self.append_accesses(accesses)
+            return moved
+
+    def request_stop(self, batch_id: str, actor: str, at: datetime, role: str | None = None) -> bool:
+        """Asks a committing batch to stop, once: it records who asked, in which role, and when, and clears
+        `not_before`, so a stop never waits for the throttle. False when the batch is not committing or a stop
+        was asked already."""
+        return (
+            self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch')} SET stop_requested_by = ?, stop_requested_at = ?, "
+                "stop_requested_role = ?, not_before = NULL, updated_at = ? WHERE batch_id = ? "
+                "AND status = 'committing' AND stop_requested_at IS NULL",
+                [actor, at, safe(role), at, batch_id],
+            )
+            == 1
+        )
+
+    def batches_due(self, now: datetime, limit: int) -> list[Batch]:
+        """Committing batches whose next chunk may commit now, by batch ID, at most `limit`: past their throttle
+        (`not_before`), or asked to stop, or whose signature's bulk rights are withdrawn (a keyed `EXISTS` on
+        breaker_state's key), so a stop or a withdrawal is due at once, throttle or not."""
+        columns = ", ".join("t." + c for c in self._BATCH_COLUMNS)
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ SELECT {columns} FROM {self.t('work', 'batch')} AS t WHERE t.status = 'committing' "
+            "AND (t.not_before IS NULL OR t.not_before <= ? OR t.stop_requested_at IS NOT NULL OR EXISTS "
+            f"(SELECT 1 FROM {self.t('work', 'breaker_state')} AS b WHERE b.entity = t.entity "
+            "AND b.band = t.bulk_band AND b.state = 'demoted')) ORDER BY t.batch_id LIMIT ?",
+            [now, int(limit)],
+        )
+        return [self._batch_of(r) for r in rows]
+
+    def batches_by_status(self, statuses: Sequence[str], after: str | None, limit: int) -> list[Batch]:
+        """Batches in `statuses` by batch ID after `after`, at most `limit`."""
+        sql = (
+            f"/*mdm:paged*/ SELECT {', '.join(self._BATCH_COLUMNS)} FROM {self.t('work', 'batch')} "
+            f"WHERE status IN {self._statuses(statuses, BATCH_STATUSES)}"
+        )
+        params: list[Any] = []
+        if after is not None:
+            sql += " AND batch_id > ?"
+            params.append(after)
+        rows = self._fetch_all(sql + " ORDER BY batch_id LIMIT ?", [*params, int(limit)])
+        return [self._batch_of(r) for r in rows]
+
+    def to_confirm_count(self, actor: str, entity: str | None, cap: int) -> int:
+        """Batches waiting for a second steward (`awaiting_checker`) whose maker is not `actor`, of one entity
+        when given, counted up to `cap`."""
+        sql = (
+            f"/*mdm:paged*/ SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'batch')} "
+            "WHERE status = 'awaiting_checker' AND maker <> ?"
+        )
+        params: list[Any] = [actor]
+        if entity is not None:
+            sql += " AND entity = ?"
+            params.append(entity)
+        rows = self._fetch_all(sql + " LIMIT ?) AS capped", [*params, int(cap)])
+        return int(rows[0][0])
+
+    def batch_chunks(self, batch_id: str) -> list[BatchChunk]:
+        """One batch's committed chunks by number: a batch has at most `BATCH_MAX` chunks."""
+        rows = self._fetch_all(
+            f"/*mdm:paged*/ SELECT {', '.join(self._CHUNK_COLUMNS)} FROM {self.t('work', 'batch_chunk')} "
+            "WHERE batch_id = ? ORDER BY chunk_no LIMIT ?",
+            [batch_id, int(capacity.BATCH_MAX)],
+        )
+        return [self._chunk_of(r) for r in rows]
+
+    def release_locks(self, subjects: Sequence[str]) -> int:
+        """Deletes these subjects from the tray's locks (a batch's reviews, chunk by chunk); returns the locks
+        freed. Joins an open transaction."""
+        return self._delete_keyed(_T("work", "tray_lock"), ("subject",), [(s,) for s in subjects])
+
+    def finish_batch(self, batch_id: str, *, status: str, outcome: str, at: datetime, entry_id: str) -> bool:
+        """Ends a `staged` or `committing` batch with this entry (any other batch is left as it is, and False
+        returned), in one transaction, the batch row first: its status (`stopped`, `failed`, or `committed` for
+        a batch whose last reviews all failed after its first chunk), outcome and `finished_at`; every
+        `planned` review moved to `released` with the outcome as its reason; the entry's remaining locks
+        deleted; the tray entry finished (`finish_tray_batch` when `committed`, else settled `failed` with the
+        outcome); the group's `open_batch` row deleted; and, for a compensation that ends `stopped` or
+        `failed`, its original's mark cleared (`clear_compensated_by`), so the rest of the original can be
+        compensated again, while the original chunks it undid keep their `compensated_by`."""
+        with self.transaction():
+            changed = self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch')} SET status = ?, outcome = ?, finished_at = ?, "
+                "not_before = NULL, updated_at = ? WHERE batch_id = ? AND status IN ('staged', 'committing') "
+                "AND entry_id = ?",
+                [self._statuses_one(status), safe(outcome), at, at, batch_id, entry_id],
+            )
+            if changed != 1:
+                return False
+            batch = self.batches([batch_id])[batch_id]
+            self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch_item')} SET status = 'released', reason = ?, "
+                "updated_at = ? WHERE batch_id = ? AND status = 'planned'",
+                [safe(outcome), at, batch_id],
+            )
+            self._execute(
+                f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'tray_lock')} WHERE entry_id = ?", [entry_id]
+            )
+            if not self.finish_tray_batch(entry_id, outcome, at):
+                self.settle_tray(entry_id, "failed", change_set_id=None, outcome=outcome, at=at)
+            self._execute(
+                f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'open_batch')} WHERE batch_id = ?", [batch_id]
+            )
+            if batch.compensates is not None and status in ("stopped", "failed"):
+                self.clear_compensated_by(batch.compensates, batch_id)
+        return True
+
+    def end_batch(
+        self, batch_id: str, *, outcome: str, at: datetime, from_statuses: Sequence[str] = BEFORE_TRAY
+    ) -> bool:
+        """Ends a batch before the tray (`BatchService._end`: a discard, a split of every alike review, or too
+        few reviews left), in one transaction, the batch row first: `discarded` with `outcome` and
+        `finished_at` while it is in one of `from_statuses` (statuses before the tray only; else nothing is
+        written and False is returned); then its group's `open_batch` row deleted, so the group can draw again;
+        and, for a compensation, its original's mark cleared (`clear_compensated_by`), so the original can be
+        compensated again. Its reviews stay as they are: no lock held them, and their tasks stay in the inbox.
+        Joins an open transaction, so a split of every review commits with the end."""
+        if not set(from_statuses) <= set(BEFORE_TRAY):
+            raise ValueError("a batch in the tray ends through finish_batch")
+        with self.transaction():
+            if not self.set_batch(
+                batch_id,
+                from_statuses=from_statuses,
+                status="discarded",
+                outcome=outcome,
+                finished_at=at,
+                updated_at=at,
+            ):
+                return False
+            batch = self.batches([batch_id])[batch_id]
+            if batch.signature_key is not None:
+                self._execute(
+                    f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'open_batch')} WHERE signature_key = ? "
+                    "AND batch_id = ?",
+                    [batch.signature_key, batch_id],
+                )
+            if batch.compensates is not None:
+                self.clear_compensated_by(batch.compensates, batch_id)
+        return True
+
+    @staticmethod
+    def _statuses_one(status: str) -> str:
+        """A batch status bound as a parameter, checked against the known statuses."""
+        if status not in BATCH_STATUSES:
+            raise ValueError("not a known status")
+        return status
+
+    def _hold_batch(self, entity: str, chunk: BatchChunkWrite | None) -> None:
+        """A chunk's first step (`apply_work`): the batch row held while `staged` or `committing` with no stop
+        asked, else `Conflict(batch_stopped)` for a stop or `Conflict(batch_changed)`; for a link, its
+        signature's bulk rights held as the commit holds the automatic band, else `Conflict(bulk_withdrawn)`."""
+        if chunk is None:
+            return
+        held = self._update_keyed(
+            _T("work", "batch"),
+            (),
+            ("batch_id",),
+            [(chunk.batch_id,)],
+            extra_set="status = t.status",
+            where="t.status IN ('staged', 'committing') AND t.stop_requested_at IS NULL",
+        )
+        key = [_key_token(chunk.batch_id)]
+        if held != 1:
+            found = self.batches([chunk.batch_id]).get(chunk.batch_id)
+            if found is not None and found.stop_requested_at is not None:
+                raise Conflict(key, code="batch_stopped")
+            raise Conflict(key, code="batch_changed")
+        if chunk.kind == "link" and chunk.bulk_band is not None:
+            if not self.hold_band(entity, chunk.bulk_band, chunk.signature):
+                raise Conflict(key, code="bulk_withdrawn")
+
+    def _write_batch_chunk(self, chunk: BatchChunkWrite | None) -> None:
+        """A chunk's own writes, after its published rows (`apply_work`): its `batch_chunk` row exactly once
+        (else `Conflict(chunk_committed)`); its reviews from `planned` to `committed` with their chunk and
+        change set (a short count is `Conflict(item_settled)`); for a compensation, the original's reviews
+        moved to `compensated` and the original chunk marked; the batch's counts, throttle and attempts (set
+        back to 0), `committing` after the first chunk and `committed` after the last, which finishes its
+        entry, frees its group and deletes every lock the entry still holds; last, the chunk's lock subjects
+        released."""
+        if chunk is None:
+            return
+        if chunk.change_set_id is None:
+            raise ValueError("a chunk is written with its change set")
+        now = self.clock()
+        key = [_key_token(chunk.batch_id)]
+        inserted = self._insert(
+            _T("work", "batch_chunk"),
+            [
+                {
+                    "batch_id": safe(chunk.batch_id),
+                    "chunk_no": int(chunk.chunk_no),
+                    "change_set_id": safe(chunk.change_set_id),
+                    "commit_version": chunk.commit_version,
+                    "items": len(set(chunk.task_ids)),
+                    "rows": int(chunk.rows),
+                    "committed_at": now,
+                    "compensated_by": None,
+                    "compensated_at": None,
+                }
+            ],
+            on_conflict_nothing=("batch_id", "chunk_no"),
+        )
+        if inserted != 1:
+            raise Conflict(key, code="chunk_committed")
+        task_ids = sorted(set(chunk.task_ids))
+        moved = self._update_keyed(
+            _T("work", "batch_item"),
+            ("status", "chunk_no", "change_set_id", "updated_at"),
+            ("batch_id", "task_id"),
+            [
+                (chunk.batch_id, t, "committed", int(chunk.chunk_no), safe(chunk.change_set_id), now)
+                for t in task_ids
+            ],
+            where="t.status = 'planned'",
+        )
+        if moved != len(task_ids):
+            raise Conflict(key, code="item_settled")
+        if chunk.compensates is not None:
+            undone = self._update_keyed(
+                _T("work", "batch_item"),
+                ("status", "updated_at"),
+                ("batch_id", "task_id"),
+                [(chunk.compensates, t, "compensated", now) for t in task_ids],
+                where="t.status = 'committed'",
+            )
+            if undone != len(task_ids):
+                raise Conflict(key, code="item_settled")
+            if chunk.undoes_chunk is not None:
+                marked = self._execute(
+                    f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch_chunk')} SET compensated_by = ?, "
+                    "compensated_at = ? WHERE batch_id = ? AND chunk_no = ? AND compensated_by IS NULL",
+                    [safe(chunk.batch_id), now, chunk.compensates, int(chunk.undoes_chunk)],
+                )
+                if marked != 1:
+                    raise Conflict(key, code="item_settled")
+        batch = self.batches([chunk.batch_id])[chunk.batch_id]
+        fields: dict[str, Any] = {
+            "chunks_committed": batch.chunks_committed + 1,
+            "rows_committed": batch.rows_committed + int(chunk.rows),
+            "not_before": (
+                now + timedelta(seconds=int(chunk.rows) * chunk.seconds_per_row)
+                if chunk.seconds_per_row > 0 and not chunk.last
+                else None
+            ),
+            "attempts": 0,
+            "updated_at": now,
+        }
+        if chunk.first:
+            fields["status"] = "committing"
+        if chunk.last:
+            fields.update(status="committed", outcome="committed", finished_at=now)
+        if not self.set_batch(chunk.batch_id, from_statuses=("staged", "committing"), **fields):
+            raise Conflict(key, code="batch_changed")
+        if chunk.last:
+            if not chunk.first:
+                self.finish_tray_batch(chunk.entry_id, "committed", now)
+            self._execute(
+                f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'open_batch')} WHERE batch_id = ?",
+                [chunk.batch_id],
+            )
+            # every lock the entry still holds goes with its last chunk, as `finish_batch` frees them
+            self._execute(
+                f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'tray_lock')} WHERE entry_id = ?",
+                [chunk.entry_id],
+            )
+        self.release_locks(chunk.subjects)
+
+    def _write_batch_samples(self, samples: Sequence[BatchSampleWrite]) -> None:
+        """Each forced-sample outcome, with its entry and the comparison a disagreeing decision named, written
+        to a sample review still `open`; it never raises, since a sample split or voided meanwhile stays as it
+        is. It touches no batch row, so it needs no place in the lock order."""
+        if not samples:
+            return
+        now = self.clock()
+        for sample in samples:
+            if sample.status not in SAMPLE_OUTCOMES:
+                raise ValueError("not a known status")
+            self._update_keyed(
+                _T("work", "batch_item"),
+                ("status", "entry_id", "split_on", "updated_at"),
+                ("batch_id", "task_id"),
+                [
+                    (
+                        sample.batch_id,
+                        sample.task_id,
+                        sample.status,
+                        safe(sample.entry_id),
+                        safe(sample.split_on),
+                        now,
+                    )
+                ],
+                where="t.role = 'sample' AND t.status = 'open'",
+            )
 
     # ------------------------------------------------------------------ work group: rule results, references, jobs
 
@@ -4002,6 +4988,32 @@ class SqlStore(ABC):
             ],
         )
         return access_id
+
+    def append_accesses(self, rows: Sequence[AccessRow]) -> int:
+        """Access-log rows written through `_insert`, so many rows bind one JSON row document per
+        `WRITE_CHUNK_ROWS` chunk; each action, reason and detail through `safe`. Joins an open transaction;
+        returns the rows written. `append_access` stays for one row."""
+        if not rows:
+            return 0
+        now = self.clock()
+        return self._insert(
+            _T("audit", "access_log"),
+            [
+                {
+                    "access_id": "AC-" + secrets.token_hex(10),
+                    "actor": row.actor,
+                    "actor_role": safe(row.actor_role),
+                    "action": safe(row.action),
+                    "entity": safe(row.entity),
+                    "master_id": safe(row.master_id),
+                    "attribute": safe(row.attribute),
+                    "reason": safe(row.reason),
+                    "detail": safe(dict(row.detail)),
+                    "accessed_at": now,
+                }
+                for row in rows
+            ],
+        )
 
     def access_log(self, after: str | None, limit: int) -> list[dict[str, Any]]:
         """Access rows by access ID after `after`, as column -> value."""

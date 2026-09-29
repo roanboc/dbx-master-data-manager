@@ -97,4 +97,4 @@ flowchart LR
   style dobj5 fill:#9adcf0,stroke:#0288d1,color:#333
 ```
 
-The view follows one source change through the five domains, from the landing tables to the change feed; [data objects](./2_data-objects.md) lists all twenty-five. The dashed edges to the two outside parties wait for both interfaces to be agreed and deployed, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)).
+The view follows one source change through the five domains, from the landing tables to the change feed; [data objects](./2_data-objects.md) lists all twenty-six. The dashed edges to the two outside parties wait for both interfaces to be agreed and deployed, **Pending — future initiative** ([initiative 4](../6_transition/2_sequence.md#sequence)).

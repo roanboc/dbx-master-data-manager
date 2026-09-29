@@ -205,6 +205,17 @@ def test_the_declared_figures_are_consistent() -> None:
     assert capacity.INBOX_PAGE <= capacity.COUNT_CAP
     assert capacity.TRAY_SHOWN <= capacity.COUNT_CAP
     assert capacity.FLUSH_ATTEMPTS >= 1 and capacity.FLUSH_BATCH <= capacity.READ_PAGE
+    # signature batches (story 3.3)
+    from mdm.config import Settings
+    from mdm.models.batch import BATCH_MAX
+
+    assert capacity.BATCH_MAX == BATCH_MAX
+    assert Settings().batch_checker_above <= capacity.BATCH_MAX
+    assert capacity.GROUP_WINDOW == capacity.COUNT_CAP
+    assert capacity.BATCH_PAGE <= capacity.COUNT_CAP
+    assert capacity.GROUP_MIN >= 2 and capacity.GROUPS_SHOWN <= capacity.GROUP_WINDOW
+    assert capacity.BATCH_MAX <= capacity.ARRIVAL_BATCH * capacity.FLUSH_BATCH
+    assert {"batch", "batch_item", "batch_chunk"} <= set(capacity.LARGE_TABLES)
 
 
 def test_the_paging_helpers() -> None:
@@ -274,3 +285,77 @@ def test_every_statement_of_the_checkpoint_is_tagged_and_reads_samples_keyed_or_
     assert _tag_problems(statements, hub.store.prefix) == []
     on_samples = [s for s in statements if "_work.quality_sample" in s and "SELECT" in s.upper()]
     assert on_samples and all(s.startswith(("/*mdm:keyed*/", "/*mdm:paged*/")) for s in on_samples)
+
+
+def test_every_statement_of_a_batch_is_tagged_and_reads_batch_tables_keyed_or_paged(hub, monkeypatch) -> None:
+    """The Alike reviews page, a draw, the sample decided and a split, a refresh, a preparation, a stage above the
+    threshold and its confirmation, flushed chunks, a stop, a compensation and a withdrawal of bulk rights (story
+    3.3)."""
+    from mdm.services.context import Hub
+    from tests.helpers import (
+        COORDINATOR,
+        OWNER,
+        STEWARD,
+        alike_reviews,
+        decide_sample,
+        flush_past_window,
+        workbench_world,
+    )
+
+    workbench_world(hub, persons=32)
+    alike_reviews(hub, 12)
+    local = Hub.open(
+        hub.settings.with_(batch_checker_above=3, throttle_rows_per_hour=1),
+        store=hub.store,
+        as_role="data_owner",
+    )
+    monkeypatch.setattr(capacity, "COMMIT_CHUNK_ROWS", 6)
+    statements: list[str] = []
+    remove = hub.store.add_listener(statements.append)
+    try:
+        page = local.batches.groups(actor=STEWARD)
+        key = page.groups[0].group_key
+        local.batches.group(key, actor=STEWARD, entity="person")
+        batch = local.batches.draw(key, actor=STEWARD, entity="person")
+        sample = local.store.batch_items(batch.batch_id, ("sample",), None, None, 100)
+        decide_sample(
+            local, batch.batch_id, actor=STEWARD, answers={sample[0].task_id: ("not_a_match", "given_name")}
+        )
+        local.batches.batch(batch.batch_id, actor=STEWARD)
+        local.batches.prepare(batch.batch_id, actor=STEWARD)
+        local.batches.rows(batch.batch_id, actor=STEWARD)
+        local.batches.stage(batch.batch_id, actor=STEWARD)
+        local.inbox.counts(actor=COORDINATOR)
+        local.batches.confirm(batch.batch_id, actor=COORDINATOR)
+        local.tray.entries(actor=COORDINATOR)
+        flush_past_window(local)
+        local.batches.stop(batch.batch_id, actor=STEWARD)
+        flush_past_window(local)
+        compensation = local.batches.compensate(batch.batch_id, actor=COORDINATOR, reason="pattern_wrong")
+        local.batches.rows(compensation.batch_id, actor=COORDINATOR)
+        local.batches.discard(compensation.batch_id, actor=COORDINATOR)
+        local.breaker.check_signature("person", batch.signature)  # the bulk-rights trigger's own window
+        local.breaker.demo_withdraw("person", key)
+        local.breaker.status(["person"], actor=OWNER)
+        local.batches.listing(actor=STEWARD)
+        local.batches.backfill_signatures()
+    finally:
+        remove()
+        local.close()
+    assert statements
+    assert _tag_problems(statements, hub.store.prefix) == []
+    on_batches = [
+        s
+        for s in statements
+        if re.search(r"_work\.(batch|batch_item|batch_chunk)\b", s) and "SELECT" in s.upper()
+    ]
+    assert on_batches and all(s.startswith(("/*mdm:keyed*/", "/*mdm:paged*/")) for s in on_batches)
+    counts = [s for s in statements if "COUNT(" in s.upper() and "_work.task" in s]
+    assert counts and all(s.startswith("/*mdm:paged*/") and " LIMIT " in s.upper() for s in counts)
+
+
+def test_the_batch_modules_keep_the_import_rule() -> None:
+    engine = _imports(SRC / "engine" / "batch.py")
+    assert {m.split(".")[1] for m in engine if m.count(".") >= 1} <= {"models", "capacity", "engine"}
+    services = _imports(SRC / "services" / "batches.py")
+    assert not {m for m in services if m.startswith(("mdm.ui", "mdm.cli", "mdm.agent", "mdm.demo"))}

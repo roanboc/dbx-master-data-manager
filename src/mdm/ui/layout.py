@@ -30,7 +30,8 @@ from dash.development.base_component import Component
 
 from mdm import capacity
 from mdm.config import Settings
-from mdm.models.authority import ROLE_LABELS, ROLES, Actor
+from mdm.models.authority import PERSONA_LABELS, PERSONAS, ROLE_LABELS, Actor
+from mdm.models.batch import BATCH_ID_RE, SIGNATURE_KEY_RE
 from mdm.models.tasks import TASK_KINDS
 from mdm.models.workbench import ALL_VIEWS, SAMPLES_VIEW, HubBadges
 from mdm.ui import context, ids
@@ -58,15 +59,18 @@ def entity_label(entity: str) -> str:
 
 
 def role_text(actor: Actor) -> str:
-    """ "Data steward", or "Data steward (persona)" for a persona."""
-    label = ROLE_LABELS.get(actor.role, actor.role)
-    return f"{label} (persona)" if actor.persona else label
+    """ "Data steward", or "Data steward (persona)" for a persona ("Data steward 2 (persona)" for the second
+    data steward)."""
+    if actor.persona:
+        code = actor.name.partition(":")[2]
+        return f"{PERSONA_LABELS.get(code, ROLE_LABELS.get(actor.role, actor.role))} (persona)"
+    return ROLE_LABELS.get(actor.role, actor.role)
 
 
 def default_persona(settings: Settings) -> str:
-    """The role a local workbench acts as before the tab chooses one: MDM_ROLE, else the data steward."""
+    """The persona a local workbench acts as before the tab chooses one: MDM_ROLE, else the data steward."""
     role = (settings.role or "").strip()
-    return role if role in ROLES else DEFAULT_PERSONA
+    return role if role in PERSONAS else DEFAULT_PERSONA
 
 
 def fallback_badges(settings: Settings) -> HubBadges:
@@ -112,10 +116,13 @@ def header(settings: Settings, badges: HubBadges) -> list[Component]:
         persona_part = [
             dmc.Select(
                 id=ids.PERSONA_SELECT,
-                data=[{"value": role, "label": ROLE_LABELS[role]} for role in ROLES],
+                data=[{"value": code, "label": label} for code, label in PERSONA_LABELS.items()],
                 value=persona,
                 allowDeselect=False,
                 size="sm",
+                # every persona in view at once: a list that scrolls would be a scroll region no key reaches
+                # (axe: scrollable-region-focusable), since the arrows move through the options, not the list
+                maxDropdownHeight=360,
                 w=232,
                 leftSection=html.Span("Act as", className="mdm-act-as"),
                 leftSectionWidth=58,
@@ -124,7 +131,7 @@ def header(settings: Settings, badges: HubBadges) -> list[Component]:
                 **{"aria-label": "Act as"},
             )
         ]
-    role = Actor(f"persona:{persona}", "person", persona, persona=True) if badges.local else None
+    role = Actor(f"persona:{persona}", "person", PERSONAS[persona], persona=True) if badges.local else None
     right = dmc.Group(
         [
             html.Div(tray.popover(), id=ids.TRAY_WRAP),
@@ -247,6 +254,7 @@ def stores() -> list[Component]:
         dcc.Store(id=ids.TRAY_STATE, storage_type="memory"),
         dcc.Store(id=ids.TRAY_VERSION, storage_type="memory", data=0),
         dcc.Store(id=ids.SETTLED, storage_type="memory"),
+        dcc.Store(id=ids.TRAY_LIVE, storage_type="memory"),
         dcc.Interval(id=ids.TRAY_POLL, interval=capacity.TRAY_POLL_SECONDS * 1000, disabled=True),
         dcc.Interval(id=ids.CLOCK_TICK, interval=1000, disabled=True),
         dcc.Interval(id=ids.COUNTS_POLL, interval=capacity.COUNTS_REFRESH_SECONDS * 1000),
@@ -297,11 +305,25 @@ def shell(settings: Settings | None = None, badges: HubBadges | None = None) -> 
 # ---------------------------------------------------------------------------------------------- header state
 
 
+def _alike_path(pathname: str) -> bool:
+    """Whether a path is the Alike reviews page or a batch's page (story 3.3)."""
+    if pathname.rstrip("/") == rail.ALIKE_HREF:
+        return True
+    head, _, batch = pathname.strip("/").partition("/")
+    return head == "batch" and bool(BATCH_ID_RE.match(batch))
+
+
 def inbox_query(pathname: str | None, search: str | None) -> dict[str, str | None]:
-    """The rail's view of the address: `view` and `kind` codes on the inbox; nothing elsewhere."""
-    if (pathname or "/") != "/":
-        return {}
+    """The rail's view of the address: `view` and `kind` codes on the inbox; the Alike reviews mark
+    (`rail.ALIKE`) on the Alike reviews page, a batch's page and the inbox filtered to a group or a batch;
+    nothing elsewhere."""
+    path = pathname or "/"
+    if path != "/":
+        return {"view": rail.ALIKE} if _alike_path(path) else {}
     pairs = dict(parse_qsl((search or "").lstrip("?")))
+    group, batch = pairs.get("group"), pairs.get("batch")
+    if (group and SIGNATURE_KEY_RE.match(group)) or (batch and BATCH_ID_RE.match(batch)):
+        return {"view": rail.ALIKE}
     view = pairs.get("view")
     kind = pairs.get("kind")
     view = view if view in ALL_VIEWS else "mine"
@@ -313,25 +335,34 @@ def entity_filter(ctx: context.UiContext, entity: object) -> str | None:
     return entity if isinstance(entity, str) and entity in ctx.badges.entities else None
 
 
+def header_parts(
+    ctx: context.UiContext, entity: object, pathname: str | None, search: str | None
+) -> tuple[tuple[str, list | str, dict, Component | list, dict], int | None]:
+    """S6 without Dash: `header_state`'s five parts, and how many of the actor's tray entries still move
+    (`ViewCounts.tray_live`: staged, or a batch committing; None when the counts were not read). One capped
+    count read (`inbox.counts`)."""
+    role = role_text(ctx.actor)
+    tray_style = {} if ctx.can("work_tasks") else HIDDEN
+    if not ctx.can("view_tasks"):
+        return (role, "", HIDDEN, [], tray_style), None
+    counts, failure = context.guarded(
+        ctx.hub.inbox.counts, actor=ctx.actor, entity=entity_filter(ctx, entity)
+    )
+    if counts is None:
+        return (role, "", HIDDEN, [], tray_style), None
+    breaching = counts.views.get("breaching", 0)
+    link = [icon("alert"), f"{count_text(breaching)} breaching"] if breaching else ""
+    rail_view = rail.render(counts, inbox_query(pathname, search))
+    return (role, link, ({} if breaching else HIDDEN), rail_view, tray_style), counts.tray_live
+
+
 def header_state(
     ctx: context.UiContext, entity: object, pathname: str | None, search: str | None
 ) -> tuple[str, list | str, dict, Component | list, dict]:
     """S6 without Dash: the role badge's text, the breaches link's children and style, the view rail, and
     the tray's style (hidden for a role that decides no task). One capped count read (`inbox.counts`); a
     role that sees no tasks gets no link and no rail."""
-    role = role_text(ctx.actor)
-    tray_style = {} if ctx.can("work_tasks") else HIDDEN
-    if not ctx.can("view_tasks"):
-        return role, "", HIDDEN, [], tray_style
-    counts, failure = context.guarded(
-        ctx.hub.inbox.counts, actor=ctx.actor, entity=entity_filter(ctx, entity)
-    )
-    if counts is None:
-        return role, "", HIDDEN, [], tray_style
-    breaching = counts.views.get("breaching", 0)
-    link = [icon("alert"), f"{count_text(breaching)} breaching"] if breaching else ""
-    rail_view = rail.render(counts, inbox_query(pathname, search))
-    return role, link, ({} if breaching else HIDDEN), rail_view, tray_style
+    return header_parts(ctx, entity, pathname, search)[0]
 
 
 def register(app) -> None:
@@ -376,6 +407,7 @@ def register(app) -> None:
         Output(ids.NAV_VIEWS, "children"),
         Output(ids.TRAY_WRAP, "style"),
         Output(ids.NAV_ROLE, "children"),
+        Output(ids.TRAY_LIVE, "data"),
         Input(ids.PERSONA, "data"),
         Input(ids.ENTITY, "data"),
         Input(ids.COUNTS_POLL, "n_intervals"),
@@ -387,6 +419,18 @@ def register(app) -> None:
     def refresh_header(persona, entity, _polls, pathname, search, _settled, _tray):
         request_ctx, _failure = context.guarded(context.current, persona)
         if request_ctx is None:
-            return (no_update,) * 6
-        role, link, style, views, tray_style = header_state(request_ctx, entity, pathname, search)
-        return role, link, style, views, tray_style, f"Acting as {role}"
+            return (no_update,) * 7
+        (role, link, style, views, tray_style), live = header_parts(request_ctx, entity, pathname, search)
+        return role, link, style, views, tray_style, f"Acting as {role}", no_update if live is None else live
+
+    # S6b: a tray that is not polling wakes when the counts see more (or fewer) of the steward's entries
+    # moving than the tab shows, so a batch confirmed by a second steward reaches its maker's tray within one
+    # counts refresh; the tray's refresh then keeps its poll on while anything moves (story 3.3). It wakes
+    # the poll rather than bumping TRAY_VERSION, which S6 takes as an input: that would be a cycle.
+    app.clientside_callback(
+        ClientsideFunction(namespace="mdm_shell", function_name="trayWake"),
+        Output(ids.TRAY_POLL, "disabled", allow_duplicate=True),
+        Input(ids.TRAY_LIVE, "data"),
+        State(ids.TRAY_STATE, "data"),
+        prevent_initial_call=True,
+    )

@@ -15,6 +15,7 @@ from mdm.models.errors import PlatformRefused
 from mdm.models.workbench import HubBadges, ServiceLevels
 from mdm.services.arrival import ArrivalService
 from mdm.services.authority import AuthorityService
+from mdm.services.batches import BatchService
 from mdm.services.breaker import BreakerService
 from mdm.services.codelists import CodeListService
 from mdm.services.commit import CommitService
@@ -57,6 +58,7 @@ class Hub:
     lookup: LookupService
     breaker: BreakerService
     quality: QualityService
+    batches: BatchService
 
     def __init__(
         self,
@@ -124,8 +126,29 @@ class Hub:
             quality=self.quality,
             breaker=self.breaker,
         )
+        # signature batches (story 3.3): after the decisions, before the tray, which commits their chunks
+        self.batches = BatchService(
+            settings,
+            store,
+            self.registry,
+            self.matching,
+            self.lifecycle,
+            self.commit,
+            self.quality,
+            self.breaker,
+            self.privacy,
+            self.arrival,
+            clock,
+        )
         self.tray = TrayService(
-            settings, store, self.decisions, self.inbox, self.arrival, clock, breaker=self.breaker
+            settings,
+            store,
+            self.decisions,
+            self.inbox,
+            self.arrival,
+            clock,
+            breaker=self.breaker,
+            batches=self.batches,
         )
         self.lookup = LookupService(settings, store, self.registry, self.privacy, clock)
         self.estimation = EstimationService(store, self.registry)

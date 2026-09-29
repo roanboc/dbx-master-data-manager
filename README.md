@@ -20,9 +20,12 @@ and reads any record with its provenance, masked by role. The automated
 matcher's checkpoint is built too: blind review samples the matcher's and the
 stewards' decisions, and the quality breaker demotes an entity's automatic
 band when agreement falls or arrivals spike. The matcher may therefore meet
-real data once initiative 4 deploys it. The later stories add decisions by
-pattern, routing, search, record actions with maker and checker, and
-authoring ([scope](./architecture/scope/3_steward-workbench.md)). Nothing is
+real data once initiative 4 deploys it. Stewards can also decide alike
+reviews together: after a unanimous forced sample, a batch links the rest in
+chunks under one batch ID, and a second steward confirms one above 250
+decisions. The later stories add routing, search, record actions with maker
+and checker, and authoring
+([scope](./architecture/scope/3_steward-workbench.md)). Nothing is
 deployed yet: tuning, governance and the deployment to Databricks follow in
 initiative 4. Release 1 proves Person and Organisation end to end. The
 [roadmap](./architecture/6_transition/2_sequence.md) orders the rest.
@@ -57,7 +60,9 @@ make demo           # a fresh local store with invented tasks to decide
 make ui             # then open http://127.0.0.1:8050
 ```
 
-The persona switcher in the header works on a local store only. Press `?` for
+The persona switcher in the header works on a local store only. It offers
+every role once, and a second data steward, so a batch's maker, its second
+steward and whoever answers its blind reviews are three people. Press `?` for
 the keys. `mdm ui` holds the DuckDB file while it runs, so stop it before other
 `mdm` commands on the same store.
 
@@ -70,6 +75,25 @@ a data owner restores it, on the command line:
 ```bash
 uv run mdm breaker status                                        # each entity's band, agreement, samples and arrivals
 uv run mdm breaker restore --entity person --reason cause_fixed  # a data owner, after the cause is fixed
+```
+
+Alike reviews, G from the inbox, groups the open reviews whose best candidate
+shows the same pattern of comparisons. A steward draws a forced sample of one
+group and decides it one by one in the inbox. When a sample review disagrees,
+its steward names the comparison that misled, and the reviews that share the
+record's value on it leave the batch, to be decided one by one. Once the
+sample is unanimous, the batch page shows every row's change before anything
+is linked. The batch then waits in the undo tray as one decision, confirmed
+first by a second steward above 250 links, and commits in chunks that Stop can
+halt before the next one. When blind review of a pattern's batches disagrees,
+the quality breaker withdraws that pattern's bulk decisions until a data owner
+restores them:
+
+```bash
+uv run mdm batch list                                                               # the open batches, with their stage
+uv run mdm batch show BAT-… --rows                                                  # one batch, with every row's change
+uv run mdm batch compensate BAT-… --reason pattern_wrong                            # undo a committed batch within 30 days, then stage it
+uv run mdm breaker restore --entity person --signature bulk:… --reason false_alarm  # a data owner restores bulk decisions
 ```
 
 The screenshots show the invented demo world, taken with the stub assistant
@@ -108,6 +132,22 @@ _A quality sample decided blind: the record and the golden records it might belo
 
 _The same quality sample in the dark colour scheme._
 
+![The Alike reviews page: open reviews grouped by the pattern of their comparisons, with counts, labels and blind-review agreement](docs/screenshots/groups-light.png)
+
+_Alike reviews: each group's pattern of comparisons, its reviews, its label history and its blind-review agreement. The largest group names its batch; the others offer a forced sample to draw, or say they are too few to link together._
+
+![The Alike reviews page in the dark colour scheme](docs/screenshots/groups-dark.png)
+
+_The Alike reviews page in the dark colour scheme._
+
+![A batch checked row by row before it is linked, with its summary line](docs/screenshots/batch-light.png)
+
+_A Person batch after a unanimous forced sample of 5: its summary line, and every row's change with the golden record it joins, names masked, before anything is linked. "Link all 44" is the one filled button._
+
+![The same batch in the dark colour scheme](docs/screenshots/batch-dark.png)
+
+_The same batch in the dark colour scheme._
+
 ## What it does
 
 - Matches the source changes the integration platform writes into landing
@@ -121,13 +161,15 @@ _The same quality sample in the dark colour scheme._
 - Samples a share of the automated matcher's and the stewards' decisions for
   blind review, and demotes an entity's automatic band when agreement falls or
   arrivals spike, until a data owner restores it.
+- Groups alike review tasks by signature, links them together after a
+  unanimous forced sample in chunks under one batch ID, with Stop, and undoes a
+  whole batch after commit as a new change set per chunk.
 - Masks personal values by role on every screen, and logs every reveal with
   its reason.
 - Gives the same answers on DuckDB and on Postgres.
 
 ## What it will do
 
-- Let stewards decide alike tasks together after a forced sample.
 - Put search, record actions with maker and checker, and record authoring on
   screen.
 - Run on the platform, on Lakebase, with the same answers as locally.

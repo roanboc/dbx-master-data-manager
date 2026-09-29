@@ -31,6 +31,7 @@ KEY_HELP = (
     ("S", "Snooze"),
     ("E", "Escalate"),
     ("U", "Undo"),
+    ("G", "Alike reviews: open reviews grouped by signature"),
     ("F", "Decide pane full width"),
     (".", "Show or hide why"),
     ("Enter", "Open the candidate's record"),
@@ -40,6 +41,11 @@ KEY_HELP = (
 INTRODUCTION = (
     "On the inbox, single keys move and decide when no field, list or menu has focus. "
     "Moving never claims a task; your first decision does, and it waits in the tray before it commits."
+)
+#: the one place a decision key works with a field focused: the forced sample's comparison choice (story 3.3)
+NAMING = (
+    "On a forced-sample review, N (or L on another candidate) first asks which comparison misled: choose it "
+    "with the arrow keys, then press the same key again to decide."
 )
 SWITCH_LABEL = "Use single-key shortcuts"
 SWITCH_DESCRIPTION = (
@@ -69,6 +75,7 @@ def help_modal() -> Component:
         closeButtonProps={"aria-label": "Close the shortcuts"},
         children=[
             html.P(INTRODUCTION, className="mdm-modal-text"),
+            html.P(NAMING, className="mdm-modal-text"),
             dmc.Switch(
                 id=ids.KEYS_SWITCH,
                 label=SWITCH_LABEL,

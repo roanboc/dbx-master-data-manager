@@ -6,7 +6,9 @@ local store under `.mdm/`, and always with the stub assistant and no platform va
 line runs as subprocesses (`python -m mdm …`), exactly as `make demo` runs it: creations and hard cases
 first, then the later events, so stewards get reviews, close calls, held updates and orphans, and a share
 of the matcher's decisions is drawn for blind review (quality samples). `trip_breaker` pauses an entity's
-automatic linking with the breaker's demo trip, on the local store only, for the checks of its notice.
+automatic linking with the breaker's demo trip, on the local store only, for the checks of its notice;
+`largest_group` names an entity's largest group of alike reviews, and `withdraw_bulk` withdraws its bulk
+decisions with the breaker's demo withdrawal (story 3.3).
 
     uv run --group gui python tools/workbench_live.py            # seed a temporary store and serve it
     uv run --group gui python tools/workbench_live.py --browser  # … and open Chromium on it
@@ -135,6 +137,34 @@ def trip_breaker(path: Path, entity: str, *, figures: Mapping[str, Any] | None =
     settings = Settings(duckdb_path=str(_checked(path)), models_dir=str(MODELS), agent_provider="stub")
     with Hub.open(settings, as_role="data_owner") as hub:
         hub.breaker.demo_trip(entity, figures=dict(figures or TRIP_FIGURES))
+
+
+def largest_group(path: Path, entity: str) -> str:
+    """The key (`SIG-…`) of the largest signature group of `entity`'s open reviews on the DuckDB file `path`,
+    as the Alike reviews page lists it first (story 3.3): a hub opened in this process, then closed."""
+    from mdm.config import Settings
+    from mdm.services.context import Hub
+
+    settings = Settings(duckdb_path=str(_checked(path)), models_dir=str(MODELS), agent_provider="stub")
+    with Hub.open(settings, as_role="data_steward") as hub:
+        found = hub.batches.groups(actor=hub.actor, entity=entity).groups
+    if not found:
+        raise RuntimeError(f"no two open {entity} reviews share a pattern")
+    return found[0].group_key
+
+
+def withdraw_bulk(path: Path, entity: str, *, figures: Mapping[str, Any] | None = None) -> str:
+    """Withdraws the bulk decisions of `entity`'s largest signature group on the DuckDB file `path`, as the
+    breaker's demo withdrawal does (local stores only; the audit marks it `demo`), and returns the group's
+    key: a hub opened in this process as a data owner, then closed."""
+    from mdm.config import Settings
+    from mdm.services.context import Hub
+
+    group = largest_group(path, entity)
+    settings = Settings(duckdb_path=str(_checked(path)), models_dir=str(MODELS), agent_provider="stub")
+    with Hub.open(settings, as_role="data_owner") as hub:
+        hub.breaker.demo_withdraw(entity, group, figures=dict(figures) if figures is not None else None)
+    return group
 
 
 def copy_store(source: Path, target: Path) -> Path:

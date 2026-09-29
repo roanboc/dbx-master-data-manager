@@ -77,6 +77,14 @@ _SETTING_VARIABLES = (
     "MDM_BREAKER_SPIKE_MULTIPLE",
     "MDM_BREAKER_SPIKE_DAYS",
     "MDM_BREAKER_SPIKE_MIN",
+    # signature batches (story 3.3)
+    "MDM_FORCED_SAMPLE_BASE",
+    "MDM_FORCED_SAMPLE_PER",
+    "MDM_BATCH_CHECKER_ABOVE",
+    "MDM_BATCH_UNDO_DAYS",
+    "MDM_BULK_AGREEMENT",
+    "MDM_BULK_WINDOW",
+    "MDM_BULK_MIN_SAMPLES",
     # libpq and Settings.from_env read these: a developer's shell must not point a test elsewhere
     "PGHOST",
     "PGPORT",

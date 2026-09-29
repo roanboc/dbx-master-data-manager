@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from typing import TypeVar
 
+from mdm.models.batch import BATCH_MAX as BATCH_MAX  # re-exported
 from mdm.models.errors import CapacityError
 from mdm.models.quality import BREAKER_WINDOW_CAP as BREAKER_WINDOW_CAP  # re-exported
 from mdm.models.quality import SAMPLE_OPEN_CAP_MAX as SAMPLE_OPEN_CAP_MAX  # re-exported
@@ -72,6 +73,17 @@ BREAKER_Z = 1.645  # the one-sided 95% bound on agreement (Wilson's)
 ARRIVAL_HOURS_KEPT = 192  # arrival counts kept per entity: the current hour and 7 days back, with margin
 HAND_BACK_PAGE = ARRIVAL_BATCH  # records waiting for the breaker handed back to arrival in one transaction
 
+# Signature batches (story 3.3)
+# BATCH_MAX (1,000, proposed): the most reviews one batch takes; models.batch holds it, so a setting's bound
+# may read it, and it is imported above. Code reads it, and COMMIT_CHUNK_ROWS, when it runs, never as a
+# default argument bound at import, since tests patch them. COMMIT_CHUNK_ROWS bounds a chunk's decisions as
+# well as its published rows.
+GROUP_WINDOW = COUNT_CAP  # the Alike reviews page groups the open reviews due soonest, this many
+GROUPS_SHOWN = 25  # the largest groups it lists (proposed)
+GROUP_MIN = 2  # a group holds at least this many reviews
+BATCH_PAGE = INBOX_PAGE  # a batch's rows in one page, keyed by position
+BATCH_POLL_SECONDS = TRAY_POLL_SECONDS  # how often the batch page refreshes while its batch moves
+
 #: tables no statement may read without a key document, a full key or a LIMIT; + every entity table
 LARGE_TABLES = (
     "source_state",
@@ -90,6 +102,9 @@ LARGE_TABLES = (
     "tray_entry",
     "match_label",
     "quality_sample",
+    "batch",
+    "batch_item",
+    "batch_chunk",
 )
 
 

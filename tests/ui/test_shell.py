@@ -103,6 +103,38 @@ def test_the_persona_switch_changes_the_role_and_a_consumer_has_no_inbox(page: P
     expect(nav.get_by_role("link", name="Inbox")).to_be_visible()
 
 
+#: the persona menu's options, in order: every role once, and a second data steward (story 3.3)
+PERSONA_OPTIONS = [
+    "Data owner",
+    "Data steward",
+    "Data steward 2",
+    "Coordinating steward",
+    "Technical steward",
+    "Consumer",
+    "Administrator",
+]
+
+
+@pytest.mark.parametrize("page", ["light", "dark"], indirect=True)
+def test_the_persona_menu_offers_a_second_data_steward_and_axe_finds_nothing(page: Page, live) -> None:
+    # a batch's maker, its second steward and a blind reviewer of its links are three people on a local store
+    open_inbox(page)
+    page.locator(f"#{ids.PERSONA_SELECT}").click()
+    options = page.get_by_role("listbox").get_by_role("option")
+    expect(options).to_have_count(len(PERSONA_OPTIONS), timeout=WAIT_MS)
+    assert [options.nth(i).inner_text().strip() for i in range(options.count())] == PERSONA_OPTIONS
+    assert axe(page) == []  # the menu open
+    page.get_by_role("option", name="Data steward 2", exact=True).click()
+    badge = page.locator(f"#{ids.ROLE_BADGE}")
+    expect(badge).to_have_text("Data steward 2 (persona)", timeout=WAIT_MS)
+    expect(page.get_by_role("banner").get_by_role("textbox", name="Act as")).to_have_value("Data steward 2")
+    expect(page.get_by_role("navigation", name="Work").get_by_role("link", name="Inbox")).to_be_visible()
+    settle(page)
+    assert axe(page) == []
+    choose(page, ids.PERSONA_SELECT, "Data steward")
+    expect(badge).to_have_text("Data steward (persona)", timeout=WAIT_MS)
+
+
 def test_the_entity_filter_is_kept_for_the_tab(page: Page, live) -> None:
     open_inbox(page)
     choose(page, ids.ENTITY_SELECT, "Person")
@@ -161,7 +193,9 @@ def test_the_help_lists_the_keys_and_turning_them_off_stops_them(page: Page, liv
     expect(page.locator("body")).to_have_attribute("data-mdm-keys", "off")
     page.keyboard.press("Escape")
     expect(dialog).to_be_hidden()
-    assert requests_during(page, lambda: [press(page, key) for key in ("j", "k", "2", "l")]) == []
+    address = page.url
+    assert requests_during(page, lambda: [press(page, key) for key in ("j", "k", "2", "l", "g")]) == []
+    assert page.url == address  # G, too, does nothing with the keys off (story 3.3)
     press(page, "?")
     page.wait_for_timeout(300)
     expect(dialog).to_be_hidden()

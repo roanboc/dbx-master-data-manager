@@ -81,7 +81,12 @@ class TaskQuery:
     escalated: bool | None = None  # True: only escalated
     claimed_by: str | None = None  # an actor name: only the tasks whose claim by this actor still runs
     exclude_kind: str | None = None  # leave this kind out (the task views leave quality samples out)
-    not_first_decider: str | None = None  # an actor name: leave out the samples this actor decided first
+    # an actor name: leave out the samples this actor decided first, or confirmed as a batch's second steward
+    not_first_decider: str | None = None
+    # signature batches (story 3.3)
+    signature_key: str | None = None  # SIG-<16 hex>: only the reviews of this signature group
+    batch_id: str | None = None  # BAT-<20 hex>: only the forced-sample reviews of this batch
+    grouped: bool = False  # only the reviews that carry a signature group's key
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +96,7 @@ class StagedRef:
     label: str  # "Link crm:C000123 to ORG-000123", built at read time from IDs
     deadline: datetime
     mine: bool
+    batch_id: str | None = None  # the review waits as part of this batch (story 3.3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +135,12 @@ class ViewCounts:
     kinds: Mapping[str, int]  # TASK_KINDS -> open count, within the entity filter
     claimed: int = 0  # of My queue, the tasks the actor holds a running claim on
     samples_breaching: int = 0  # of the Quality samples view, those past their service level
+    # signature batches (story 3.3), each capped
+    alike: int = 0  # open reviews that carry a signature group's key
+    batches_to_confirm: int = 0  # batches waiting for the actor as their second steward
+    # the actor's staged entries and committing batches, those they confirmed included: the header learns of a
+    # batch confirmed while its maker's tray is not polling
+    tray_live: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +295,30 @@ class Choice:
 
 
 @dataclass(frozen=True, slots=True)
+class Mark:
+    """One comparison of a signature, in words: its label, its mark and what the mark means."""
+
+    comparison: str  # the comparison's name: "birth_date"
+    label: str  # the entity model's label: "Birth date"
+    mark: str  # one of =, ≈, ≠, ∅
+    words: str  # "the same", "similar", "different", "missing"
+
+
+@dataclass(frozen=True, slots=True)
+class SampleLine:
+    """The forced-sample line of the decide pane (story 3.3): the review belongs to a batch's forced sample,
+    so every decision shows at equal weight, and a decision that disagrees names the comparison that misled.
+    `choices` are the pattern's comparisons in rule order, which the pane offers as "Which comparison
+    misled?", beside "Every alike review in this batch"."""
+
+    batch_id: str
+    position: int  # this review's place among the sample's, 1-based
+    size: int  # the sample's size
+    decided: int  # the sample reviews decided so far
+    choices: tuple[Mark, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class Action:
     decision: str  # DECISIONS or TASK_ACTIONS or "undo"
     label: str  # "Link to ORG-000123", "Not a match", "Approve the update"
@@ -317,6 +353,7 @@ class TaskCase:
     choices: tuple[Choice, ...] = ()  # a blind case: the golden records offered, in master-ID order
     blind: bool = False  # the first decision, its score, band and suggestion stay hidden
     paused: BreakerView | None = None  # the quality breaker paused automatic linking for this entity
+    sample: SampleLine | None = None  # an open forced-sample review of a batch (story 3.3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +402,9 @@ class TrayEntry:
     commit_version: int | None = None  # read-time join through mdm_audit.change_set; never stored here
     # a code: committed | undone | record_changed | task_closed | target_changed | not_settled | internal | …
     outcome: str | None = None
+    # a batch's entry that a second steward confirmed: that steward's name, kept with the entry, so the batch
+    # stays in their tray with its outcome whatever becomes of the batch (story 3.3)
+    checker: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,17 +420,24 @@ class TrayView:
     outcome: str | None
     commit_version: int | None
     settled_at: datetime | None = None
+    # signature batches (story 3.3)
+    batch_id: str | None = None  # a batch entry: its batch
+    progress: tuple[int, int] | None = None  # a batch entry: (chunks committed, chunks planned)
+    mine: bool = True  # False for a batch entry the actor confirmed as its second steward
+    second_steward: str | None = None  # a batch entry that has one: the confirming steward's role
 
 
 @dataclass(frozen=True, slots=True)
 class TraySettlement:
     """Written in the commit's own transaction; the store raises Conflict when the entry is no longer staged.
-    A blind answer settles with the outcome `agreed` or `disagreed`."""
+    A blind answer settles with the outcome `agreed` or `disagreed`. A batch's first chunk settles its entry
+    `committed` with outcome `committing` and `keep_locks`, so the locks of its later chunks stay held."""
 
     entry_id: str
     status: str
     change_set_id: str | None
     outcome: str
+    keep_locks: bool = False  # leave the entry's locks: the batch releases them chunk by chunk
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,6 +464,218 @@ class FlushReport:
     requeued: int = 0
     skipped_busy: bool = False
     outcomes: Mapping[str, int] = field(default_factory=dict)  # outcome code -> count
+    # signature batches (story 3.3): the chunks this pass committed, and the batches it finished
+    chunks: int = 0
+    batches_finished: int = 0
+
+
+# ---------------------------------------------------------------------------------------------- signature batches
+# (story 3.3): the Alike reviews page, the batch page and its rows. Safe codes, counts and masked text only; a
+# signature reaches a view as its marks, never as a value.
+
+
+@dataclass(frozen=True, slots=True)
+class LabelHistory:
+    """The latest label on each pair that carries a signature, under any rule version; each count capped."""
+
+    matched: int  # "Linked"
+    not_matched: int  # "Not a match"
+
+
+@dataclass(frozen=True, slots=True)
+class AgreementView:
+    """The lifetime blind-review agreement of samples with a signature, of every origin, and by origin
+    (`automated`, `steward`, `batch`): (agreed, reviewed)."""
+
+    agreed: int
+    reviewed: int
+    by_origin: Mapping[str, tuple[int, int]]
+
+
+@dataclass(frozen=True, slots=True)
+class BulkRightView:
+    """A signature whose bulk rights the quality breaker withdrew: since when, and safe figures only
+    (`agreed`, `reviewed`, `threshold`, `window`). No restore control goes with it: a data owner restores on
+    the command line."""
+
+    entity: str
+    key: str  # bulk:<16 hex>
+    since: datetime
+    figures: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class GroupRow:
+    """One signature group on the Alike reviews page."""
+
+    group_key: str  # SIG-<16 hex>
+    entity: str
+    entity_label: str
+    rule_version: int
+    marks: tuple[Mark, ...]
+    count: int  # capped: at capacity.COUNT_CAP it reads "999+"
+    labels: LabelHistory
+    agreement: AgreementView
+    withdrawn: BulkRightView | None
+    too_small: bool  # too few to link together
+    batch_id: str | None = None  # the group's open batch
+    batch_status: str | None = None
+    batch_words: str | None = None  # the open batch's stage in words
+
+
+@dataclass(frozen=True, slots=True)
+class BatchLine:
+    """One batch named in a list: the batches a second steward may confirm."""
+
+    batch_id: str
+    entity: str
+    entity_label: str
+    kind: str  # link | compensate
+    decisions: int
+    maker_label: str  # the maker's role, in words
+
+
+@dataclass(frozen=True, slots=True)
+class GroupList:
+    """The Alike reviews page: the largest groups of the window, and the batches the actor may confirm."""
+
+    groups: tuple[GroupRow, ...]
+    window: int  # the open reviews due soonest that were grouped (capacity.GROUP_WINDOW)
+    older_rules: int  # capped: open reviews scored under an earlier rule version, not grouped
+    to_confirm: tuple[BatchLine, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SampleReview:
+    """One forced-sample review on the batch page: an open one links to its task, a decided one to its source
+    record."""
+
+    task_id: str
+    source: str  # "crm:C000123"
+    title: str  # masked
+    stratum_label: str  # "crm and hr"
+    status: str  # open | agreed | disagreed | void
+    words: str  # the status in words
+    open: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SplitLine:
+    """One disagreeing sample review and the split it named: the comparison ("birth date", or "every alike
+    review"), and the reviews its split took, or None while the split waits to apply."""
+
+    task_id: str
+    source: str
+    decision_words: str
+    on_label: str
+    count: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class BatchSummary:
+    """The summary line of a prepared batch, and the reviews left out by reason."""
+
+    xrefs: int
+    golden: int
+    chunks: int
+    rows: int  # published rows, at most capacity.COMMIT_CHUNK_ROWS a chunk
+    reviews: int  # drawn for blind review
+    left_out: Mapping[str, int]  # ITEM_REASONS code -> count
+
+
+@dataclass(frozen=True, slots=True)
+class BatchProgress:
+    """A committing batch: its chunks, and when the throttle lets the next one commit."""
+
+    chunks: int
+    chunks_committed: int
+    rows_committed: int
+    not_before: datetime | None
+    stop_requested: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CompensationLine:
+    """A compensation of a batch, as the original's page names it: its ID, its own status and outcome, and how
+    many of the original's links it undid, so each compensation is credited with its own links."""
+
+    batch_id: str
+    status: str  # BATCH_STATUSES: `committing` (or before) while it is still being undone
+    outcome: str | None
+    undone: int  # the original's links its committed chunks reversed
+
+
+@dataclass(frozen=True, slots=True)
+class BatchView:
+    """The batch page: its stage, its forced sample, its splits, its summary and progress, and its actions
+    (codes of `models.batch.PAGE_ACTIONS`)."""
+
+    batch_id: str
+    kind: str
+    entity: str
+    entity_label: str
+    group_key: str | None
+    marks: tuple[Mark, ...]
+    status: str
+    maker_label: str  # "you", or the role
+    checker_label: str | None
+    population: int
+    sample_size: int
+    sample: tuple[SampleReview, ...]
+    decided: int
+    agreed: int
+    disagreed: int
+    waiting: int
+    splits: tuple[SplitLine, ...] = ()
+    summary: BatchSummary | None = None
+    progress: BatchProgress | None = None
+    entry_id: str | None = None  # while staged, for Undo
+    deadline: datetime | None = None
+    withdrawn: BulkRightView | None = None
+    actions: tuple[Action, ...] = ()
+    notice: str | None = None
+    compensates: str | None = None
+    compensated_by: str | None = None
+    outcome: str | None = None
+    commits: tuple[int, int] | None = None  # the first and last commit versions
+    finished_at: datetime | None = None
+    # the reviews by item status: committed, failed, released, kept, excluded, compensated
+    counts: Mapping[str, int] = field(default_factory=dict)
+    undo_until: datetime | None = None  # the last moment its committed links can be compensated
+    undone_by: tuple[str, ...] = ()  # the compensations that undid any of its chunks
+    # who asked it to stop: "you", or the role ("Data steward"); None when nobody asked (a withdrawal of bulk
+    # rights or failed passes stop it too, as `outcome` says)
+    stopped_by: str | None = None
+    # its compensations, oldest first: every one that undid a chunk, and the one open on it
+    compensations: tuple[CompensationLine, ...] = ()
+    blind_reviews: int = 0  # its links that went to blind review: the samples its chunks wrote
+
+
+@dataclass(frozen=True, slots=True)
+class BatchRow:
+    """One review of a prepared batch: the record, its target, the impact line and, on demand, the
+    before-and-after table, masked by role."""
+
+    task_id: str
+    source: str
+    title: str  # masked
+    target: str | None
+    target_title: str | None  # masked
+    impact: Impact
+    preview: tuple[PreviewRow, ...]
+    joins: int  # other rows of this batch that join the same target
+    status: str
+    reason: str | None
+    changed_since: bool  # the target's row version differs from the one planned
+    chunk_no: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class BatchRowPage:
+    """One page of a batch's rows, keyed by position."""
+
+    rows: tuple[BatchRow, ...]
+    after: int | None  # the position to read after for the next page; None = last page
 
 
 @dataclass(frozen=True, slots=True)

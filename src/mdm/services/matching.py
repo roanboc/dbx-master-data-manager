@@ -227,6 +227,40 @@ class MatchService:
         theirs = frozenset(i for s in states.values() for i in s.strong_ids(model))
         return conflict(model, mine, theirs)
 
+    def joiners_blocked(self, entity: str, joins: Sequence[tuple[SourceState, str]]) -> dict[SourceKey, str]:
+        """The batched form of `blocked_by`, for records that join golden records in a given order (a signature
+        batch's planned links, story 3.3): record -> `cannot_link:<attribute>` for each record a cannot-link
+        rule keeps apart from its target's current members (at most MAX_MEMBERS_CHECKED each), or from an
+        earlier record of `joins` that joins the same target. The members of the distinct targets and their
+        states are read once; the joins are walked in order, and a record that is not blocked adds its valid
+        strong IDs to its target's, so a later record is checked against it too. With no cannot-link rule in
+        the model it reads nothing and returns {}."""
+        model = self.registry.published(entity)
+        if not joins or not cannot_link_schemes(model):
+            return {}
+        joining = {state.source for state, _ in joins}
+        targets = sorted({target for _, target in joins})
+        members = self.store.members(entity, targets, capacity.MAX_MEMBERS_CHECKED)
+        wanted = sorted({s for ms in members.values() for s in ms if s not in joining})
+        states = self.store.source_states(entity, wanted) if wanted else {}
+        held: dict[str, frozenset[tuple[str, str]]] = {
+            target: frozenset(
+                i for s in members.get(target, []) if s in states for i in states[s].strong_ids(model)
+            )
+            for target in targets
+        }
+        out: dict[SourceKey, str] = {}
+        for state, target in joins:
+            mine = strong_ids_of(model, state.ids)
+            if not mine:
+                continue
+            found = conflict(model, mine, held[target])
+            if found is not None:
+                out[state.source] = found
+                continue
+            held[target] = held[target] | mine
+        return out
+
     def explain_pair(
         self, entity: str, left: SourceState, right: SourceState, rules: CompiledRules | None = None
     ):

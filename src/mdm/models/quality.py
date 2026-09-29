@@ -4,7 +4,10 @@ A quality sample is a committed decision drawn for blind review: the automated m
 and a steward's link, "not a match" and keep apart. A second steward answers where the record belongs without
 seeing the first decision; the answer agrees with it or not. Agreement is kept per entity, origin, band and
 signature. The quality breaker demotes an entity's automatic band when the latest automated reviews agree
-too rarely, or when arrivals in an hour spike, and only a data owner restores it (decision 3).
+too rarely, or when arrivals in an hour spike, and only a data owner restores it (decision 3). A signature's
+bulk rights (story 3.3) live beside the automatic band, one row per entity and signature under a band
+`bulk:<16 hex>`: only blind review of that signature's batch samples withdraws them, and only a data owner
+restores them.
 
 Every text here is a code, an ID, a source key or a signature: never a value. Frozen dataclasses with slots,
 no input or output.
@@ -13,6 +16,7 @@ no input or output.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,8 +24,8 @@ from typing import Any
 
 from mdm.models.records import SourceKey
 
-#: who made the decision a sample measures
-SAMPLE_ORIGINS = ("automated", "steward")
+#: who made the decision a sample measures: the automated matcher, a steward, or a steward's batch (story 3.3)
+SAMPLE_ORIGINS = ("automated", "steward", "batch")
 #: the decisions drawn: the automated matcher's, then a steward's
 SAMPLE_DECISIONS = ("auto_link", "auto_create", "hint_link", "link", "not_a_match", "keep_apart")
 AUTOMATED_DECISIONS = ("auto_link", "auto_create", "hint_link")
@@ -43,6 +47,17 @@ BREAKER_WINDOW_CAP = 1_000
 SHARED_AGREEMENT_FLOOR = 0.5
 #: the shortest MDM_SAMPLE_KEY a shared store accepts
 SAMPLE_KEY_MIN = 16
+#: the band prefix of a signature's bulk rights (story 3.3): `bulk:` and 16 hexadecimal characters
+BULK_PREFIX = "bulk:"
+#: a bulk-rights band, as a data owner names it to restore it
+BULK_BAND_RE = re.compile(r"^bulk:[0-9a-f]{16}\Z")
+#: why a data owner restores a signature's bulk rights: a load expected never withdraws them
+BULK_RESTORE_REASONS = ("cause_fixed", "false_alarm")
+#: the bulk trigger's defaults (proposed): the latest batch samples it reads, the reviews it needs, and the
+#: agreement it asks for
+BULK_WINDOW = 50
+BULK_MIN_SAMPLES = 5
+BULK_AGREEMENT = 0.95
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +91,7 @@ class QualitySample:
     reviewed_at: datetime | None = None
     review_entry_id: str | None = None
     dispute_task_id: str | None = None  # the review a disagreement opened
+    checked_by: str | None = None  # a batch sample: the batch's second steward, who may not answer it either
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +126,8 @@ class AgreementRow:
 
 @dataclass(frozen=True, slots=True)
 class BreakerState:
-    """An entity's automatic band: normal or demoted, with its last trip and restore."""
+    """An entity's automatic band, or a signature's bulk rights (band `bulk:<16 hex>`): normal or demoted,
+    with its last trip and restore."""
 
     entity: str
     band: str
@@ -126,10 +143,23 @@ class BreakerState:
     restore_reason: str | None  # RESTORE_REASONS
     restore_change_set: str | None
     updated_at: datetime
+    signature: str | None = None  # a bulk-rights row's signature; None for the automatic band
 
     @property
     def demoted(self) -> bool:
         return self.state == "demoted"
+
+
+@dataclass(frozen=True, slots=True)
+class BulkStatus:
+    """What `mdm breaker status` prints for one withdrawn signature: its key, the signature (comparison names
+    and marks, put into words by the command line), since when, and safe figures only."""
+
+    entity: str
+    key: str  # bulk:<16 hex>
+    signature: str
+    since: datetime
+    figures: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +193,14 @@ class BreakerStatus:
     hour: datetime
     history_ready: bool  # the volume trigger has its days of history
     cap_reached: bool = False  # the automated samples open have reached the cap
+    withdrawn: tuple[BulkStatus, ...] = ()  # the signatures whose bulk rights are withdrawn (story 3.3)
+
+
+def bulk_band(entity: str, signature: str) -> str:
+    """The band of a signature's bulk rights: `bulk:` and the first 16 hexadecimal characters of
+    sha256(`entity|signature`). It leaves out the rule version, so a withdrawal survives a republish that keeps
+    the comparisons' names; it passes `SAFE_TEXT_RE`."""
+    return BULK_PREFIX + hashlib.sha256(f"{entity}|{signature}".encode()).hexdigest()[:16]
 
 
 def sample_id(entity: str, decision: str, subject: str, occasion: str) -> str:

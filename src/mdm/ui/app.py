@@ -7,9 +7,10 @@
 when `worker` is True, or None and `settings.tray_worker_on`. `atexit` closes the state.
 
 Routes (B.8.3): `/` the inbox; `/record/<ref>` a golden record (a retired ID resolves to its survivor, a
-source key to its source record); `/source/<system>/<key>` a source record; anything else the inbox
-with a notice. The route callback (S5) rebuilds a page only when the path or the actor's role changes; a
-change of `?…` on the same page is the page's own business. Only codes and IDs of the query reach a page.
+source key to its source record); `/source/<system>/<key>` a source record; `/groups` the Alike reviews and
+`/batch/<BAT-…>` a batch of them (story 3.3); anything else the inbox with a notice. The route callback
+(S5) rebuilds a page only when the path or the actor's role changes; a change of `?…` on the same page is
+the page's own business. Only codes and IDs of the query reach a page.
 
 Owner: SHELL (B.8.1, B.8.6).
 """
@@ -27,21 +28,23 @@ from dash import Dash, Input, Output, State, html, no_update
 from dash.development.base_component import Component
 
 from mdm.config import Settings
+from mdm.models.batch import BATCH_ID_RE
 from mdm.models.safety import SAFE_TEXT_RE
 from mdm.services.context import Hub
 from mdm.services.tray import TrayWorker
 from mdm.ui import context, ids, layout, web
 from mdm.ui.components import common, keys, tray
 from mdm.ui.context import EXTENSION, UiContext, UiState
-from mdm.ui.pages import inbox, record, source
+from mdm.ui.pages import batch, groups, inbox, record, source
 
 logger = logging.getLogger("mdm.ui")
 
 #: the workbench's own scripts and styles, served by Dash from /assets/
 ASSETS = Path(__file__).resolve().parent / "assets"
 TITLE = "Master Data Manager"
-#: the query keys a page may read; anything else in an address is dropped before a page sees it
-QUERY_KEYS = ("view", "kind", "task", "tab", "entity")
+#: the query keys a page may read; anything else in an address is dropped before a page sees it (a
+#: signature group's key and a batch's ID filter the inbox to a group's reviews or a batch's forced sample)
+QUERY_KEYS = ("view", "kind", "task", "tab", "entity", "group", "batch")
 #: the page Dash serves around the app: Dash's own, with the language named (WCAG 3.1.1)
 INDEX_STRING = """<!DOCTYPE html>
 <html lang="en-GB">
@@ -68,10 +71,15 @@ ECHO_PATH_RE = re.compile(r"^[A-Za-z0-9/_:.\-]{0,80}\Z")
 
 def parse_route(pathname: str | None) -> tuple[str, tuple[str, ...]]:
     """ "/" → ("inbox", ()); "/record/<ref>" → ("record", (ref,)); "/source/<system>/<key>" → ("source",
-    (system, key)); anything else → ("unknown", ())."""
+    (system, key)); "/groups" → ("groups", ()); "/batch/<BAT-…>" → ("batch", (ID,)) when the ID has a batch
+    ID's shape; anything else → ("unknown", ())."""
     parts = [unquote(part) for part in (pathname or "/").split("/") if part]
     if not parts:
         return "inbox", ()
+    if parts == ["groups"]:
+        return "groups", ()
+    if parts[0] == "batch" and len(parts) == 2 and BATCH_ID_RE.match(parts[1]):
+        return "batch", (parts[1],)
     if parts[0] == "record" and len(parts) >= 2:
         return "record", ("/".join(parts[1:]),)
     if parts[0] == "source" and len(parts) >= 3:
@@ -104,13 +112,19 @@ def render_route(
     ctx: UiContext, pathname: str | None, search: str | None, entity: str | None
 ) -> tuple[Component, Component | None, bool]:
     """S5 without Dash: the page for the address, the note above it, and whether it is the inbox. The
-    inbox reads the header's entity from `entity`; a record or source reads only its own address."""
+    inbox and the Alike reviews read the header's entity from `entity`; a record, a source or a batch reads
+    only its own address."""
     kind, args = parse_route(pathname)
     query = query_of(search)
     if kind == "record":
         page, failure = context.guarded(record.layout, ctx, args[0], query)
     elif kind == "source":
         page, failure = context.guarded(source.layout, ctx, args[0], args[1], query)
+    elif kind == "batch":
+        page, failure = context.guarded(batch.layout, ctx, args[0])
+    elif kind == "groups":
+        known = entity if isinstance(entity, str) and entity in ctx.badges.entities else ""
+        page, failure = context.guarded(groups.layout, ctx, {"entity": known})
     else:
         query["entity"] = entity if isinstance(entity, str) and entity in ctx.badges.entities else ""
         page, failure = context.guarded(inbox.layout, ctx, query)
@@ -121,8 +135,9 @@ def render_route(
 
 
 def route_key(pathname: str | None, ctx: UiContext) -> dict[str, str]:
-    """What the page on screen was built for: its path and the actor's role (ROUTE)."""
-    return {"path": pathname or "/", "persona": ctx.actor.role}
+    """What the page on screen was built for: its path and who it was built for (ROUTE), a persona's code or
+    a forwarded user's role (`UiContext.route_persona`)."""
+    return {"path": pathname or "/", "persona": ctx.route_persona}
 
 
 def navbar_class(ctx: UiContext) -> str:
@@ -134,8 +149,8 @@ def route_outputs(
     ctx: UiContext, pathname: str | None, search: str | None, on_screen: object, entity: str | None
 ) -> tuple:
     """S5's outputs without Dash: (page, note, inbox active, navbar class, route), or `no_update` on every
-    output when the page on screen was built for this path and role (a change of `?…`, a tray poll or a
-    restored store never rebuilds a page)."""
+    output when the page on screen was built for this path and persona, or role (a change of `?…`, a tray
+    poll or a restored store never rebuilds a page; a switch between the two data-steward personas does)."""
     key = route_key(pathname, ctx)
     if on_screen == key:
         return (no_update,) * 5
@@ -181,6 +196,7 @@ def create_app(
     state = UiState(hub=opened, settings=settings, executor=executor, owns_hub=owns_hub)
     try:
         opened.inbox.backfill_due_times()
+        opened.batches.backfill_signatures()  # reviews written before signature batches (story 3.3)
         app = Dash(
             __name__,
             title=TITLE,
@@ -201,7 +217,14 @@ def create_app(
         app.index_string = INDEX_STRING
         app.layout = serve_layout
         app.validation_layout = html.Div(
-            [layout.shell(settings), inbox.skeleton(), record.skeleton(), source.skeleton()]
+            [
+                layout.shell(settings),
+                inbox.skeleton(),
+                record.skeleton(),
+                source.skeleton(),
+                groups.skeleton(),
+                batch.skeleton(),
+            ]
         )
         app.server.extensions[EXTENSION] = state
         web.install(app, settings, listen)
@@ -212,6 +235,8 @@ def create_app(
         inbox.register(app)
         record.register(app)
         source.register(app)
+        groups.register(app)
+        batch.register(app)
         if worker is True or (worker is None and settings.tray_worker_on):
             state.worker = TrayWorker(opened.tray)
             state.worker.start()

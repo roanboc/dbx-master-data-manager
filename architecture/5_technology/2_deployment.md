@@ -84,7 +84,7 @@ The package realizes all fifteen existing [application components](../4_applicat
 | `ART5` | **Developer tooling** | `Makefile`<br>`scripts/hooks/pre-push` | Node [`NODE1`] Workstation | Blueprint §7 | |
 | `ART6` | **Test suite** | `tests/`, which runs every store test on both engines<br>`tests/ui/`, the browser checks<br>`tools/workbench_live.py`, the seeded demo store they serve | Node [`NODE1`] Workstation<br>node [`NODE2`] CI runner | [Decision 6](../decisions/6_one-sql-store-two-engines.md) | |
 | `ART7` | **Throughput spike** | `tools/spike_throughput.py` | Node [`NODE1`] Workstation | [Decision 14](../decisions/14_declared-capacity.md) | |
-| `ART8` | **Workbench screenshots** | `tools/screenshots.py`<br>`tools/workbench_live.py`<br>`docs/screenshots/`: `inbox-*.png`, `tray-*.png`, `record-*.png` and `sample-*.png`, each light and dark | Node [`NODE1`] Workstation | [Decision 18](../decisions/18_workbench-shell-and-keys.md); they show the invented demo world only, taken with the stub | |
+| `ART8` | **Workbench screenshots** | `tools/screenshots.py`<br>`tools/workbench_live.py`<br>`docs/screenshots/`: `inbox-*.png`, `tray-*.png`, `record-*.png`, `sample-*.png`, `groups-*.png` and `batch-*.png`, each light and dark | Node [`NODE1`] Workstation | [Decision 18](../decisions/18_workbench-shell-and-keys.md); they show the invented demo world only, taken with the stub | |
 
 ## What is deployed by hand
 

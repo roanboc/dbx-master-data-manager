@@ -257,3 +257,88 @@ def test_no_personal_value_in_the_checkpoints_tables_or_the_breakers_audit(
     lines = [r.getMessage().lower() for r in caplog.records]
     assert any("breaker_tripped" in line for line in lines)  # the log was captured
     assert not [line for line in lines if any(v in line for v in values)]
+
+
+@pytest.mark.parametrize("which", ["mini", "demo"])
+def test_no_personal_value_in_a_batchs_tables_audit_or_log(
+    which, hub, small_world, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signature batch's whole life: the Alike reviews page, a draw, its sample decided with a split on a
+    personal comparison, every row's change, a second steward, a chunk, a stop, a compensation, a withdrawal of
+    bulk rights and its restore. The batch tables, the breaker's state, the samples, the change sets, the access
+    rows and every log line hold codes, IDs, source keys, signatures and numbers only (story 3.3)."""
+    from mdm import capacity
+    from mdm.services.context import Hub
+    from tests.helpers import (
+        COORDINATOR,
+        OWNER,
+        STEWARD,
+        alike_reviews,
+        decide_sample,
+        flush_past_window,
+        workbench_world,
+    )
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(capacity, "COMMIT_CHUNK_ROWS", 6)
+    if which == "demo":
+        land(hub, small_world.rows)
+        arrive(hub)
+    workbench_world(hub, persons=32)
+    alike_reviews(hub, 12)
+    local = Hub.open(
+        hub.settings.with_(batch_checker_above=1, sample_share=1.0), store=hub.store, as_role="data_owner"
+    )
+    try:
+        page = local.batches.groups(actor=STEWARD, entity="person")
+        key = max(page.groups, key=lambda g: g.count).group_key
+        batch = local.batches.draw(key, actor=STEWARD, entity="person")
+        sample = local.store.batch_items(batch.batch_id, ("sample",), None, None, 100)
+        decide_sample(
+            local, batch.batch_id, actor=STEWARD, answers={sample[0].task_id: ("not_a_match", "birth_date")}
+        )
+        assert local.batches.refresh(batch.batch_id).status == "ready"
+        local.batches.prepare(batch.batch_id, actor=STEWARD)
+        local.batches.rows(batch.batch_id, actor=STEWARD)
+        local.batches.stage(batch.batch_id, actor=STEWARD)
+        local.batches.confirm(batch.batch_id, actor=COORDINATOR)
+        flush_past_window(local)
+        local.batches.stop(batch.batch_id, actor=STEWARD)
+        flush_past_window(local)
+        compensation = local.batches.compensate(batch.batch_id, actor=COORDINATOR, reason="pattern_wrong")
+        if local.batches.stage(compensation.batch_id, actor=COORDINATOR).status == "awaiting_checker":
+            local.batches.confirm(compensation.batch_id, actor=STEWARD)
+        flush_past_window(local)
+        local.breaker.demo_withdraw("person", key)
+        local.breaker.status(["person"], actor=OWNER)
+        local.breaker.restore("person", actor=OWNER, reason="false_alarm", bulk=batch.bulk_band)
+        local.batches.batch(batch.batch_id, actor=STEWARD)
+    finally:
+        local.close()
+    landed = hub.store.landing_above(0, 100_000)
+    # an organisation's values are not personal and are published in clear: a word the two worlds share (an
+    # invented given name that is also an organisation's) is no leak
+    shared = " ".join(
+        str(v).lower() for r in landed if r.entity == "organisation" for v in r.payload.values()
+    )
+    values = {v for v in _personal_values(landed) if v not in shared}
+    leaks = []
+    for schema, table, column in _text_columns(hub):
+        group = schema.rsplit("_", 1)[1]
+        if (group, table, column) in ALLOWED:
+            continue
+        found = hub.store._fetch_all(f"/*mdm:paged*/ SELECT {column} FROM {schema}.{table} LIMIT 100000")
+        for (value,) in found:
+            text = str(value).lower() if value is not None else ""
+            hits = [v for v in values if v in text]
+            if hits:
+                leaks.append((table, column, hits[:2]))
+                break
+    assert leaks == []
+    tables = {table for _, table, _ in _text_columns(hub)}
+    assert {"batch", "batch_item", "batch_chunk", "open_batch", "breaker_state", "access_log"} <= tables
+    splits = [a for a in hub.store.access_log(None, 100_000) if a["action"] == "batch_split"]
+    assert splits  # birth date is personal: the split logged the records it read
+    lines = [r.getMessage().lower() for r in caplog.records]
+    assert any("bulk_withdrawn" in line for line in lines)
+    assert not [line for line in lines if any(v in line for v in values)]

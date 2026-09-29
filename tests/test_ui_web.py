@@ -236,6 +236,29 @@ def test_a_name_typed_into_the_address_is_withheld_whatever_its_shape() -> None:
         assert web.redact_request_line(line) == shown, line
 
 
+def test_the_alike_reviews_and_a_batch_are_logged_and_a_name_in_their_place_is_not() -> None:
+    """Story 3.3: `/groups`, `/batch/<ID>` of a batch ID's shape, and a group's key or a batch's ID in the
+    inbox's query are logged; a name where a batch ID goes, or a key of another shape, is withheld."""
+    batch_id = "BAT-0123456789abcdef0123"
+    group = "SIG-0123456789abcdef"
+    for line in (
+        "GET /groups HTTP/1.1",
+        f"GET /batch/{batch_id} HTTP/1.1",
+        f"GET /?group={group} HTTP/1.1",
+        f"GET /?batch={batch_id}&task=TSK-5cfa2e93a4720ad3 HTTP/1.1",
+    ):
+        assert web.redact_request_line(line) == line, line
+    for line, shown in (
+        ("GET /batch/Vantrasse HTTP/1.1", "GET /<withheld> HTTP/1.1"),
+        (f"GET /batch/{batch_id}/Olwen HTTP/1.1", "GET /<withheld> HTTP/1.1"),
+        ("GET /groups/Olwen HTTP/1.1", "GET /<withheld> HTTP/1.1"),
+        ("GET /?group=Olwen HTTP/1.1", "GET /?<withheld> HTTP/1.1"),
+        ("GET /?batch=BAT-Vantrasse HTTP/1.1", "GET /?<withheld> HTTP/1.1"),
+        (f"GET /?group={batch_id} HTTP/1.1", "GET /?<withheld> HTTP/1.1"),
+    ):
+        assert web.redact_request_line(line) == shown, line
+
+
 def test_a_record_with_an_exception_keeps_its_type_only() -> None:
     try:
         raise KeyError(SENTINEL)

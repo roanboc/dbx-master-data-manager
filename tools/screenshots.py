@@ -5,17 +5,25 @@
 It seeds a temporary DuckDB store with the demo world (`tools/workbench_live.seed`: seed 7, 2,000 persons
 and 500 organisations with hard cases, creations first and then the later events, the default share drawn
 for blind review and no breaker tripped), picks an Organisation close call, a value of its first candidate
-that has runners-up and a quality sample, and, for each colour scheme, serves
-`mdm ui` on a fresh copy of the store as the persona data_steward with a ten-minute undo window (so a
-staged decision holds still, and each scheme starts from the same world). It captures into
-`docs/screenshots/`, at 1440 × 900, in the light and the dark colour scheme:
+that has runners-up and a quality sample, and, as the data steward through the services, draws a forced
+sample from the largest group of alike reviews that can be drawn (an Organisation one first; in this world
+every Organisation group is close calls, so a Person one, whose values stay masked), links each sample
+review to the golden record its case suggests through the tray, flushes past the window and shows every
+change of the batch (story 3.3). Then, for each colour scheme, it serves `mdm ui` on a fresh copy of the store as the persona
+data_steward with a ten-minute undo window (so a staged decision holds still, and each scheme starts from
+the same world). It captures into `docs/screenshots/` (or `--out`), at 1440 × 900, in the light and the
+dark colour scheme:
 
 - `inbox-<scheme>.png`: the close call selected, candidate 1 chosen, the pane with its waterfall, what
   would flip it, the values that change and the impact line;
 - `tray-<scheme>.png`: after L, the tray open with the staged decision and its countdown (undone after);
 - `record-<scheme>.png`: the candidate's golden record, with the Why open under that value;
 - `sample-<scheme>.png`: the Quality samples view with a blind case open and choice 1 selected, not
-  staged (an Organisation sample with two golden records offered or more, when the world has one).
+  staged (an Organisation sample with two golden records offered or more, when the world has one);
+- `groups-<scheme>.png`: the Alike reviews page for every entity, with the Person and the Organisation
+  groups, the one drawn naming its batch;
+- `batch-<scheme>.png`: that batch's page, its sample agreed and every change shown: the summary line,
+  the first rows and "Link all N", the page's one filled button.
 
 Organisation data is not personal, so the pictures show invented names; Person values stay masked. It
 refuses to run with a platform variable or a backend other than DuckDB, and it never touches the local
@@ -42,7 +50,7 @@ from tools.workbench_live import _PLATFORM, MODELS, free_port, launch_chromium, 
 OUT = ROOT / "docs" / "screenshots"
 VIEWPORT = {"width": 1440, "height": 900}
 SCHEMES = ("light", "dark")
-PARTS = ("inbox", "tray", "record", "sample")
+PARTS = ("inbox", "tray", "record", "sample", "groups", "batch")
 #: the world the pictures show (as `make demo` lands it)
 WORLD = {"persons": 2000, "organisations": 500, "hard_cases": 0.03, "updates": 0.1, "deletes": 0.01}
 #: a staged decision waits this long, so the tray holds still while it is captured
@@ -68,6 +76,8 @@ class Scene:
     attribute: str  # a golden value of the candidate with runners-up
     label: str  # that attribute's label, as the Why names it
     sample: str  # a quality sample of a record, decided blind
+    group_key: str  # the group of alike reviews drawn ("SIG-…")
+    batch_id: str  # its batch, its sample agreed and every change shown ("BAT-…")
 
 
 def refuse_unsafe_environment() -> None:
@@ -97,9 +107,51 @@ def find_sample(hub, steward) -> str:
     return best[1]
 
 
+def prepare_batch(hub, steward) -> tuple[str, str]:
+    """(the group's key, the batch's ID): a forced sample drawn from the largest group that can be drawn, an
+    Organisation one first, each sample review linked to the golden record its case suggests through the tray
+    and flushed past its window one at a time, and every change of the batch shown, as a data steward would
+    through the workbench."""
+    from datetime import timedelta
+
+    from mdm.models.errors import Conflict
+
+    drawn = None
+    for entity in ("organisation", "person"):  # Organisation values show; a Person group's stay masked
+        for row in hub.batches.groups(actor=steward, entity=entity).groups:
+            try:
+                drawn = hub.batches.draw(row.group_key, actor=steward, entity=entity)
+            except Conflict:  # every review a close call, say: too few to link together
+                continue
+            break
+        if drawn is not None:
+            break
+    if drawn is None:
+        raise SystemExit("screenshots: the seeded world has no group of alike reviews to draw from")
+    group, batch_id = drawn.signature_key or "", drawn.batch_id
+    clock = hub.tray.clock
+    for _ in range(100):
+        view = hub.batches.batch(batch_id, actor=steward)
+        waiting = [review.task_id for review in view.sample if review.open]
+        if not waiting:
+            break
+        case = hub.decisions.case(waiting[0], actor=steward)
+        hub.tray.stage(
+            waiting[0], "link", actor=steward, seen_event=case.event_id, seen_task=case.task_version
+        )
+        later = hub.tray.clock() + timedelta(seconds=hub.settings.undo_seconds + 1)
+        hub.tray.clock = lambda moment=later: moment
+        hub.tray.flush()
+        hub.tray.clock = clock
+    if hub.batches.refresh(batch_id).status != "ready":
+        raise SystemExit("screenshots: the drawn batch's forced sample did not agree")
+    hub.batches.prepare(batch_id, actor=steward)
+    return group, batch_id
+
+
 def find_scene(path: Path) -> Scene:
     """The close call, the value and the quality sample the pictures show, read through the services before
-    serving (the DuckDB file takes one process at a time)."""
+    serving (the DuckDB file takes one process at a time), and the batch prepared for its pictures."""
     from mdm.config import Settings
     from mdm.models.authority import Actor
     from mdm.services.context import Hub
@@ -112,6 +164,7 @@ def find_scene(path: Path) -> Scene:
     fallback: Scene | None = None
     try:
         sample = find_sample(hub, steward)
+        group, batch_id = prepare_batch(hub, steward)
         for row in hub.inbox.page("team", actor=steward, entity="organisation", kind="review").rows:
             case = hub.decisions.case(row.task_id, actor=steward)
             if case.shape != "source" or not case.close_call or len(case.candidates) < 2:
@@ -121,7 +174,7 @@ def find_scene(path: Path) -> Scene:
                 why = hub.lookup.why("organisation", candidate, value.attribute, actor=steward)
                 if not why.runners_up:
                     continue
-                scene = Scene(row.task_id, candidate, value.attribute, value.label, sample)
+                scene = Scene(row.task_id, candidate, value.attribute, value.label, sample, group, batch_id)
                 if any(r.value != why.winner.value for r in why.runners_up):
                     return scene  # a runner-up that lost with another value explains the most
                 fallback = fallback or scene
@@ -172,15 +225,31 @@ def _open_close_call(page, scene: Scene) -> None:
     settle(page)
 
 
-def capture(browser, base_url: str, scene: Scene, scheme: str, part: str) -> Path:
-    """One picture, `part` one of PARTS, in one colour scheme. The tray's staged decision is undone
+def capture(browser, base_url: str, scene: Scene, scheme: str, part: str, out: Path = OUT) -> Path:
+    """One picture, `part` one of PARTS, in one colour scheme, into `out`. The tray's staged decision is undone
     afterwards, so the record shows the world the inbox showed."""
     from playwright.sync_api import expect
 
     context, page = _context(browser, base_url, scheme)
-    shot = OUT / f"{part}-{scheme}.png"
+    shot = out / f"{part}-{scheme}.png"
     try:
-        if part == "inbox":
+        if part == "groups":
+            page.goto("/groups")
+            expect(page.locator("#groups-list h1")).to_have_text("Alike reviews")
+            expect(page.locator(f"tr[data-group='{scene.group_key}']")).to_be_visible()
+            settle(page)
+            page.screenshot(path=str(shot))
+        elif part == "batch":
+            page.goto(f"/batch/{scene.batch_id}")
+            expect(page.locator("#batch-view .mdm-batch-summary")).to_be_visible()
+            expect(
+                page.locator("#batch-view .mdm-batch-actions").get_by_role(
+                    "button", name=re.compile(r"^Link all \d+$")
+                )
+            ).to_be_visible()
+            settle(page)
+            page.screenshot(path=str(shot))
+        elif part == "inbox":
             _open_close_call(page, scene)
             page.screenshot(path=str(shot))
         elif part == "tray":
@@ -227,11 +296,13 @@ def capture(browser, base_url: str, scene: Scene, scheme: str, part: str) -> Pat
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Take the README's screenshots of the workbench.")
     parser.add_argument("--port", type=int, default=0, help="Default: a free port.")
+    parser.add_argument("--out", type=Path, default=OUT, help="Default: docs/screenshots/.")
     args = parser.parse_args(argv)
     refuse_unsafe_environment()
     from playwright.sync_api import sync_playwright
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="mdm-shots-") as folder:
         path = Path(folder) / "mdm.duckdb"
         print("seeding the invented demo world …", flush=True)
@@ -239,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         scene = find_scene(path)
         print(
             f"close call {scene.task_id}, candidate {scene.candidate}, value {scene.attribute}, "
-            f"sample {scene.sample}",
+            f"sample {scene.sample}, group {scene.group_key}, batch {scene.batch_id}",
             flush=True,
         )
         env = {"MDM_UNDO_SECONDS": str(UNDO_SECONDS)}
@@ -251,8 +322,9 @@ def main(argv: list[str] | None = None) -> int:
                     shutil.copyfile(path, copy)  # each scheme starts from the seeded world, tray empty
                     with serve(copy, port=args.port or free_port(), env=env) as base_url:
                         for part in PARTS:  # the inbox before the tray's decision claims the task
-                            shot = capture(browser, base_url, scene, scheme, part)
-                            print(f"wrote {shot.relative_to(ROOT)}", flush=True)
+                            shot = capture(browser, base_url, scene, scheme, part, out)
+                            shown = shot.relative_to(ROOT) if ROOT in shot.parents else shot.name
+                            print(f"wrote {shown}", flush=True)
             finally:
                 browser.close()
     return 0

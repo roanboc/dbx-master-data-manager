@@ -106,6 +106,14 @@ def test_fixed_names_are_never_reserved_words() -> None:
             assert len(ddl.index_name(table, columns)) <= 63
 
 
+def test_every_index_name_is_unique() -> None:
+    """`index_name` truncates to 60 characters, so two indexes of one schema could collide; none does."""
+    names = [(t.group, ddl.index_name(t, columns)) for t in ddl.TABLES for columns in t.indexes]
+    assert len(names) == len(set(names))
+    batch = {ddl.index_name(ddl.table("work", "batch"), c) for c in ddl.table("work", "batch").indexes}
+    assert not any(n.startswith(("batch_item_", "batch_chunk_")) for n in batch)
+
+
 def test_reserved_words_cover_both_engines(store: SqlStore, engine: str) -> None:
     if engine == "duckdb":
         rows = store._fetch_all(

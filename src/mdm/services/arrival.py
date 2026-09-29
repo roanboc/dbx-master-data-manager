@@ -1304,6 +1304,7 @@ class ArrivalService:
                 event_id=opened_by,
                 created_at=now,
                 updated_at=now,
+                signature="",  # two golden records, never grouped with alike reviews
             )
         )
         out.report.tasks[kind] = out.report.tasks.get(kind, 0) + 1
@@ -1628,6 +1629,17 @@ class ArrivalService:
         key = task_key(kind, entity, source, master_ids)
         # a record the breaker holds with no golden record to decide on waits for a data owner, not a steward
         waits = plan.reason == "breaker_demoted" and not master_ids
+        # a signature batch (story 3.3) groups only the reviews a steward could link to a golden record the
+        # pattern names: every other task stores '' (no group); an update of the task rewrites both
+        groupable = (
+            kind == "review"
+            and source is not None
+            and bool(master_ids)
+            and not any(is_ref(m) for m in master_ids)
+            and plan.reason in ("review_band", "breaker_demoted")
+            and bool(plan.signature)
+            and plan.rule_version is not None
+        )
         out.tasks.append(
             Task(
                 task_id=task_id(key, state.event_id),
@@ -1646,6 +1658,8 @@ class ArrivalService:
                 created_at=now,
                 updated_at=now,
                 due_at=WAITS_FOR_RESTORE if waits else None,
+                signature=plan.signature if groupable else "",
+                rule_version=plan.rule_version if groupable else None,
             )
         )
         out.report.tasks[kind] = out.report.tasks.get(kind, 0) + 1

@@ -1,12 +1,15 @@
 // Single-key shortcuts for the inbox (decision 18), and the shell's clientside callbacks (namespace
 // mdm_shell). Moving and choosing happen here, in the browser; a decision goes to Dash through the
-// key-event store, one at a time, and only once the case of the selected task is on screen. The listener yields to fields, lists, menus, dialogs, grid editors and
-// focused buttons and links; it is off when the steward turns shortcuts off (WCAG 2.2 success criterion
+// key-event store, one at a time, and only once the case of the selected task is on screen. The listener
+// yields to fields, lists, menus, dialogs, grid editors and focused buttons and links, except N, and L on
+// another candidate, on the forced sample's "Which comparison misled?", which decide with the comparison
+// chosen (naming, below); it is off when the steward turns shortcuts off (WCAG 2.2 success criterion
 // 2.1.4), and it acts only on a page that carries data-mdm-keys="on" (the inbox). It reads row and
 // candidate IDs only, never a value on the page, and writes no markup.
 //
-// Owner: SHELL (plan B.8.8). The inbox's own helpers (move, choose, openMenu, local, openRecord) are in
-// inbox.js, under window.dash_clientside.mdm_inbox; the IDs below are those of src/mdm/ui/ids.py.
+// Owner: SHELL (plan B.8.8). The inbox's own helpers (move, choose, openMenu, local, openRecord, openGroups,
+// needsChoice, needsSplit) are in inbox.js, under window.dash_clientside.mdm_inbox; the IDs below are those
+// of src/mdm/ui/ids.py. G opens Alike reviews (story 3.3), on the inbox only, like every single key.
 (function () {
   "use strict";
   var dc = (window.dash_clientside = window.dash_clientside || {});
@@ -85,6 +88,18 @@
     trayExpanded: function (opened) {
       return opened ? "true" : "false";
     },
+    // S6b: the tray's poll wakes when the counts see more (or fewer) of this steward's entries moving than
+    // the tab's tray shows: staged, or a batch still committing (story 3.3); the tray's own refresh then
+    // decides how long it polls
+    trayWake: function (live, state) {
+      if (typeof live !== "number") {
+        return noUpdate();
+      }
+      var shown = (state || []).filter(function (entry) {
+        return entry && (entry.status === "staged" || (entry.batch_id && entry.outcome === "committing"));
+      }).length;
+      return live !== shown ? false : noUpdate();
+    },
     // S9: the tray button's count and countdown, and each staged entry's countdown in the popover
     trayCountdown: function (_ticks, state) {
       var now = Date.now();
@@ -106,7 +121,13 @@
         return left > 0 ? clock(left) : "Committing…";
       });
       if (!staged.length) {
-        return ["Tray", "mdm-tray-button", texts];
+        // a batch whose chunks still commit keeps the button marked, with nothing to count down
+        var committing = (state || []).some(function (entry) {
+          return entry && entry.outcome === "committing";
+        });
+        return committing
+          ? ["Tray · committing", "mdm-tray-button mdm-staged", texts]
+          : ["Tray", "mdm-tray-button", texts];
       }
       var soonest = Math.min.apply(
         null,
@@ -168,6 +189,41 @@
     attributeFilter: ["aria-haspopup", "aria-expanded"],
   });
 
+  // ------------------------------------------------------------------ focus clear of a sticky footer
+  // The decide pane's footer and the batch page's actions stay at the foot of their scroller, which keeps
+  // room for them (--mdm-foot-room, styles.css), so the browser scrolls a focused control clear of them.
+  // A footer taller than that room could still cover one entirely (WCAG 2.2 success criterion 2.4.11): a
+  // control focused under a footer is scrolled to the middle of its scroller.
+  var FOOTERS = ".mdm-decide-footer, .mdm-batch-actions";
+  // whether a footer is what is painted at the middle of the control (a menu drawn over a footer is not)
+  function covered(el) {
+    var box = el.getBoundingClientRect();
+    if (!box.width && !box.height) {
+      return false;
+    }
+    var x = Math.min(Math.max(box.left + box.width / 2, 0), window.innerWidth - 1);
+    var y = Math.min(Math.max(box.top + box.height / 2, 0), window.innerHeight - 1);
+    var top = document.elementFromPoint(x, y);
+    var footer = top && top.closest ? top.closest(FOOTERS) : null;
+    return !!(footer && !footer.contains(el) && !el.contains(footer));
+  }
+  document.addEventListener(
+    "focusin",
+    function (e) {
+      var el = e.target;
+      if (!el || el === document.body || !el.getBoundingClientRect) {
+        return;
+      }
+      // after the browser's own scroll to the focused control
+      window.requestAnimationFrame(function () {
+        if (document.activeElement === el && covered(el)) {
+          el.scrollIntoView({block: "center", inline: "nearest"});
+        }
+      });
+    },
+    true
+  );
+
   // ------------------------------------------------------------------ the key listener
   var DECIDE = {l: "link", n: "not_a_match", a: "approve", r: "reject", c: "claim", u: "undo"};
   var BUSY_MS = 10000; // a decision that never answers frees the listener after this
@@ -190,6 +246,20 @@
       '[role="dialog"], [role="listbox"], [role="combobox"], [role="menu"], [role="alertdialog"], ' +
         ".mantine-Popover-dropdown, .mantine-Menu-dropdown, " +
         ".ag-cell-inline-editing, .ag-popup, .ag-popup-editor"
+    );
+  }
+  // "Which comparison misled?" (story 3.3): N, or L on another candidate, moves focus onto its radios, where
+  // the arrow keys choose; the same key then decides with the comparison chosen (the key help says so), so N
+  // and L pass through there, and every other key yields to the radios as to any field
+  var NAMING_KEYS = {l: true, n: true};
+  function naming(el, key) {
+    return !!(
+      NAMING_KEYS[key] &&
+      el &&
+      el.closest &&
+      el.tagName === "INPUT" &&
+      el.type === "radio" &&
+      el.closest("#decide-pane .mdm-split-choice")
     );
   }
   function onControl(el) {
@@ -231,16 +301,18 @@
     if (!window.mdmKeys.enabled()) {
       return;
     }
-    if (!document.querySelector('[data-mdm-keys="on"]')) {
+    // the page root that asks for the keys (the inbox); the body's own flag says only whether they are on,
+    // so it never counts: on Alike reviews, a batch, a record or a source no single key acts (decision 18)
+    if (!document.querySelector('[data-mdm-keys="on"]:not(body)')) {
       return;
     }
-    if (typing(e.target)) {
+    var key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (typing(e.target) && !naming(e.target, key)) {
       return;
     }
     if ((e.key === "Enter" || e.key === " ") && onControl(e.target)) {
       return;
     }
-    var key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if (key === "j" || key === "k") {
       e.preventDefault();
       call("move", key === "j" ? 1 : -1);
@@ -259,6 +331,12 @@
     if (e.key === "?") {
       e.preventDefault();
       window.dash_clientside.set_props("help-modal", {opened: true});
+      return;
+    }
+    if (key === "g") {
+      // Alike reviews (story 3.3): a navigation, so it sets no busy flag and sends no key event
+      e.preventDefault();
+      call("openGroups");
       return;
     }
     if (key === "f" || key === ".") {
@@ -285,6 +363,10 @@
     }
     if (action === "link" && typeof nav.needsChoice === "function" && nav.needsChoice()) {
       nav.focusChoice(); // a close call not chosen yet: L moves to the choice
+      return;
+    }
+    if (typeof nav.needsSplit === "function" && nav.needsSplit(action)) {
+      nav.focusSplit(); // a forced-sample review that disagrees: N or L names the comparison first
       return;
     }
     busy = true;

@@ -1,5 +1,6 @@
-// The inbox's clientside callbacks (I2, I4, I6, I8, the full-width toggle and the Previous and Next task
-// buttons) and the helpers keys.js calls: move, choose, openMenu, local, openRecord, settling, needsChoice.
+// The inbox's clientside callbacks (I2, I4, I6, I6b, I8, the full-width toggle and the Previous and Next task
+// buttons) and the helpers keys.js calls: move, choose, openMenu, local, openRecord, openGroups, settling,
+// needsChoice and needsSplit.
 // Moving and choosing happen here, in the browser, through the grid's API and the candidate control; only a
 // decision reaches the server, and only for the task whose case is on screen. Reads row and candidate IDs
 // only, never a value on the page, and writes no markup: the grid's cells are React elements with the
@@ -435,8 +436,11 @@
       }
       var choosing = action === "link" || action === "blind_link";
       var nothing = action === "link" && !!document.querySelector('#decide-pane [data-link="none"]');
-      if ((choosing && dc.mdm_inbox.needsChoice()) || nothing) {
-        if (!nothing) {
+      var naming = !nothing && !(choosing && dc.mdm_inbox.needsChoice()) && dc.mdm_inbox.needsSplit(action);
+      if ((choosing && dc.mdm_inbox.needsChoice()) || nothing || naming) {
+        if (naming) {
+          dc.mdm_inbox.focusSplit();
+        } else if (!nothing) {
           dc.mdm_inbox.focusChoice();
         }
         if (window.mdmKeys && window.mdmKeys.done) {
@@ -454,6 +458,39 @@
     // a close call with no candidate chosen: L chooses rather than links
     needsChoice: function () {
       return !!document.querySelector('#decide-pane [data-needs-choice="yes"]');
+    },
+    // a forced-sample review (story 3.3) whose decision would disagree with the case's suggestion ("Not a
+    // match", or a link to another candidate than the default) while no comparison is named: N, L or the
+    // button names the comparison that misled first. On a close call (no default) a link is void, never a
+    // disagreement, so it needs none.
+    needsSplit: function (action) {
+      var pane = document.querySelector('#decide-pane [data-sample="yes"]');
+      if (!pane || (action !== "not_a_match" && action !== "link")) {
+        return false;
+      }
+      if (pane.querySelector(".mdm-split-choice input[type=radio]:checked")) {
+        return false;
+      }
+      if (action === "not_a_match") {
+        return true;
+      }
+      var fallback = pane.getAttribute("data-default") || "";
+      if (!fallback) {
+        return false;
+      }
+      var picked = pane.querySelector(".mdm-candidate-choice input[type=radio]:checked");
+      return !!(picked && picked.value && picked.value !== fallback);
+    },
+    // open the "Which comparison misled?" disclosure and focus its first option, so the arrows choose
+    focusSplit: function () {
+      var details = document.querySelector("#decide-pane details.mdm-split");
+      if (details) {
+        details.open = true;
+      }
+      var radio = document.querySelector("#decide-pane .mdm-split-choice input[type=radio]");
+      if (radio) {
+        radio.focus();
+      }
     },
     // focus the first candidate of the choice, so the arrows and Space choose
     focusChoice: function () {
@@ -575,6 +612,16 @@
       return [value, classes, forLink(label), lines, forLink(quiet ? "default" : "filled"), forLink(shut || blocked)];
     },
 
+    // I6b: the comparison named on a forced-sample review (story 3.3), with the task whose pane names it:
+    // a code (a comparison's name, or "all"), never a value. A choice drawn empty (a new case) changes
+    // nothing: what the last decision named stays, for its staged line.
+    chooseSplit: function (value) {
+      if (!value) {
+        return noUpdate();
+      }
+      return {task: paneTask(), on: value};
+    },
+
     // F, or the toggle: the decide pane full width, and back; the toggle says what it does next
     fullWidth: function (_clicks, className) {
       var full = String(className || "").indexOf("mdm-decide-full") >= 0;
@@ -600,6 +647,10 @@
           if (!moved) {
             bump = (caseVersion || 0) + 1;
           }
+        }
+        // a forced-sample decision refused for want of a comparison: the choice takes focus
+        if (result.focus === "split" && result.task_id === selected) {
+          dc.mdm_inbox.focusSplit();
         }
         // The row's new state goes in once the new selection has reached the grid's selectedRows prop:
         // the grid selects that prop's rows again whenever its rows change.
@@ -715,6 +766,11 @@
           details.open = open;
         });
       }
+    },
+
+    // G: the Alike reviews page (story 3.3), as a link would open it
+    openGroups: function () {
+      setProps("url", {pathname: "/groups", search: ""});
     },
 
     // Enter: the shown candidate's golden record, else the golden record the case names

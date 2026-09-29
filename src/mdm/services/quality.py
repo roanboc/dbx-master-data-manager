@@ -27,6 +27,7 @@ from mdm.backend.store import SqlStore
 from mdm.config import Settings
 from mdm.engine.sample import draw_value, drawn
 from mdm.models.authority import AUTOMATED_MATCHER, Actor
+from mdm.models.batch import Batch, BatchItem
 from mdm.models.canonical import utcnow
 from mdm.models.match import GoldenCandidate
 from mdm.models.quality import (
@@ -261,6 +262,42 @@ class QualityService:
         )
         return sample, sample_task
 
+    def batch_sample(self, batch: Batch, item: BatchItem, now: datetime) -> tuple[QualitySample, Task]:
+        """A signature batch's link drawn for blind review (story 3.3, reading 13), written in its review's
+        chunk transaction: origin `batch`, decision `link`, the review's record, event, target, band, score and
+        the batch's rule version and signature; decided by the batch's maker and checked by its second steward,
+        neither of whom may answer it; its entry is the batch's. Its occasion is `<event>/<batch ID>`, so its
+        sample ID and its task's ID differ from any earlier sample of the same record at the same event: a
+        compensation detaches a record without a new event, and a later link never meets the old sample."""
+        entity = batch.entity
+        subject = item.source.text()
+        occasion = f"{item.event_id}/{batch.batch_id}"
+        sid = sample_id(entity, "link", subject, occasion)
+        task = self._task(entity, sid, item.source, (), item.event_id, occasion, now)
+        sample = QualitySample(
+            sample_id=sid,
+            entity=entity,
+            origin="batch",
+            decision="link",
+            source=item.source,
+            master_ids=(),
+            event_id=item.event_id,
+            target=item.target,
+            declined=(),
+            band=item.band or "",
+            signature=batch.signature or "",
+            score=round(item.score, 6) if item.score is not None else None,
+            rule_version=batch.rule_version,
+            decided_by=batch.maker,
+            decided_role=batch.maker_role,
+            decided_at=now,
+            entry_id=batch.entry_id,
+            task_id=task.task_id,
+            drawn_at=now,
+            checked_by=batch.checker,
+        )
+        return sample, task
+
     def void_for_deleted(
         self, entity: str, sources: Sequence[SourceKey]
     ) -> tuple[tuple[str, str, SourceKey | None], ...]:
@@ -428,6 +465,7 @@ class QualityService:
                 event_id=None,
                 created_at=now,
                 updated_at=now,
+                signature="",
             )
         current = self.store.xrefs_for_sources(entity, [sample.source]).get(sample.source)
         named = tuple(dict.fromkeys(m for m in (current, golden_answer) if m))
@@ -446,6 +484,7 @@ class QualityService:
             event_id=event_id,
             created_at=now,
             updated_at=now,
+            signature="",  # a disputed first decision is never grouped with alike reviews
         )
 
 

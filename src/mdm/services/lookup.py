@@ -536,7 +536,7 @@ class LookupService:
                     actor=self._actor_text(commit),
                     automated=automated,
                     authority=self._authority_text(
-                        commit, declined, self._sources_of(own, names, created=created)
+                        commit, declined, self._sources_of(own, names, created=created), proof
                     ),
                 )
             )
@@ -608,7 +608,24 @@ class LookupService:
             return f"{source} linked; it was already a member" if source else "Linked; nothing changed"
         if decision in ("blind_link", "blind_none", "keep_decision"):
             return LookupService._blind_headline(proof, decision, source, master_id)
+        if decision == "batch_compensate":
+            return "A batch's link was undone; nothing published"
+        if decision == "batch_link":
+            return f"Linked in {LookupService._batch_part(proof)}; nothing published"
         return "Decided; nothing published"
+
+    @staticmethod
+    def _batch_part(proof: Mapping[str, Any], batch_id: Any = None) -> str:
+        """ "batch BAT-…, chunk 2 of 3": a batch's chunk, from its evidence's IDs and counts."""
+        named = batch_id if isinstance(batch_id, str) else proof.get("batch_id")
+        text = f"batch {named}" if isinstance(named, str) else "a batch"
+        chunk, chunks = proof.get("chunk"), proof.get("chunks")
+        if isinstance(chunk, int) and not isinstance(chunk, bool):
+            if isinstance(chunks, int) and not isinstance(chunks, bool) and chunks >= chunk:
+                text += f", chunk {chunk} of {chunks}"
+            else:
+                text += f", chunk {chunk}"
+        return text
 
     @staticmethod
     def _blind_headline(proof: Mapping[str, Any], decision: str, source: str | None, master_id: str) -> str:
@@ -712,8 +729,14 @@ class LookupService:
             return f"Values updated: {', '.join(words)}" if words else "Values updated"
         if "xref" in parts:
             source = (proof or {}).get("source")
-            if (proof or {}).get("decision") == "link" and isinstance(source, str):
+            decision = (proof or {}).get("decision")
+            if decision == "link" and isinstance(source, str):
                 return f"Members changed: {source} linked"
+            if decision == "batch_link":
+                return f"Members changed: linked in {LookupService._batch_part(proof or {})}"
+            if decision == "batch_compensate":
+                original = (proof or {}).get("compensates")
+                return f"Members changed: a batch's link undone, {LookupService._batch_part(proof or {}, original)}"
             return "Members changed"
         if "relationship" in parts:
             if not relationships:
@@ -732,9 +755,12 @@ class LookupService:
         return ROLE_LABELS.get(commit.actor_role, "A person")
 
     @staticmethod
-    def _authority_text(commit: Any, declined: bool, sources: Sequence[str] = ()) -> str:
+    def _authority_text(
+        commit: Any, declined: bool, sources: Sequence[str] = (), proof: Mapping[str, Any] | None = None
+    ) -> str:
         """ "Applied automatically under rules v1 · from finance:F000123"; "Data steward"; the policy's
-        clauses stay in the audit, out of this line."""
+        clauses stay in the audit, out of this line. A signature batch's chunk names its batch and chunk,
+        whatever its headline: "Data steward · in batch BAT-…, chunk 2 of 3" (story 3.3)."""
         if commit is None:
             return ""
         ref = commit.authority_ref or ""
@@ -757,6 +783,12 @@ class LookupService:
             text += f" · from {shown}" + (f" and {rest} more" if rest > 0 else "")
         if declined:
             text += " · after a steward's not-a-match"
+        decision = (proof or {}).get("decision")
+        if decision == "batch_link":
+            text += f" · in {LookupService._batch_part(proof or {})}"
+        elif decision == "batch_compensate":
+            original = (proof or {}).get("compensates")
+            text += f" · undoing {LookupService._batch_part(proof or {}, original)}"
         return text
 
     def relationships(self, entity: str, master_id: str, *, actor: Actor) -> tuple[RelationshipView, ...]:

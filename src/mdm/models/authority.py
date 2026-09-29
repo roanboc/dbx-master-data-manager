@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
+
+from mdm.models.safety import safe
 
 ROLES = (
     "data_owner",
@@ -86,6 +89,12 @@ ACTIONS: Mapping[str, frozenset[str]] = {
     "restore_breaker": frozenset({"data_owner"}),
     # an automated actor's NAME: only the quality breaker demotes a band
     "trip_breaker": frozenset({QUALITY_BREAKER.name}),
+    # signature batches (story 3.3): drawing, preparing, staging and discarding a batch of alike reviews;
+    # reversing a committed batch; confirming one as its second steward; stopping one that commits
+    "batch_link": _STEWARDS,
+    "batch_compensate": _STEWARDS,
+    "confirm_batch": _STEWARDS,
+    "stop_batch": _STEWARDS,
 }
 NEVER_AUTOMATIC = frozenset(
     {
@@ -115,6 +124,47 @@ ROLE_LABELS: Mapping[str, str] = {
     "consumer": "Consumer",
     "administrator": "Administrator",
 }
+#: the local personas (decision 13), each acting in one role under its own name, `persona:<code>`: every role
+#: once, and a second data steward, so a batch's maker, its second steward and a blind reviewer of its links
+#: are three people on a local store (story 3.3). Refused on a shared store like every persona.
+SECOND_DATA_STEWARD = "data_steward_2"
+PERSONAS: Mapping[str, str] = {
+    "data_owner": "data_owner",
+    "data_steward": "data_steward",
+    SECOND_DATA_STEWARD: "data_steward",
+    "coordinating_steward": "coordinating_steward",
+    "technical_steward": "technical_steward",
+    "consumer": "consumer",
+    "administrator": "administrator",
+}
+#: what a person reads for each persona, in the persona menu's order
+PERSONA_LABELS: Mapping[str, str] = {
+    code: ("Data steward 2" if code == SECOND_DATA_STEWARD else ROLE_LABELS[role])
+    for code, role in PERSONAS.items()
+}
+
+
+@dataclass(frozen=True, slots=True)
+class AccessRow:
+    """One `mdm_audit.access_log` row a service asks the store to append among many (`append_accesses`): a
+    batch's split writes one per record it takes out of the batch, on a personal comparison. The action, the
+    reason and every text of the detail are codes, IDs and source keys (`safe`), checked here and again where
+    the store writes them."""
+
+    actor: str  # the actor's name
+    actor_role: str
+    action: str  # a code: `batch_split`
+    entity: str | None
+    master_id: str | None
+    attribute: str | None
+    reason: str  # a code
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        safe(self.action)
+        safe(self.reason)
+        safe(self.attribute)
+        safe(dict(self.detail))
 
 
 def allowed(actor: Actor, action: str) -> bool:

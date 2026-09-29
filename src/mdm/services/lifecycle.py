@@ -281,6 +281,116 @@ class LifecycleService:
             audit_always=work is not None,
         )
 
+    # ------------------------------------------------------------------ a signature batch's chunk (story 3.3)
+
+    def plan_batch_links(
+        self, entity: str, links: Sequence[tuple[SourceKey, str, str | None]]
+    ) -> tuple[list[ChangeItem], WorkWrites]:
+        """The items and work writes of one batch chunk's links, `(record, target, event)` each, written
+        nothing: a link per record (each unlinked, else `Conflict(record_changed)`); one `UpdateGolden` per
+        distinct target, surviving its members' approved values with every joiner's current values, so two
+        rows into one golden record never overwrite each other; each record's relationships. The work approves
+        each record at its event and releases a hold. A target no longer active is `Conflict(target_changed)`."""
+        model = self.registry.published(entity)
+        sources = [source for source, _, _ in links]
+        states = self.store.source_states(entity, sources)
+        linked = self.store.xrefs_for_sources(entity, sources)
+        changed = sorted(
+            source_token(s) for s in sources if s in linked or s not in states or states[s].status != "active"
+        )
+        if changed:
+            raise Conflict(changed, code="record_changed")
+        joiners: dict[str, list[SourceKey]] = {}
+        for source, target, _ in links:
+            joiners.setdefault(target, []).append(source)
+        golden = self.store.golden(entity, list(joiners))
+        items: list[ChangeItem] = [LinkSource(source, target, None) for source, target, _ in links]
+        for target, joining in joiners.items():
+            row = golden.get(target)
+            if row is None or row.status != "active":
+                raise Conflict([token(target)], code="target_changed")
+            members = self._members(entity, target)
+            values, provenance = self._survive(model, target, [*members, *joining], current=joining)
+            items.append(UpdateGolden(target, row.row_version, values, provenance))
+        for source, target, _ in links:
+            items.extend(self._relationship_items(model, states[source], target))
+        work = WorkWrites(
+            entity,
+            approve=tuple((source, event or states[source].event_id) for source, _, event in links),
+            release=tuple(source for source in sources if states[source].held),
+        )
+        return items, work
+
+    def plan_batch_detaches(
+        self, entity: str, detaches: Sequence[tuple[SourceKey, str]]
+    ) -> tuple[list[ChangeItem], WorkWrites]:
+        """The items and work writes of one compensation chunk, `(record, golden record)` each, written nothing:
+        a detach per record (still linked there, else `Conflict(record_changed)`); one `UpdateGolden` per
+        golden record, over its members less every record this chunk detaches, or an orphan task
+        (`last_member_detached`) when none is left; each record's relationships ended; each record approved at
+        its current event."""
+        model = self.registry.published(entity)
+        sources = [source for source, _ in detaches]
+        states = self.store.source_states(entity, sources)
+        linked = self.store.xrefs_for_sources(entity, sources)
+        changed = sorted(
+            source_token(s)
+            for s, target in detaches
+            if linked.get(s) != target or s not in states or states[s].status != "active"
+        )
+        if changed:
+            raise Conflict(changed, code="record_changed")
+        leaving: dict[str, set[SourceKey]] = {}
+        for source, target in detaches:
+            leaving.setdefault(target, set()).add(source)
+        golden = self.store.golden(entity, list(leaving))
+        items: list[ChangeItem] = [DetachSource(source, target) for source, target in detaches]
+        tasks: list[Task] = []
+        for target, gone in leaving.items():
+            row = golden.get(target)
+            if row is None or row.status != "active":
+                raise Conflict([token(target)], code="target_changed")
+            remaining = [m for m in self._members(entity, target) if m not in gone]
+            if remaining:
+                values, provenance = self._survive(model, target, remaining)
+                items.append(UpdateGolden(target, row.row_version, values, provenance))
+            else:
+                tasks.append(self._orphan_task(entity, target, "last_member_detached"))
+        for source, _ in detaches:
+            items.extend(self._relationship_items(model, states[source], None))
+        work = WorkWrites(
+            entity,
+            approve=tuple((source, states[source].event_id) for source in sources),
+            tasks=tuple(tasks),
+        )
+        return items, work
+
+    def values_with(
+        self,
+        entity: str,
+        master_id: str,
+        joiners: Sequence[SourceKey] = (),
+        *,
+        without: Sequence[SourceKey] = (),
+    ) -> dict[str, Any]:
+        """The golden record's values as they would survive with `joiners` joining it (their current values)
+        and `without` leaving it, written nothing: a batch's before-and-after, and a compensation's. {} when no
+        member is left."""
+        model = self.registry.published(entity)
+        gone = set(without)
+        members = [m for m in self._members(entity, master_id) if m not in gone]
+        joining = [s for s in joiners if s not in gone]
+        if not members and not joining:
+            return {}
+        values, _ = self._survive(model, master_id, [*members, *joining], current=joining)
+        return values
+
+    @staticmethod
+    def relationship_rows(model: EntityModel) -> int:
+        """The relationship rows one link may write, as an upper bound for packing a batch's chunks: one per
+        reference attribute of the entity."""
+        return len(model.reference_attributes())
+
     # ------------------------------------------------------------------ a steward's decisions on held updates
 
     def plan_approve_update(

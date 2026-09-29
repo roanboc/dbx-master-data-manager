@@ -133,6 +133,7 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACT8` | `ROLE3` | assigned to | |
 | `ACT8` | `ROLE1` | escalates to | |
 | `ACT8` | `BPROC1` | assigned to | It checks agreement and arrivals, and demotes the automatic band |
+| `ACT8` | `BPROC3` | assigned to | It withdraws a pattern's bulk rights when blind review of its batches disagrees |
 | `ACT9` | `ROLE2` | serves | Pending — future initiative (initiative 5) |
 | `ACT9` | `ROLE4` | serves | Pending — future initiative (initiative 5) |
 | `ACT9` | `ROLE2` | escalates to | Pending — future initiative (initiative 5) |
@@ -157,12 +158,12 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `BSVC3` | `ROLE2` | serves | |
 | `BSVC3` | `ROLE3` | serves | |
 | `BSVC3` | `CAP4.2` | realizes | Link on screen; detach, merge, unmerge, retire and reinstate follow in story 3.6 |
-| `BSVC3` | `CAP5.1` | realizes | One task at a time; by pattern in story 3.3 |
+| `BSVC3` | `CAP5.1` | realizes | One task at a time, or by pattern after a forced sample |
 | `BSVC3` | `CAP5.3` | realizes | Pending — future initiative (initiative 3): record authoring, story 3.7 |
 | `BSVC4` | `ROLE1` | serves | Pending — future initiative (initiative 3): checkers, story 3.6 |
 | `BSVC4` | `ROLE2` | serves | |
-| `BSVC4` | `ROLE3` | serves | Pending — future initiative (initiative 3): checkers, story 3.6 |
-| `BSVC4` | `CAP5.2` | realizes | Undo before commit; change sets with a checker in story 3.6 |
+| `BSVC4` | `ROLE3` | serves | A batch's second steward above 250 decisions; the checkers of other change sets follow in story 3.6 |
+| `BSVC4` | `CAP5.2` | realizes | Undo before commit; a batch's second steward and its compensation; change sets with a checker in story 3.6 |
 | `BSVC5` | `ROLE1` | serves | |
 | `BSVC5` | `ROLE4` | serves | |
 | `BSVC5` | `CAP1.1` | realizes | |
@@ -203,11 +204,11 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `BPROC3` | `BPROC1` | triggers | A declined record is settled again |
 | `BPROC3` | `BPROC2` | triggers | After the undo window |
 | `BPROC3` | `BSVC3` | realizes | |
-| `BPROC3` | `BSVC4` | realizes | Undo before commit |
-| `BPROC3` | `VS1.3` | realizes | The stewards' decisions, one task at a time |
+| `BPROC3` | `BSVC4` | realizes | Undo before commit; a batch's second steward above 250 decisions |
+| `BPROC3` | `VS1.3` | realizes | The stewards' decisions, one task at a time or by pattern |
 | `BPROC3` | `VS1.4` | realizes | The undo window |
-| `BPROC3` | `BOBJ8` | accesses | Claims and closes the task it decides |
-| `BPROC3` | `BOBJ9` | accesses | Stages the change set that `BPROC2` commits |
+| `BPROC3` | `BOBJ8` | accesses | Claims and closes the tasks it decides |
+| `BPROC3` | `BOBJ9` | accesses | Stages the change sets that `BPROC2` commits, a batch as one |
 
 ### [Business objects](./2_business/4_business-objects.md)
 
@@ -230,14 +231,14 @@ under the source's document. Nothing above the first `##` names an identifier.
 | From | To | Relationship | Notes |
 | ---- | -- | ------------ | ----- |
 | `RULE1` | `BOBJ2` | constrains | |
-| `RULE2` | `BOBJ9` | constrains | A link, and approving or rejecting a held update, through the undo tray; detach in story 3.6; create, edits and pins in story 3.7 |
-| `RULE3` | `BOBJ9` | constrains | Merge, unmerge and retirement need a checker at commit; critical edits and showing the checker what the maker saw follow in story 3.6, large bulk changes in story 3.3, and creates in coexistence and authored domains in story 3.7 |
+| `RULE2` | `BOBJ9` | constrains | A link, a batch of up to 250 links after its forced sample, and approving or rejecting a held update, through the undo tray; detach in story 3.6; create, edits and pins in story 3.7 |
+| `RULE3` | `BOBJ9` | constrains | Merge, unmerge, retirement and a batch above 250 decisions need a checker at commit; critical edits and showing the checker what the maker saw follow in story 3.6, bulk edits in stories 3.6 and 3.7, and creates in coexistence and authored domains in story 3.7 |
 | `RULE4` | `BOBJ1` | constrains | Pending — future initiative (initiative 4) |
 | `RULE4` | `BOBJ6` | constrains | Pending — future initiative (initiative 4) |
 | `RULE4` | `BOBJ7` | constrains | Pending — future initiative (initiative 4) |
 | `RULE5` | `BOBJ3` | constrains | Pending — future initiative (initiative 4) |
 | `RULE6` | `BOBJ9` | constrains | |
-| `RULE7` | `BOBJ8` | constrains | Pending — future initiative (initiative 3): story 3.3 |
+| `RULE7` | `BOBJ8` | constrains | Tasks decided together pass a unanimous forced sample first |
 | `RULE8` | `BOBJ3` | constrains | |
 | `RULE8` | `BOBJ4` | constrains | |
 | `RULE9` | `BOBJ2` | constrains | |
@@ -279,20 +280,24 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `DOBJ3.1` | `DOBJ3.7` | flows to | A share of the automated links and creates, drawn in the transaction that settles them |
 | `DOBJ3.1` | `DOBJ5.1` | flows to | Automatic change sets |
 | `DOBJ3.2` | `BOBJ8` | realizes | The tasks arrival writes, with due times, claims, snoozes and escalations; explained ranks follow in story 3.4 |
-| `DOBJ3.2` | `DOBJ3.5` | flows to | A steward's decision, staged |
+| `DOBJ3.2` | `DOBJ3.5` | flows to | A steward's decision, or a batch, staged |
+| `DOBJ3.2` | `DOBJ3.9` | flows to | Open reviews of one pattern, grouped; the forced sample and the batch drawn from them |
 | `DOBJ3.4` | `DOBJ3.8` | flows to | Arrivals per entity and hour |
 | `DOBJ3.5` | `BOBJ9` | realizes | A change set while it waits out its undo window |
-| `DOBJ3.5` | `DOBJ3.4` | flows to | A declined record, queued again |
-| `DOBJ3.5` | `DOBJ3.6` | flows to | The match decision, in the same transaction |
-| `DOBJ3.5` | `DOBJ3.7` | flows to | A blind answer, and a sampled steward decision, in the same transaction |
-| `DOBJ3.5` | `DOBJ5.1` | flows to | After the deadline, through the commit path; audited even when nothing is published |
+| `DOBJ3.5` | `DOBJ3.4` | flows to | A declined record, or a compensated batch's record, queued again |
+| `DOBJ3.5` | `DOBJ3.6` | flows to | The match decision, in the same transaction; a compensation's chunk withdraws the labels its original wrote |
+| `DOBJ3.5` | `DOBJ3.7` | flows to | A blind answer, a sampled steward decision, and 2% of the links each batch stages, rounded up, in the same transaction |
+| `DOBJ3.5` | `DOBJ5.1` | flows to | After the deadline, through the commit path, a batch one chunk at a time; audited even when nothing is published |
 | `DOBJ3.6` | `DOBJ3.1` | flows to | A declined golden record's members leave the record's candidates |
 | `DOBJ3.6` | `RES5` | associated with | The hub's copy, kept as stewards decide |
 | `DOBJ3.7` | `BOBJ8` | realizes | A quality sample, and the task that asks for it |
 | `DOBJ3.7` | `DOBJ3.2` | flows to | A sample's task; a review when it disagrees |
-| `DOBJ3.7` | `DOBJ3.8` | flows to | Agreement of the latest automated samples |
+| `DOBJ3.7` | `DOBJ3.8` | flows to | Agreement of the latest automated samples, and of each pattern's batch samples |
 | `DOBJ3.8` | `DOBJ3.2` | flows to | While demoted, automatic-band arrivals become review tasks; handed back after a restore |
-| `DOBJ3.8` | `DOBJ5.1` | flows to | Each trip and restore, audited |
+| `DOBJ3.8` | `DOBJ3.9` | flows to | Withdrawn bulk rights: no batch drawn or staged, and a committing one stops before its next chunk |
+| `DOBJ3.8` | `DOBJ5.1` | flows to | Each trip, withdrawal and restore, audited |
+| `DOBJ3.9` | `BOBJ9` | realizes | A change set in chunks under one batch ID |
+| `DOBJ3.9` | `DOBJ3.5` | flows to | A batch staged as one decision, locking every review |
 | `DOBJ4.1` | `BOBJ3` | realizes | |
 | `DOBJ4.1` | `DOBJ5.2` | flows to | Before and after, in the commit transaction |
 | `DOBJ4.2` | `BOBJ4` | realizes | |
@@ -330,13 +335,13 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ASVC3` | `BSVC5` | realizes | |
 | `ASVC4` | `ASVC1` | serves | |
 | `ASVC4` | `ASVC5` | serves | |
-| `ASVC4` | `ASVC9` | serves | Commits each staged decision |
-| `ASVC4` | `BSVC4` | realizes | The authority check at commit; makers and checkers on screen in story 3.6 |
+| `ASVC4` | `ASVC9` | serves | Commits each staged decision, and each chunk of a batch |
+| `ASVC4` | `BSVC4` | realizes | The authority check at commit, a batch's second steward included; makers and checkers of other change sets on screen in story 3.6 |
 | `ASVC4` | `BSVC7` | realizes | |
 | `ASVC4` | `CAP5.2` | realizes | The commit path and its authority check |
 | `ASVC4` | `CAP7.1` | realizes | The audit log |
 | `ASVC4` | `DOBJ4.5` | accesses | The only writer |
-| `ASVC5` | `ASVC9` | serves | Plans a link and approving a held update |
+| `ASVC5` | `ASVC9` | serves | Plans a link, a batch's links and their compensation, and approving a held update |
 | `ASVC5` | `BSVC3` | realizes | A link on screen, through the undo tray; detach in story 3.6 |
 | `ASVC5` | `CAP4.2` | realizes | As service functions |
 | `ASVC6` | `ASVC8` | serves | Masking and reveals |
@@ -348,7 +353,8 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ASVC8` | `BSVC3` | realizes | |
 | `ASVC8` | `CAP5.1` | realizes | |
 | `ASVC8` | `CAP3.1` | realizes | The decision view |
-| `ASVC9` | `BSVC4` | realizes | Undo before commit |
+| `ASVC8` | `DOBJ5.4` | accesses | One row per record a batch split takes out of the batch on a personal comparison, reason `batch_split` |
+| `ASVC9` | `BSVC4` | realizes | Undo before commit; a batch's second steward |
 | `ASVC9` | `CAP5.2` | realizes | |
 | `ASVC10` | `BSVC1` | realizes | |
 | `ASVC10` | `CAP4.1` | realizes | The Why of each value |
@@ -375,15 +381,16 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACMP4` | `ACMP7` | serves | |
 | `ACMP4` | `ACMP8` | serves | Survivorship recomputed after a lifecycle action |
 | `ACMP4` | `ACMP11` | serves | Check digits for invented registered IDs |
-| `ACMP4` | `ACMP15` | serves | The sample draw and the agreement bound |
+| `ACMP4` | `ACMP15` | serves | The sample draw, the agreement bound, and a batch's forced sample, split and chunks |
 | `ACMP4` | `ASVC2` | realizes | |
 | `ACMP5` | `ACMP1` | serves | |
-| `ACMP5` | `ACMP15` | serves | Candidates and explanations, a blind review's golden records among them, and arrival for a declined record |
+| `ACMP5` | `ACMP15` | serves | Candidates and explanations, a blind review's golden records and a batch's live check among them, a batch's cannot-link walk, and arrival for a declined record or a compensated batch's record |
 | `ACMP5` | `ASVC1` | realizes | |
 | `ACMP5` | `ASVC2` | realizes | |
 | `ACMP6` | `ACMP1` | serves | |
 | `ACMP6` | `ACMP5` | serves | |
 | `ACMP6` | `ACMP8` | serves | |
+| `ACMP6` | `ACMP15` | serves | Commits each chunk of a batch |
 | `ACMP6` | `ASVC4` | realizes | |
 | `ACMP7` | `ACMP1` | serves | |
 | `ACMP7` | `ACMP5` | serves | Published models and rule sets |
@@ -394,7 +401,7 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACMP7` | `ACMP16` | serves | Published models |
 | `ACMP7` | `ASVC3` | realizes | |
 | `ACMP8` | `ACMP1` | serves | |
-| `ACMP8` | `ACMP15` | serves | Plans and commits a link and a held update's approval; commits a blind answer; a golden record's values without the sampled record |
+| `ACMP8` | `ACMP15` | serves | Plans and commits a link and a held update's approval; commits a blind answer; a golden record's values without the sampled record; plans a batch's links and a compensation's detaches |
 | `ACMP8` | `ASVC5` | realizes | |
 | `ACMP9` | `ACMP1` | serves | |
 | `ACMP9` | `ACMP5` | serves | The vault for arriving personal values |
@@ -411,7 +418,7 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACMP11` | `ACMP1` | serves | |
 | `ACMP11` | `DOBJ2.1` | accesses | Writes landing rows as the integration platform would, in the local mode only |
 | `ACMP12` | `ACMP1` | serves | `mdm ui` |
-| `ACMP12` | `ASVC5` | realizes | Link and approving a held update, through the undo tray; detach and the other record actions follow in story 3.6 |
+| `ACMP12` | `ASVC5` | realizes | Link, approving a held update and a batch's links, through the undo tray; detach and the other record actions follow in story 3.6 |
 | `ACMP13` | `ACMP1` | serves | Pending — future initiative (initiative 4): scheduled jobs run the command line |
 | `ACMP14` | `ACMP5` | serves | |
 | `ACMP14` | `ACMP6` | serves | |
@@ -421,7 +428,7 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ACMP14` | `ACMP12` | serves | The tray's labels |
 | `ACMP14` | `ACMP15` | serves | |
 | `ACMP14` | `ACMP16` | serves | |
-| `ACMP15` | `ACMP1` | serves | `mdm tray flush`, `mdm breaker` |
+| `ACMP15` | `ACMP1` | serves | `mdm tray flush`, `mdm breaker`, `mdm batch` |
 | `ACMP15` | `ACMP5` | serves | The breaker's state and the sample draws |
 | `ACMP15` | `ACMP12` | serves | |
 | `ACMP15` | `ASVC8` | realizes | |

@@ -25,6 +25,8 @@ from tests.test_backend_store import state
 T0 = datetime(2026, 1, 5, 9, 0, tzinfo=UTC)
 LAPSED = T0 - timedelta(minutes=10)
 NEW_TASK_COLUMNS = ("snoozed_until", "snoozed_by", "escalated_at", "escalated_by", "escalation")
+#: the task columns signature batches append after the workbench's (story 3.3)
+BATCH_TASK_COLUMNS = ("signature", "rule_version", "signature_key")
 NEW_TABLES = ("tray_entry", "tray_lock", "match_label")
 
 
@@ -116,14 +118,18 @@ def test_the_workbench_tables_exist_and_an_older_store_gains_them(
 ) -> None:
     for name in NEW_TABLES:
         assert store.table_columns("work", name) == list(ddl.table("work", name).column_names())
-    assert store.table_columns("work", "task")[-len(NEW_TASK_COLUMNS) :] == list(NEW_TASK_COLUMNS)
+    later = len(BATCH_TASK_COLUMNS)
+    columns = store.table_columns("work", "task")
+    assert columns[-len(NEW_TASK_COLUMNS) - later : -later] == list(NEW_TASK_COLUMNS)
+    assert columns[-later:] == list(BATCH_TASK_COLUMNS)
 
-    # an initiative-2 store: the task table without the workbench's columns and indexes, no tray tables
+    # an initiative-2 store: the task table without the workbench's columns (nor the later stories') and
+    # indexes, no tray tables
     store.drop_all()
     task = ddl.table("work", "task")
     older = replace(
         task,
-        columns=tuple(c for c in task.columns if c.name not in NEW_TASK_COLUMNS),
+        columns=tuple(c for c in task.columns if c.name not in (*NEW_TASK_COLUMNS, *BATCH_TASK_COLUMNS)),
         indexes=(("entity", "status", "kind"), ("task_key",)),
     )
     monkeypatch.setattr(
@@ -133,7 +139,9 @@ def test_the_workbench_tables_exist_and_an_older_store_gains_them(
     )
     store.init_schema(create_landing=True)
     old_row = {
-        k: v for k, v in store._task_row(replace(a_task(1), due_at=None)).items() if k not in NEW_TASK_COLUMNS
+        k: v
+        for k, v in store._task_row(replace(a_task(1), due_at=None)).items()
+        if k not in (*NEW_TASK_COLUMNS, *BATCH_TASK_COLUMNS)
     }
     store._insert(older, [old_row])
     assert store.table_columns("work", "tray_entry") == []

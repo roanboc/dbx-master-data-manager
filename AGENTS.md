@@ -189,12 +189,12 @@ only and reads no store.
 | Domain model | `src/mdm/models/` | Frozen dataclasses, the errors (`errors.py`), `canonical_json`, and the safety helpers (`safety.py`). No SQL, no input or output |
 | Settings and capacity | `src/mdm/config.py`, `src/mdm/capacity.py` | `Settings.from_env` reads `MDM_*` variables; the declared figures, and the paging helpers `pages`, `chunks` and `require_limit` |
 | Store | `src/mdm/backend/` | Every SQL statement, once, in `store.py`, over two engines, `duckdb_engine.py` and `postgres_engine.py`; the DDL (`ddl.py`); the write guard (`guard.py`); Lakebase credentials (`lakebase_auth.py`); `factory.open_store(settings)` |
-| Matching engine | `src/mdm/engine/` | Standardise, key, compare, score and explain, estimate, cluster, survive, check quality, draw quality samples. Pure and deterministic |
-| Services | `src/mdm/services/` | The landing reader, arrival, the commit path and the feed reader, lifecycle, the registry, authority and privacy; the inbox, decisions and the undo tray; blind review and the quality breaker; the record reader; display helpers; `Hub.open` in `context.py` wires them |
+| Matching engine | `src/mdm/engine/` | Standardise, key, compare, score and explain, estimate, cluster, survive, check quality, draw quality samples and forced samples, pack a batch's chunks. Pure and deterministic |
+| Services | `src/mdm/services/` | The landing reader, arrival, the commit path and the feed reader, lifecycle, the registry, authority and privacy; the inbox, decisions and the undo tray; blind review and the quality breaker; signature batches; the record reader; display helpers; `Hub.open` in `context.py` wires them |
 | Workbench | `src/mdm/ui/` | The Dash shell, pages and components; `ids.py` for every component ID; `assets/` for the key listener and the styles. It calls services through `ui/context.py`, never the store |
 | Assistant | `src/mdm/agent/` | Provider choice, masked prompts, the stub and the case narrative |
 | Simulator | `src/mdm/demo/` | Invented source changes, landed as the integration platform would |
-| Entry points | `src/mdm/cli.py`, `app.py` | The Typer app `mdm`, with `mdm ui`, `mdm tray flush` and `mdm breaker`; `app.py` for the platform |
+| Entry points | `src/mdm/cli.py`, `app.py` | The Typer app `mdm`, with `mdm ui`, `mdm tray flush`, `mdm breaker` and `mdm batch`; `app.py` for the platform |
 
 ### Invariants (do not violate)
 
@@ -212,11 +212,12 @@ only and reads no store.
    log line** — attribute names, codes, IDs, source keys and counts only.
    Build every one through `src/mdm/models/safety.py`; the store checks each
    again where it writes a task, a reject, a staged decision, a label, a
-   quality sample, a change set or an access row, and
+   quality sample, a batch, a change set or an access row, and
    `tests/test_services_personal_data.py` is the backstop.
 6. **Personas, the simulator, `mdm demo reset` and the breaker's demo trip
-   (`hub.breaker.demo_trip`, for the browser checks and tests) run only on a
-   local store**: DuckDB, or a test Postgres on this machine
+   and demo withdrawal (`hub.breaker.demo_trip` and
+   `hub.breaker.demo_withdraw`, for the browser checks and tests) run only on
+   a local store**: DuckDB, or a test Postgres on this machine
    marked `MDM_ALLOW_PERSONAS=1` (the store refuses to open that setting on
    any other server).
    `Settings.local_mode` is the one test, and a Lakebase endpoint or a
@@ -231,15 +232,21 @@ only and reads no store.
    never straight to `lifecycle`. Only `tray.flush` commits it, audited even
    when nothing publishes; the commit's own transaction checks the record's
    event and the open task, and settles the staged decision (decision 19).
+   A batch of alike reviews is one staged decision: it locks every review,
+   and the flush commits one chunk a pass, each in its own transaction that
+   checks and settles its own reviews. Every transaction on a batch takes
+   the batch row first. A compensation goes through the tray too
+   (decision 23).
 9. **No personal value leaves a service except as the actor's role allows.**
    A revealed value is rendered once, and kept in no `dcc.Store`, address,
    component ID, browser storage or cache, tooltip, notification, error page
    or log line. A failure is logged by its type only, and the workbench's
    reveal reason is a code (decision 20).
 10. **The quality breaker only reduces automation.** Only `mdm breaker
-    restore`, by a data owner, lifts a demotion. The commit refuses an
-    automatic-band item while the band is demoted, and no code widens a band
-    or changes a rule set to do it (decision 3).
+    restore`, by a data owner, lifts a demotion or restores a pattern's bulk
+    rights. The commit refuses an automatic-band item while the band is
+    demoted, and no code widens a band or changes a rule set to do it
+    (decision 3).
 
 ### Established idioms (copy these; do not invent new ones)
 

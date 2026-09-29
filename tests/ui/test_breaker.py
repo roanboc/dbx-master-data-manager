@@ -1,10 +1,13 @@
 """The quality breaker in a browser (story 3.2): with Organisation's automatic linking paused, the inbox shows
 one quiet line under its health figures, with no live role; the decide pane of an Organisation task says
 why and what waits, and a Person task says nothing of it; no control on screen restores the band; and axe
-finds nothing serious with the line and the notice on screen, light and dark.
+finds nothing serious with the line and the notice on screen, light and dark. With the largest Person group's
+bulk decisions withdrawn (story 3.3), the Alike reviews page shows the breaker's notice in its row, offers no
+draw for it, and no button or link anywhere restores them; axe finds nothing serious there either.
 
-This module serves a copy of the seeded template of its own, with the breaker's demo trip on Organisation
-(local stores only), so every other module keeps a template with no breaker tripped.
+This module serves a copy of the seeded template of its own, with the breaker's demo trip on Organisation and
+its demo withdrawal of the Person group's bulk decisions (local stores only), so every other module keeps a
+template with no breaker tripped.
 """
 
 from __future__ import annotations
@@ -15,23 +18,31 @@ from pathlib import Path
 
 import pytest
 from playwright.sync_api import Page, expect
-from tools.workbench_live import LiveApp, copy_store, free_port, serve_in_thread, trip_breaker
+from tools.workbench_live import LiveApp, copy_store, free_port, serve_in_thread, trip_breaker, withdraw_bulk
 
 from mdm.models.authority import Actor
 from mdm.ui import ids
 from tests.ui.conftest import workbench_settings
-from tests.ui.harness import WAIT_MS, axe, navigate, open_inbox, settle
+from tests.ui.harness import WAIT_MS, axe, navigate, open_groups, open_inbox, settle
 
 STEWARD = Actor("persona:data_steward", "person", "data_steward", persona=True)
 LINE = re.compile(r"^Organisation: automatic linking paused since .+ UTC$")
 WHY = "Blind review confirmed 30 of the last 40 automatic links (75%), confidently below 95%."
+BULK = (
+    "Bulk decisions for this pattern are withdrawn: blind review agreed 3 of the last 5 batch links (60%), "
+    "confidently below 95%."
+)
+#: the Person group whose bulk decisions this module withdraws
+WITHDRAWN: dict[str, str] = {}
 
 
 @pytest.fixture(scope="module")
 def live(store_template: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[LiveApp]:
-    """This module's workbench over a copy of the template with Organisation's automatic linking paused."""
+    """This module's workbench over a copy of the template with Organisation's automatic linking paused and
+    the largest Person group's bulk decisions withdrawn."""
     path = copy_store(store_template, tmp_path_factory.mktemp("breaker") / "mdm.duckdb")
     trip_breaker(path, "organisation")
+    WITHDRAWN["person"] = withdraw_bulk(path, "person")
     with serve_in_thread(workbench_settings(path), port=free_port()) as served:
         yield served
 
@@ -96,4 +107,26 @@ def test_axe_finds_nothing_serious_with_the_breaker_line_and_notice(page: Page, 
     open_inbox(page, f"/?view=team&task={organisation}")
     expect(page.locator(f"#{ids.DECIDE_PANE} .mdm-breaker-notice")).to_be_visible(timeout=WAIT_MS)
     expect(page.locator(f"#{ids.HEALTH_STRIP} .mdm-breaker-line")).to_be_visible()
+    assert axe(page) == []
+
+
+def test_withdrawn_bulk_decisions_show_on_alike_reviews_with_no_draw_and_no_restore(page: Page, live) -> None:
+    open_groups(page)
+    row = page.locator(f"tr[data-group='{WITHDRAWN['person']}']")
+    expect(row).to_be_visible(timeout=WAIT_MS)
+    notice = row.locator(".mdm-bulk-notice")
+    expect(notice).to_contain_text(BULK)
+    expect(notice).to_contain_text("Only a data owner restores bulk decisions, on the command line")
+    assert notice.get_attribute("role") is None and notice.get_attribute("aria-live") is None
+    expect(row.get_by_role("button", name="Draw a forced sample")).to_have_count(0)
+    expect(page.get_by_role("button", name=re.compile("restore", re.IGNORECASE))).to_have_count(0)
+    expect(page.get_by_role("link", name=re.compile("restore", re.IGNORECASE))).to_have_count(0)
+
+
+@pytest.mark.parametrize("page", ["light", "dark"], indirect=True)
+def test_axe_finds_nothing_serious_with_bulk_decisions_withdrawn(page: Page, live) -> None:
+    open_groups(page)
+    expect(page.locator(f"tr[data-group='{WITHDRAWN['person']}'] .mdm-bulk-notice")).to_be_visible(
+        timeout=WAIT_MS
+    )
     assert axe(page) == []
