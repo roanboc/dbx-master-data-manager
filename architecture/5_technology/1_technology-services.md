@@ -4,7 +4,7 @@ _[← Technology layer](./README.md) · [Model home](../README.md)_
 
 **ArchiMate viewpoint:** Technology layer: Technology Service, Node.
 
-**Status:** ● Validated, 2026-09-28.
+**Status:** ● Validated, 2026-09-29 — confirmed by the product owner.
 
 ## Technology services
 
