@@ -21,7 +21,7 @@ archreator
 ----------
 The validators under scripts/ (check_links.py, check_model.py, check_prose.py,
 model_graph.py, element-prefixes.json and prose-denylist.json) are copies of
-the archreator 0.6.0 scaffold, and AGENTS.md, README.md, scripts/README.md,
+the archreator 0.7.0 scaffold, and AGENTS.md, README.md, scripts/README.md,
 architecture/README.md, the READMEs and relationships.md under architecture/,
 .gitignore and the files under .github/ are adapted from its scaffold and assets
 (https://github.com/roanboc/archreator). The method itself is loaded as a
