@@ -18,8 +18,8 @@
 ## Scope document
 
 <!-- Link the initiative's document in architecture/scope/. It names what
-     changed and why, with every layer's verdict; this pull request's merge
-     is what approves it.
+     changed and why, with every layer's verdict. The Requester confirmed
+     what it claims in a preview; this pull request's merge lands it.
 
      A change inside an element the model already names — a bug fix, a
      screen, a filter, a format — has no scope document. Write "No scope
@@ -40,6 +40,13 @@
 | 3_information | |
 | 4_application | |
 | 5_technology | |
+
+## Confirmed
+
+<!-- Which documents the Requester confirmed in a preview — who, when, in
+     the conversation or at a session — and which stay ◐ because nobody
+     confirmed them yet. A merge validates nothing on its own. "Nothing to
+     confirm" is the answer for a change inside an element. -->
 
 ## Changes
 

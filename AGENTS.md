@@ -9,8 +9,9 @@ coding agent, and any person, working here. The model of the project lives in
 ## The rule that governs everything else
 
 **A change to what the model claims is aligned through the numbered EA
-layers before it is coded, and the Requester's approval is the pull request
-merging.** An element added, removed or re-related, a rule it states
+layers before it is coded, the Requester confirms what it claims in a preview
+in the conversation, and the pull request merging lands what they
+confirmed.** An element added, removed or re-related, a rule it states
 contradicted — align it through the layers (`architecture/1_strategy` → … →
 `5_technology`), record it in a scope document (`architecture/scope/`), and
 build it directly. The agent stops only when the change contradicts a
@@ -28,9 +29,9 @@ documents.
 
 | Role | Who | Does |
 | ---- | --- | ---- |
-| **Requester** | The product owner — an enterprise's data and analytics unit | Says what should change — a requirement or a problem, not a diff, in plain words |
+| **Requester** | The product owner — an enterprise's data and analytics unit | Says what should change — a requirement or a problem, not a diff, in plain words — and confirms what the change claims when the agent previews it |
 | **Agent** | The coding agent, or a person | Works the change through the layers, writes the scope document, builds directly from the request, and opens a pull request — stopping only for a contradiction, an ambiguity, or something needing authorisation |
-| **Reviewer** | The product owner | Reviews and merges. The merge is the approval; nothing ships without it |
+| **Reviewer** | The product owner | Reviews and merges. The merge lands what the Requester confirmed; nothing ships without it |
 
 ## Modeling depth
 
@@ -45,6 +46,19 @@ alike; the depth says how much of them gets filled in — the ladder is in
 [`architecture/README.md`](./architecture/README.md) and is not restated
 here. It is a starting posture, never a ceiling: deepening or descoping is a
 normal initiative, decided by the Requester.
+
+## Delivery
+
+**Delivery framework: _none yet_.**
+
+The model owns why this project exists, who does what, and which information
+it holds; it registers what realizes each business service. How the software
+is designed and built belongs to a delivery framework once one is named here,
+and the principles reach it through its standing file. With none named, the
+scope documents are the specification, and the design already written in
+`architecture/4_application/` and `architecture/5_technology/` stays there
+while it is true; a page that goes stale collapses into the register rather
+than being repaired.
 
 ## Where this project lives
 
@@ -91,7 +105,7 @@ scan can flag an innocent word; reword it rather than allow-listing it.
 
 Three archreator skills surface on their own — `align-change-through-layers`
 when a requirement arrives, `architecture-document-style` and `document-style`
-when a document is edited. The other fifteen are out of the agent's listing:
+when a document is edited. The other fourteen are out of the agent's listing:
 a person invokes one by name, `/archreator:<skill>`, and typing `/archreator:`
 lists them, while the agent reaches one by reading its file — never by
 selecting it, because it cannot see one. Three kinds: `⚙` a procedure it runs,
@@ -121,7 +135,7 @@ The catalogue lives with the skills, in the plugin, and is not restated here.
   it, so an empty directory is never a substitute for saying what is missing.
 - **Every document that defines an element says how far it has been
   validated**, with `○` not started, `◐` a draft catalogue of things somebody
-  said exist, or `●` validated, on a named date. A draft
+  said exist, or `●` validated — confirmed by the Requester, on a named date. A draft
   catalogue is not an architecture draft and must never be read as one;
   `scripts/check_model.py` fails a defining document that declares nothing,
   one that carries no view or a section whose diagram follows its own first

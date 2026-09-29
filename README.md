@@ -193,7 +193,8 @@ row on that page, not an empty directory.
 ## How changes are made
 
 A requirement is worked through the model and built directly from it, layer
-by layer. The Requester's approval is the pull request merging — the agent
+by layer. The Requester confirms what a change claims when the agent previews
+it in the conversation, and the pull request merging lands it — the agent
 stops earlier only for a contradiction, an ambiguity, or something needing
 authorisation. [`AGENTS.md`](./AGENTS.md) states the rule and the declared
 modelling depth; the `align-change-through-layers` skill runs the process.
@@ -212,5 +213,5 @@ Apache-2.0: see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
 
 [archreator](https://github.com/roanboc/archreator) — an enterprise
 architecture method that lives in git as Markdown, with humans owning the
-strategy and approving at merge, and AI agents doing the modelling and the
+strategy and confirming what the model claims, and AI agents doing the modelling and the
 building in between.

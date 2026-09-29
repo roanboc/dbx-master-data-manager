@@ -53,9 +53,10 @@ Agent guidance for this process lives in the `align-change-through-layers`,
 `.github/pull_request_template.md` (see the `write-pr-description` skill) and
 must cover the whole branch.
 
-If a work package is too large or long-running to implement in one sitting,
-shard it into self-contained story files instead of leaving it as one
-inline task list — see the `shard-stories` skill.
+A work package too large to implement in one sitting is broken down by the
+delivery framework's own planning, named in `AGENTS.md` § Delivery; the
+scope document links to that breakdown rather than restating it. The story
+files an initiative already holds stay as its history.
 
 For a single consequential call smaller than a full initiative — most
 often why an AI actor's autonomy level or decision rights were set the way
