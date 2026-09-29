@@ -20,7 +20,7 @@ from typing import Any
 from dash import html
 from dash.development.base_component import Component
 
-from mdm.models.workbench import BreakerView
+from mdm.models.workbench import BreakerView, BulkRightView
 from mdm.services import display
 from mdm.ui.components.common import notice
 from mdm.ui.components.icons import icon
@@ -31,6 +31,11 @@ WAITS_REASON = display.REASONS["breaker_demoted"][0]
 WAITING = (
     "Records that would have linked automatically wait here for review. Only a data owner restores "
     "automatic linking, on the command line; there is no button for it here."
+)
+#: what follows a pattern's withdrawn bulk decisions (story 3.3): no restore control anywhere on screen
+BULK_WAITING = (
+    "Its reviews are decided one by one. Only a data owner restores bulk decisions, on the command line; "
+    "there is no button for it here."
 )
 
 
@@ -171,3 +176,35 @@ def pane_notice(view: BreakerView, *, open_: bool = False) -> Component:
     )
     found.className = f"{found.className} mdm-breaker-notice"
     return found
+
+
+# ---------------------------------------------------------------------------------------------- bulk rights
+
+
+def bulk_sentence(view: BulkRightView) -> str:
+    """Why a pattern's bulk decisions are withdrawn (story 3.3), from the breaker's safe figures: "Bulk
+    decisions for this pattern are withdrawn: blind review agreed 3 of the last 5 batch links (60%),
+    confidently below 95%."."""
+    figures = view.figures or {}
+    agreed = _number(figures.get("agreed"))
+    reviewed = _number(figures.get("reviewed"))
+    lead = "Bulk decisions for this pattern are withdrawn"
+    if agreed is None or reviewed is None or reviewed <= 0:
+        return f"{lead}: blind review agreed with too few of its batch links."
+    share = percent_down(int(agreed), int(reviewed))
+    below = threshold_percent(figures.get("threshold"))
+    return (
+        f"{lead}: blind review agreed {_count(agreed)} of the last {_count(reviewed)} batch links "
+        f"({share}%), confidently below {below}%."
+    )
+
+
+def bulk_notice(view: BulkRightView) -> Component:
+    """A warning notice with no live role (the pages that show it are drawn again on a poll): the sentence,
+    then what follows and who restores it. It offers no control: only a data owner restores bulk
+    decisions, on the command line."""
+    return html.Div(
+        [html.P(bulk_sentence(view)), html.P(BULK_WAITING)],
+        className="mdm-notice mdm-notice-warning mdm-bulk-notice",
+        **{"data-band": view.key},
+    )

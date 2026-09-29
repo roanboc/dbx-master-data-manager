@@ -1,11 +1,14 @@
-"""The view rail under Inbox: My queue, Team, Breaching, Snoozed, Escalated, Quality samples, then the open
-tasks by kind, each a plain link with its capped count as muted text (red when a breach is counted, and
-for Quality samples when one is past its service level, said in words under it too), the chosen one
-marked `aria-current="page"` and by one accent rule (S6). Quality samples have their own view only, so
-they are not among the kinds.
+"""The view rail under Inbox: My queue, Team, Breaching, Snoozed, Escalated, Quality samples and Alike
+reviews, then the open tasks by kind, each a plain link with its capped count as muted text (red when a
+breach is counted, and for Quality samples when one is past its service level, said in words under it
+too), the chosen one marked `aria-current="page"` and by one accent rule (S6). Quality samples have their
+own view only, so they are not among the kinds.
 
 A view is `/?view=<view>`; a kind is `/?view=team&kind=<kind>`, since the counts by kind are over every
-open task within the entity filter. The links carry codes only.
+open task within the entity filter. Alike reviews (story 3.3) is not a view of the inbox but its own page,
+`/groups`, with the open reviews that carry a signature group's key and, under it, the batches waiting for
+the steward as their second steward ("1 to confirm"); it is G's button (decision 18 keeps G on the inbox).
+The links carry codes only.
 
 Owner: SHELL (B.8.6).
 """
@@ -36,6 +39,11 @@ VIEW_LABELS = {
 RAIL_KINDS = tuple(kind for kind in TASK_KINDS if kind != "quality_sample")
 #: the view a kind's link opens: every open task of that kind
 KIND_VIEW = "team"
+#: the rail's mark for the Alike reviews page, a batch page and the inbox filtered to a group or a batch;
+#: not a view of ALL_VIEWS, so the inbox never counts it as one
+ALIKE = "alike"
+ALIKE_LABEL = "Alike reviews"
+ALIKE_HREF = "/groups"
 
 
 def href(view: str, kind: str | None = None) -> str:
@@ -50,6 +58,8 @@ def chosen(query: Mapping[str, str | None]) -> tuple[str | None, str | None]:
     if not query:
         return None, None
     view = query.get("view")
+    if view == ALIKE:
+        return ALIKE, None
     view = view if view in ALL_VIEWS else "mine"
     kind = query.get("kind")
     return view, kind if kind in TASK_KINDS and view != SAMPLES_VIEW else None
@@ -90,6 +100,12 @@ def overdue_words(overdue: int) -> str | None:
     return f"{count_text(overdue)} overdue" if overdue > 0 else None
 
 
+def confirm_words(to_confirm: int) -> str | None:
+    """Under Alike reviews, when a batch waits for the steward as its second steward: "1 to confirm";
+    nothing otherwise."""
+    return f"{count_text(to_confirm)} to confirm" if to_confirm > 0 else None
+
+
 def _description(name: str, counts: ViewCounts) -> str | None:
     if name == "mine":
         return claimed_words(counts.claimed)
@@ -112,6 +128,15 @@ def render(counts: ViewCounts, query: Mapping[str, str | None]) -> Component:
         )
         for name in ALL_VIEWS
     ]
+    views.append(
+        _link(
+            ALIKE_LABEL,
+            counts.alike,
+            ALIKE_HREF,
+            active=view == ALIKE,
+            description=confirm_words(counts.batches_to_confirm),
+        )
+    )
     kinds = [
         _link(KIND_LABELS[name], counts.kinds.get(name, 0), href(KIND_VIEW, name), active=name == kind)
         for name in RAIL_KINDS

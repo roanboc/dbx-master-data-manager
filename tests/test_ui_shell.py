@@ -28,7 +28,7 @@ from mdm.backend.factory import open_store
 from mdm.config import Settings
 from mdm.models.authority import ACTIONS, Actor
 from mdm.models.errors import Conflict, Forbidden, NotFound, PlatformRefused
-from mdm.models.workbench import TrayView
+from mdm.models.workbench import ALL_VIEWS, TrayView
 from mdm.services.authority import AuthorityService
 from mdm.services.context import Hub
 from mdm.ui import app as app_module
@@ -504,8 +504,19 @@ def test_a_role_without_tasks_has_an_empty_tray() -> None:
 
 def test_the_tray_state_holds_codes_ids_and_labels_only() -> None:
     state = tray.state_of(samples.TRAY_VIEWS)
-    assert set(state[0]) == {"entry_id", "task_id", "label", "deadline_ms", "status", "outcome", "version"}
+    assert set(state[0]) == {
+        "entry_id", "task_id", "label", "deadline_ms", "status", "outcome", "version", "batch_id", "progress",
+        "mine",
+    }  # fmt: skip
     assert state[0]["deadline_ms"] == int(samples.TRAY_VIEWS[0].deadline.timestamp() * 1000)
+    assert state[0]["batch_id"] is None and state[0]["progress"] is None and state[0]["mine"] is True
+    batch = tray.state_of([samples.TRAY_BATCH_COMMITTING])[0]
+    assert (
+        batch["batch_id"] == samples.BATCH_ID
+        and batch["progress"] == [1, 3]
+        and batch["outcome"] == "committing"
+    )
+    assert json.loads(json.dumps(batch)) == batch  # a plain document of codes, IDs and counts
 
 
 def test_undo_from_the_tray_says_how_it_went() -> None:
@@ -618,6 +629,12 @@ SERVICE_CODES = (
     "bad_snooze", "bad_escalation", "unknown_role", "unknown_master_id", "unknown_source_record",
     "unknown_ref", "conflict", "stale_row", "stale_link", "workbench_needs_loopback", "unknown_entry",
     "bad_cursor", "unknown_view", "unknown_kind",
+    # signature batches (story 3.3, plan 5 B.6)
+    "bad_filter", "unknown_group", "unknown_batch", "batch_open", "group_too_small", "bulk_withdrawn",
+    "not_ready", "not_prepared", "batch_empty", "not_the_maker", "checker_is_maker", "checker_required",
+    "checker_not_recorded", "batch_unknown", "still_in_tray", "not_committing", "split_choice_needed",
+    "bad_split_choice", "too_few_left", "batch_changed", "batch_stopped", "chunk_failed", "nothing_left",
+    "own_batch", "not_compensable", "undo_window_passed", "already_compensated", "bad_compensate_reason",
 )  # fmt: skip
 _RAISED = re.compile(
     r"(?:Forbidden|NotFound|Conflict|PlatformRefused|CapacityError)\(\s*(?:\[[^\]]*\],\s*)?(?:code=)?\"([a-z_]+)\""
@@ -626,7 +643,7 @@ _RAISED = re.compile(
 
 def test_every_code_the_workbench_services_raise_has_a_sentence() -> None:
     raised = set()
-    for name in ("inbox", "decisions", "tray", "lookup", "display"):
+    for name in ("inbox", "decisions", "tray", "lookup", "display", "batches"):
         path = SRC / "services" / f"{name}.py"
         if path.exists():
             raised |= set(_RAISED.findall(path.read_text(encoding="utf-8")))
@@ -758,3 +775,300 @@ def test_the_badges_are_read_once_in_a_while() -> None:
     state = _state(Settings(), SimpleNamespace(badges=badges))
     assert state.badges() is samples.HUB_BADGES and state.badges() is samples.HUB_BADGES
     assert len(read) == 1
+
+
+# ------------------------------------------------------------------------------------------ signature batches
+
+
+def test_the_rail_links_alike_reviews_after_quality_samples_with_its_count() -> None:
+    tree = rail.render(samples.COUNTS_ALIKE, {"view": "mine"})
+    links = [c for c in walk(tree) if type(c).__name__ == "NavLink"]
+    hrefs = [c.href for c in links]
+    assert hrefs[:6] == [
+        f"/?view={view}" for view in ("mine", "team", "breaching", "snoozed", "escalated", "samples")
+    ]
+    alike = links[6]
+    assert alike.href == "/groups" and alike.label == "Alike reviews" and alike.active is False
+    assert alike.rightSection.children == "612" and alike.description == "1 to confirm"
+    assert alike.to_plotly_json()["props"]["aria-label"] == "Alike reviews, 612, 1 to confirm"
+    assert getattr(alike, "id", None) is None
+    none_to_confirm = rail.render(replace(samples.COUNTS_ALIKE, batches_to_confirm=0), {"view": "mine"})
+    quiet = next(c for c in walk(none_to_confirm) if getattr(c, "href", None) == "/groups")
+    assert getattr(quiet, "description", None) is None
+    assert quiet.to_plotly_json()["props"]["aria-label"] == "Alike reviews, 612"
+    assert rail.confirm_words(0) is None and rail.confirm_words(capacity.COUNT_CAP) == "999+ to confirm"
+
+
+def test_the_rail_marks_alike_reviews_on_its_pages_and_the_filtered_inbox() -> None:
+    for path, search in (
+        ("/groups", ""),
+        (f"/batch/{samples.BATCH_ID}", ""),
+        ("/", f"?group={samples.GROUP_KEY_PERSON}"),
+        ("/", f"?batch={samples.BATCH_ID}&task=TSK-000001"),
+    ):
+        query = layout.inbox_query(path, search)
+        assert query == {"view": rail.ALIKE}, (path, search)
+        assert rail.chosen(query) == (rail.ALIKE, None)
+        tree = rail.render(samples.COUNTS_ALIKE, query)
+        active = [c for c in walk(tree) if type(c).__name__ == "NavLink" and c.active]
+        assert [c.href for c in active] == ["/groups"]
+        assert active[0].to_plotly_json()["props"]["aria-current"] == "page"
+    # a key of the wrong shape, or another path, is no mark
+    assert layout.inbox_query("/", "?group=given_name%3D") == {"view": "mine", "kind": None}
+    assert layout.inbox_query("/batch/Tamsin", "") == {}
+    assert layout.inbox_query("/record/ORG-000123", "") == {}
+    assert rail.ALIKE not in ALL_VIEWS  # the inbox never counts it as a view
+
+
+def test_the_key_help_lists_g_after_undo() -> None:
+    keys_listed = [key for key, _ in keys.KEY_HELP]
+    assert keys_listed[keys_listed.index("U") + 1] == "G"
+    assert dict(keys.KEY_HELP)["G"] == "Alike reviews: open reviews grouped by signature"
+    script = (SRC / "ui" / "assets" / "keys.js").read_text(encoding="utf-8")
+    help_at, g_at, decide_at = (
+        script.index('e.key === "?"'),
+        script.index('key === "g"'),
+        script.index("DECIDE[key]"),
+    )
+    assert help_at < g_at < decide_at  # after the help, before the decision keys, and on the inbox only
+    assert 'call("openGroups")' in script
+    inbox_script = (SRC / "ui" / "assets" / "inbox.js").read_text(encoding="utf-8")
+    assert 'setProps("url", {pathname: "/groups", search: ""})' in inbox_script
+    assert "needsSplit" in script and "focusSplit" in script and "needsSplit" in inbox_script
+
+
+def test_a_batch_entry_says_how_it_commits() -> None:
+    assert tray.outcome_text(samples.TRAY_BATCH_COMMITTING) == "Committing: chunk 1 of 3"
+    assert tray.outcome_text(samples.TRAY_BATCH_COMMITTED) == "Committed in 3 chunks"
+    assert tray.outcome_text(samples.TRAY_BATCH_STOPPED) == "Stopped after chunk 2 of 3"
+    assert tray.outcome_text(samples.TRAY_BATCH_WITHDRAWN) == (
+        "Stopped after chunk 1 of 3: bulk decisions for this pattern were withdrawn"
+    )
+    assert tray.outcome_text(replace(samples.TRAY_BATCH_WITHDRAWN, outcome="chunk_failed")) == (
+        "Stopped after chunk 1 of 3: a chunk could not commit"
+    )
+    assert tray.outcome_text(samples.TRAY_BATCH_FAILED) == (
+        "Not committed. Every review moved before the batch could commit, so nothing was linked."
+    )
+
+
+def test_the_tray_lists_a_batch_waiting_committing_and_done_with_its_page() -> None:
+    views = (samples.TRAY_BATCH_STAGED, samples.TRAY_BATCH_COMMITTING, samples.TRAY_BATCH_STOPPED)
+    items = tray.entry_items(views, samples.NOW)
+    shown = texts_in(items)
+    assert "Waiting (1)" in shown and "Committing (1)" in shown and tray.DONE_HEADING in shown
+    found = ids_in(items)
+    staged = samples.TRAY_BATCH_STAGED
+    assert ids.tray_undo(staged.entry_id) in found and ids.tray_countdown(staged.entry_id) in found
+    undo = next(c for c in walk(items) if getattr(c, "id", None) == ids.tray_undo(staged.entry_id))
+    assert getattr(undo, "aria-label") == f"Undo: Link 566 alike reviews ({samples.BATCH_ID})"
+    links = [c for c in walk(items) if type(c).__name__ == "Anchor"]
+    assert {c.href for c in links} == {f"/batch/{samples.BATCH_ID}"} and len(links) == 3
+    assert all(c.children == "Open the batch" for c in links)
+    assert "Committing: chunk 1 of 3" in shown
+
+
+def test_the_second_stewards_tray_lists_the_batch_they_confirmed_with_its_undo() -> None:
+    confirmed = samples.TRAY_BATCH_CONFIRMED
+    items = tray.entry_items((confirmed,), samples.NOW)
+    assert f"Link 566 alike reviews ({samples.BATCH_ID}), which you confirmed" in texts_in(items)
+    assert ids.tray_undo(confirmed.entry_id) in ids_in(items)
+    assert tray.label_of(samples.TRAY_BATCH_STAGED) == samples.TRAY_BATCH_STAGED.label
+
+
+def test_the_tray_polls_while_a_batch_commits_and_settles_each_chunk() -> None:
+    views = [samples.TRAY_BATCH_STAGED]
+    ctx = fake_ctx(tray=SimpleNamespace(entries=lambda **kwargs: tuple(views)))
+    first = tray.refresh(ctx, None)
+    assert first is not None and first.live == 1 and first.notices == []  # no "Confirmed" on a first load
+    views[0] = samples.TRAY_BATCH_COMMITTING
+    second = tray.refresh(ctx, first.state)
+    assert second is not None and second.staged == 0 and second.live == 1  # the polls stay on
+    assert second.settled == [
+        {
+            "entry_id": samples.TRAY_BATCH_STAGED.entry_id,
+            "task_id": samples.BATCH_ID,
+            "status": "committed",
+            "outcome": "committing",
+            "batch_id": samples.BATCH_ID,
+        }
+    ]
+    assert [(n["title"], n["message"]) for n in second.notices] == [
+        ("Committing", f"Committing: Link 566 alike reviews ({samples.BATCH_ID}), in 3 chunks.")
+    ]
+    assert tray.refresh(ctx, second.state) is None  # nothing moved
+    views[0] = replace(samples.TRAY_BATCH_COMMITTING, progress=(2, 3))
+    third = tray.refresh(ctx, second.state)
+    assert third is not None and third.settled[0]["batch_id"] == samples.BATCH_ID and third.notices == []
+    views[0] = samples.TRAY_BATCH_COMMITTED
+    last = tray.refresh(ctx, third.state)
+    assert last is not None and last.live == 0 and last.settled[0]["outcome"] == "committed"
+    assert last.notices[0]["title"] == "Committed"
+    assert (
+        last.notices[0]["message"] == f"Committed in 3 chunks: Link 566 alike reviews ({samples.BATCH_ID})."
+    )
+
+
+def test_a_stopped_or_failed_batch_says_so_once() -> None:
+    views = [samples.TRAY_BATCH_COMMITTING]
+    ctx = fake_ctx(tray=SimpleNamespace(entries=lambda **kwargs: tuple(views)))
+    first = tray.refresh(ctx, None)
+    views[0] = samples.TRAY_BATCH_STOPPED
+    stopped = tray.refresh(ctx, first.state)
+    note = stopped.notices[0]
+    assert note["title"] == "Stopped" and note["color"] == "yellow"
+    assert note["message"] == (
+        f"Stopped after chunk 2 of 3: Link 566 alike reviews ({samples.BATCH_ID}). The rest are back in the queue."
+    )
+    withdrawn = tray.batch_notice(samples.TRAY_BATCH_WITHDRAWN, {"outcome": "committing"})
+    assert withdrawn is not None and "Bulk decisions for this pattern were withdrawn" in withdrawn["message"]
+    failed = tray.batch_notice(samples.TRAY_BATCH_FAILED)
+    assert failed is not None and failed["title"] == "Not committed"
+    assert tray.batch_notice(replace(samples.TRAY_BATCH_STAGED, status="undone", outcome="undone")) is None
+
+
+def test_the_maker_hears_once_that_a_second_steward_confirmed() -> None:
+    views: list[TrayView] = []
+    ctx = fake_ctx(tray=SimpleNamespace(entries=lambda **kwargs: tuple(views)))
+    first = tray.refresh(ctx, None)
+    views.append(samples.TRAY_BATCH_STAGED)
+    second = tray.refresh(ctx, first.state)
+    assert second is not None and second.live == 1
+    [note] = second.notices
+    assert note["title"] == "Confirmed" and note["color"] == "teal"
+    at = samples.TRAY_BATCH_STAGED.deadline.strftime("%H:%M:%S")
+    assert note["message"] == (
+        f"Confirmed by a coordinating steward: Link 566 alike reviews ({samples.BATCH_ID}). "
+        f"It commits at {at} UTC unless one of you undoes it."
+    )
+    assert tray.refresh(ctx, second.state) is None  # once
+    # the second steward's own tray says nothing of the kind: they confirmed it
+    views[:] = []
+    other = tray.refresh(ctx, None)
+    views.append(samples.TRAY_BATCH_CONFIRMED)
+    assert tray.refresh(ctx, other.state).notices == []
+
+
+def test_the_tray_button_keeps_its_mark_while_a_batch_commits() -> None:
+    script = (SRC / "ui" / "assets" / "keys.js").read_text(encoding="utf-8")
+    assert '"Tray · committing"' in script and 'entry.outcome === "committing"' in script
+    assert tray.live_in(tray.state_of([samples.TRAY_BATCH_COMMITTING])) == 1
+    assert tray.live_in(tray.state_of([samples.TRAY_BATCH_COMMITTED, samples.TRAY_VIEWS[1]])) == 0
+
+
+def test_the_batch_refusals_read_as_sentences_with_their_titles() -> None:
+    mine = messages.sentence(Conflict(["TSK-1"], code="already_staged", mine=True, batch=samples.BATCH_ID))
+    assert mine == (
+        f"This review is part of batch {samples.BATCH_ID}, which waits in the tray. Undo the batch to decide it on "
+        "its own."
+    )
+    other = messages.sentence(Conflict(["TSK-1"], code="already_staged", mine=False, batch=samples.BATCH_ID))
+    assert other == "This review is part of another steward's batch. Pick another task."
+    late = messages.sentence(
+        Conflict(["TR-1"], code="already_settled", status="committed", batch=samples.BATCH_ID)
+    )
+    assert late == (
+        "Too late to undo: this batch has started to commit. Stop it on its page; its committed links can be "
+        "undone on the command line."
+    )
+    assert messages.sentence(NotFound("unknown_batch", batch_id=samples.BATCH_ID)) == (
+        f"No batch has the ID {samples.BATCH_ID}."
+    )
+    assert messages.sentence(NotFound("unknown_batch", batch_id="ORG-000123")) == "No batch has that ID."
+    assert messages.sentence(Forbidden("batch_unknown", batch=samples.BATCH_ID)).endswith(
+        f"{samples.BATCH_ID}."
+    )
+    assert messages.sentence(Forbidden("forbidden", action="batch_link", role="data_owner")) == (
+        "Your role, data owner, cannot decide alike reviews together."
+    )
+    titles = {
+        "bad_filter": "Not found", "unknown_group": "Group gone", "unknown_batch": "Batch gone",
+        "batch_open": "Already a batch", "group_too_small": "Too few", "bulk_withdrawn": "Bulk decisions withdrawn",
+        "not_ready": "Sample not complete", "not_prepared": "Check every row first", "batch_empty": "Nothing to link",
+        "not_the_maker": "Not your batch", "checker_is_maker": "A second steward confirms",
+        "checker_required": "A second steward confirms", "checker_not_recorded": "Not confirmed",
+        "batch_unknown": "Batch gone", "still_in_tray": "Still in the tray", "not_committing": "Nothing to stop",
+        "split_choice_needed": "Name the comparison", "bad_split_choice": "Choose a comparison",
+        "too_few_left": "Too few left", "batch_changed": "The batch changed", "batch_stopped": "Stopped",
+        "chunk_failed": "Stopped", "nothing_left": "Nothing linked", "own_batch": "Your own batch",
+        "not_compensable": "Not done", "undo_window_passed": "Too late", "already_compensated": "Already undone",
+        "bad_compensate_reason": "Choose a reason",
+    }  # fmt: skip
+    for code, wanted in titles.items():
+        assert messages.title_for(code) == wanted, code
+    assert messages.sentence_for("split_choice_needed").startswith("Name the comparison that misled first.")
+
+
+def test_the_batch_ids_are_built_from_keys_and_codes_only() -> None:
+    assert ids.group_draw(samples.GROUP_KEY_PERSON, "person") == {
+        "type": ids.GROUP_DRAW,
+        "group": samples.GROUP_KEY_PERSON,
+        "entity": "person",
+    }
+    assert ids.batch_action("stage") == {"type": ids.BATCH_ACTION, "action": "stage"}
+    with pytest.raises(ValueError):
+        ids.group_draw("given_name= · family_name≈", "person")  # a signature never becomes an ID
+    for value in (ids.GROUPS_ADDRESS, ids.GROUPS_SETTLED, ids.BATCH_SETTLED):
+        assert value["type"] in ID_VALUES
+
+
+def test_the_alike_reviews_and_a_batch_have_their_routes_and_their_query_keys() -> None:
+    batch_id = samples.BATCH_ID
+    assert app_module.parse_route("/groups") == ("groups", ())
+    assert app_module.parse_route("/groups/") == ("groups", ())
+    assert app_module.parse_route(f"/batch/{batch_id}") == ("batch", (batch_id,))
+    assert app_module.parse_route("/batch/Tamsin") == ("unknown", ())
+    assert app_module.parse_route(f"/batch/{batch_id}/rows") == ("unknown", ())
+    assert app_module.parse_route("/records") == ("unknown", ())
+    group = samples.GROUP_KEY_PERSON
+    assert app_module.query_of(f"?group={group}&batch={batch_id}&name=Tamsin") == {
+        "group": group,
+        "batch": batch_id,
+    }
+
+
+def test_the_new_pages_render_through_the_route_and_are_not_the_inbox(hub: Hub) -> None:
+    ctx = context.for_test(hub)
+    groups_page, note, on_inbox = app_module.render_route(ctx, "/groups", "", "person")
+    assert note is None and on_inbox is False and "Alike reviews" in text_of(groups_page)
+    gone, note, on_inbox = app_module.render_route(ctx, f"/batch/{samples.BATCH_ID}", "", "")
+    assert note is None and on_inbox is False
+    assert f"No batch has the ID {samples.BATCH_ID}." in " ".join(texts_in(gone))
+
+
+def test_the_counts_wake_a_resting_tray_when_its_steward_has_more_moving(hub: Hub) -> None:
+    """S6 reads `ViewCounts.tray_live` with its one count read and hands it to TRAY_LIVE; S6b (clientside)
+    wakes the tray's poll when it differs from what the tab's tray shows, and the tray's refresh rests the
+    poll again once a poll finds nothing new and nothing moving."""
+    ctx = context.for_test(hub)
+    parts, live = layout.header_parts(ctx, "", "/", "")
+    role, link, style, _rail, tray_style = layout.header_state(ctx, "", "/", "")
+    assert (parts[0], parts[1], parts[2], parts[4]) == (role, link, style, tray_style) and live == 0
+    consumer = context.for_test(hub, role="consumer")
+    assert layout.header_parts(consumer, "", "/", "")[1] is None
+    built = Dash(__name__)
+    layout.register(built)
+    [header] = [c for c in built._callback_list if f"{ids.ROLE_BADGE}.children" in c["output"]]
+    assert f"{ids.TRAY_LIVE}.data" in header["output"]
+    [wake] = [c for c in built._callback_list if c["output"].startswith(f"{ids.TRAY_POLL}.disabled@")]
+    assert wake["prevent_initial_call"] is True
+    assert [i["id"] for i in wake["inputs"]] == [ids.TRAY_LIVE]
+    assert [s["id"] for s in wake["state"]] == [ids.TRAY_STATE]
+    script = (SRC / "ui" / "assets" / "keys.js").read_text(encoding="utf-8")
+    body = script[script.index("trayWake: function") :]
+    assert "live !== shown ? false : noUpdate()" in body[: body.index("},")]
+    assert tray.quiet_polls([]) and not tray.quiet_polls(None)
+    assert not tray.quiet_polls(tray.state_of([samples.TRAY_BATCH_COMMITTING]))
+    assert tray.quiet_polls(tray.state_of([samples.TRAY_BATCH_COMMITTED]))
+
+
+def test_undo_from_the_tray_says_a_batch_is_ready_again() -> None:
+    entry = SimpleNamespace(decision="batch_link")
+    ctx = fake_ctx(tray=SimpleNamespace(undo=lambda entry_id, **kwargs: entry))
+    note = tray.undo(ctx, "TR-1")
+    assert note["title"] == "Undone"
+    assert note["message"] == "Undone. The batch is ready again, and nothing was linked."
+    entry.decision = "batch_compensate"
+    assert tray.undo(ctx, "TR-1")["message"] == "Undone. The batch is ready again, and nothing was undone."
+    entry.decision = "link"
+    assert tray.undo(ctx, "TR-1")["message"] == "Undone. The task is back in your queue."

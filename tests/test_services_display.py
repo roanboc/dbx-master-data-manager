@@ -111,3 +111,37 @@ def test_display_names_and_masked_forms(person_model: EntityModel, org_model: En
     )
     assert display.value_text(org_model, "closed_on", datetime(2026, 1, 5, tzinfo=UTC).date()) == "2026-01-05"
     assert display.attribute_label(None, "registered_id") == "Registered ID"
+
+
+# ---------------------------------------------------------------------------------------------- signature batches
+
+
+def test_a_signature_in_marks_and_words(person_model: EntityModel) -> None:
+    signature = "given_name= · family_name≈ · birth_date≠ · email∅"
+    marks = display.signature_marks(person_model, signature)
+    assert [(m.comparison, m.label, m.mark, m.words) for m in marks] == [
+        ("given_name", "Given name", "=", "the same"),
+        ("family_name", "Family name", "≈", "similar"),
+        ("birth_date", "Birth date", "≠", "different"),
+        ("email", display.attribute_label(person_model, "email"), "∅", "missing"),
+    ]
+    words = display.signature_words(person_model, signature)
+    assert words.startswith("given name the same · family name similar · birth date different · ")
+    assert display.signature_comparisons(signature) == ("given_name", "family_name", "birth_date", "email")
+    assert display.signature_words(person_model, "") == "no pattern"
+
+
+def test_a_batchs_tray_line_strata_and_reasons() -> None:
+    subject = {"batch_id": "BAT-" + "a" * 20, "decisions": 566, "kind": "link"}
+    assert display.tray_label("batch_link", subject, None) == f"Link 566 alike reviews (BAT-{'a' * 20})"
+    undo = {**subject, "kind": "compensate", "compensates": "BAT-" + "b" * 20, "decisions": 1}
+    assert display.tray_label("batch_compensate", undo, None) == f"Undo batch BAT-{'b' * 20}: 1 link"
+    assert display.stratum_label("crm/hr") == "crm and hr"
+    assert display.item_reason_words("claimed") == "claimed by another steward"
+    assert display.item_reason_words("split:birth_date") == "split off on birth date"
+    assert display.item_reason_words("split:all") == "split off with every alike review"
+    from mdm.models.batch import ITEM_REASONS
+
+    assert set(ITEM_REASONS) <= set(display.ITEM_REASON_WORDS)  # every code has its words
+    for code in ITEM_REASONS:
+        assert SAFE_TEXT_RE.match(code)

@@ -17,6 +17,7 @@ from datetime import date, datetime
 from typing import Any
 
 from mdm.models.authority import Actor, Authority
+from mdm.models.batch import BatchChunkWrite, BatchSampleWrite
 from mdm.models.canonical import canonical_json
 from mdm.models.match import PairScore
 from mdm.models.quality import QualitySample, SampleReview
@@ -261,6 +262,11 @@ class WorkWrites:
     # (sample ID, task ID, source): a deleted record's open sample voided and its task, or the review its
     # disagreement opened, closed
     void_samples: tuple[tuple[str, str, SourceKey | None], ...] = ()
+    # signature batches (story 3.3)
+    batch: BatchChunkWrite | None = None  # one chunk of a batch: its row held first, its chunk written once
+    batch_samples: tuple[BatchSampleWrite, ...] = ()  # forced-sample outcomes of the decisions committed
+    # (left_ref, right_ref, entry_id): a compensation withdraws the batch's labels, where still the batch's
+    unlabel: tuple[tuple[str, str, str], ...] = ()
 
     def empty(self) -> bool:
         return not (
@@ -278,12 +284,18 @@ class WorkWrites:
             or self.samples
             or self.reviews
             or self.void_samples
+            or self.batch is not None
+            or self.batch_samples
+            or self.unlabel
         )
 
     def merged(self, other: WorkWrites) -> WorkWrites:
-        """Both writes in one, `self`'s first in every field; the entities must be the same (ValueError)."""
+        """Both writes in one, `self`'s first in every field; the entities must be the same, and at most one
+        of them may carry a batch chunk (ValueError)."""
         if other.entity != self.entity:
             raise ValueError("work of two entities")
+        if self.batch is not None and other.batch is not None:
+            raise ValueError("work of two batch chunks")
         return WorkWrites(
             entity=self.entity,
             settle=self.settle + other.settle,
@@ -300,6 +312,9 @@ class WorkWrites:
             samples=self.samples + other.samples,
             reviews=self.reviews + other.reviews,
             void_samples=self.void_samples + other.void_samples,
+            batch=self.batch if self.batch is not None else other.batch,
+            batch_samples=self.batch_samples + other.batch_samples,
+            unlabel=self.unlabel + other.unlabel,
         )
 
     def split(self, sources: Collection[SourceKey]) -> tuple[WorkWrites, WorkWrites]:
@@ -309,7 +324,8 @@ class WorkWrites:
         which goes with the last chunk. A pair goes with the part when either end is in `sources`. A quality
         sample and a void go with their record, like its task; a keep-apart sample (no record) stays in the
         rest. The workbench's writes (labels, requeue, tray, expect_events, close_task_ids, reviews) all stay
-        in the rest, so they are checked and written with the last chunk.
+        in the rest, so they are checked and written with the last chunk, and so do a batch's (batch,
+        batch_samples, unlabel); no batch chunk uses `apply_chunked`.
         """
         chosen = frozenset(sources)
         part = WorkWrites(
@@ -339,6 +355,9 @@ class WorkWrites:
             samples=tuple(s for s in self.samples if s.source is None or s.source not in chosen),
             reviews=self.reviews,
             void_samples=tuple(v for v in self.void_samples if v[2] is None or v[2] not in chosen),
+            batch=self.batch,
+            batch_samples=self.batch_samples,
+            unlabel=self.unlabel,
         )
         return part, rest
 

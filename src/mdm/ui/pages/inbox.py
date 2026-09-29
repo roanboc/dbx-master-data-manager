@@ -33,6 +33,7 @@ from dash.development.base_component import Component
 
 from mdm import capacity
 from mdm.models.authority import ROLE_LABELS
+from mdm.models.batch import BATCH_DECISIONS, BATCH_ID_RE, SIGNATURE_KEY_RE
 from mdm.models.canonical import utcnow
 from mdm.models.errors import Conflict, Forbidden, MdmError, NotFound
 from mdm.models.safety import SAFE_TEXT_RE
@@ -153,6 +154,16 @@ EMPTY_VIEWS = {
 }
 #: the actions that act on the task on screen, so they need its case drawn first (undo acts on the tray)
 ON_THE_CASE = ("link", "not_a_match", "approve", "reject", "claim", *DIRECT)
+#: the keys of the address the inbox reads: a view, a kind and a task, or a signature group's key or a
+#: batch's ID (story 3.3), each value of a safe shape
+QUERY_KEYS = ("view", "kind", "task", "group", "batch")
+#: the list's name when it holds a group's reviews, or a batch's forced sample (story 3.3)
+ALIKE_REVIEWS = "Alike reviews"
+FORCED_SAMPLE = "Forced sample"
+#: what an empty group's list says in the pane
+EMPTY_GROUP = "No review with this pattern is open."
+#: refusals of a forced-sample decision that named no comparison, or one not offered: the choice takes focus
+SPLIT_CODES = frozenset({"split_choice_needed", "bad_split_choice"})
 
 
 @dataclass(frozen=True)
@@ -166,14 +177,31 @@ class ActResult:
     notices: tuple[dict, ...] = ()  # notification payloads (a refusal's sentence, a confirmation)
     remove: bool = False  # the task left this view: take its row out of the grid
     touched: str | None = None  # the task the row belongs to (an undo may touch another than the selected)
+    # "split": the pane's "Which comparison misled?" takes focus (a refusal named it)
+    focus: str | None = None
+    # the comparison a staged forced-sample decision named (story 3.3), or None
+    named: str | None = None
 
 
 # ---------------------------------------------------------------------------------------------- the query
 
 
+def _filters(query: Mapping[str, Any]) -> dict[str, str]:
+    """A signature group's key (`group`) or a batch's ID (`batch`) of the right shape, when the query names
+    one (story 3.3); a batch wins over a group. Absent otherwise, so a plain view's query stays as it was."""
+    batch = query.get("batch")
+    if isinstance(batch, str) and BATCH_ID_RE.match(batch):
+        return {"batch": batch}
+    group = query.get("group")
+    if isinstance(group, str) and SIGNATURE_KEY_RE.match(group):
+        return {"group": group}
+    return {}
+
+
 def parse_query(query: Mapping[str, str | None], entities: Sequence[str] = ()) -> dict[str, str | None]:
     """The inbox's query as codes: a known view (default My queue), a known kind (none in Quality samples,
-    which holds one kind), a published entity ("" for all) and a task ID of a safe shape."""
+    which holds one kind), a published entity ("" for all) and a task ID of a safe shape; and, when the
+    address names one, a signature group's key or a batch's ID, which set the view aside."""
     view = query.get("view")
     view = view if view in ALL_VIEWS else "mine"
     kind = query.get("kind")
@@ -186,6 +214,7 @@ def parse_query(query: Mapping[str, str | None], entities: Sequence[str] = ()) -
         "task": task
         if isinstance(task, str) and SAFE_TEXT_RE.match(task) and task.startswith("TSK-")
         else None,
+        **_filters(query),
     }
 
 
@@ -193,7 +222,7 @@ def query_from_search(search: str | None) -> dict[str, str]:
     """The address's query as codes and IDs: the inbox's keys only, each value of a safe shape."""
     found: dict[str, str] = {}
     for key, value in parse_qsl((search or "").lstrip("?"), keep_blank_values=False):
-        if key in ("view", "kind", "task") and key not in found and SAFE_TEXT_RE.match(value):
+        if key in QUERY_KEYS and key not in found and SAFE_TEXT_RE.match(value):
             found[key] = value
     return found
 
@@ -217,25 +246,69 @@ def new_query(address: Any, kept: Any, entities: Sequence[str]) -> dict[str, str
 
 
 def query_store(query: Mapping[str, str | None]) -> dict[str, str | None]:
-    """INBOX_QUERY: the view, the kind and the entity, codes only."""
+    """INBOX_QUERY: the view, the kind and the entity, codes only; and a group's key or a batch's ID when
+    the list is filtered to one."""
     return {
         "view": query.get("view") or "mine",
         "kind": query.get("kind"),
         "entity": query.get("entity") or "",
+        **_filters(query),
     }
 
 
 def mixed_kinds(query: Mapping[str, Any] | None) -> bool:
-    """Whether the list mixes kinds, so each row names its own: not under a kind, nor in Quality samples."""
+    """Whether the list mixes kinds, so each row names its own: not under a kind, nor in Quality samples,
+    nor in a group's or a batch's reviews, which are all reviews."""
     query = query or {}
+    if _filters(query):
+        return False
     return not query.get("kind") and query.get("view") != SAMPLES_VIEW
 
 
 def list_name(query: Mapping[str, str | None]) -> str:
-    """ "My queue", "Team · Review"."""
+    """ "My queue", "Team · Review"; "Alike reviews" for a group's reviews and "Forced sample" for a
+    batch's."""
+    filters = _filters(query)
+    if "batch" in filters:
+        return FORCED_SAMPLE
+    if "group" in filters:
+        return ALIKE_REVIEWS
     name = VIEW_LABELS.get(str(query.get("view") or "mine"), "My queue")
     kind = query.get("kind")
     return f"{name} · {KIND_LABELS[kind]}" if kind in KIND_LABELS else name
+
+
+def filter_line(query: Mapping[str, Any] | None) -> Component | None:
+    """The line above the list of a filtered inbox (INBOX_FILTER's children): "Alike reviews: every open
+    review with one pattern." with "Back to Alike reviews"; "Forced sample of batch BAT-…: decide each
+    review on its own." with "Back to the batch"; nothing for a plain view."""
+    filters = _filters(query or {})
+    if "batch" in filters:
+        batch = filters["batch"]
+        words = f"Forced sample of batch {batch}: decide each review on its own. "
+        link = dmc.Anchor("Back to the batch", href=f"/batch/{batch}", inherit=True)
+    elif "group" in filters:
+        words = "Alike reviews: every open review with one pattern. "
+        link = dmc.Anchor("Back to Alike reviews", href="/groups", inherit=True)
+    else:
+        return None
+    return html.P([words, link], className="mdm-inbox-filter")
+
+
+def filtered_empty(query: Mapping[str, Any] | None) -> Component | None:
+    """What the pane says when a group's or a batch's list is empty; None for a plain view."""
+    filters = _filters(query or {})
+    if "batch" in filters:
+        return decide.empty_pane(
+            [
+                "Every review of this sample is decided. ",
+                dmc.Anchor("Back to the batch", href=f"/batch/{filters['batch']}", inherit=True),
+                " to go on.",
+            ]
+        )
+    if "group" in filters:
+        return decide.empty_pane(EMPTY_GROUP)
+    return None
 
 
 def page_label(query: Mapping[str, str | None], depth: int, count: int) -> str:
@@ -265,6 +338,7 @@ def load_page(ctx: UiContext, query: Mapping[str, str], after: tuple[str, str] |
         entity=query.get("entity") or None,
         kind=query.get("kind") or None,
         after=after,
+        **_filters(query),  # a group's reviews or a batch's forced sample (story 3.3), whatever the view
     )
 
 
@@ -460,8 +534,10 @@ def _stage(
     candidate: str | None,
     seen_event: str | None,
     seen_task: str | None,
+    split_on: str | None = None,
 ) -> ActResult:
     target = candidate if decision in NAMES_CHOICE else None
+    named = {"split_on": split_on} if split_on is not None else {}
     entry, error, failure = _attempt(
         ctx.hub.tray.stage,
         task_id,
@@ -470,17 +546,21 @@ def _stage(
         target=target,
         seen_event=seen_event,
         seen_task=seen_task,
+        **named,
     )
     if entry is None:
         if failure is not None and isinstance(error, MdmError) and error.code == "record_changed":
             failure = {**failure, "message": messages.STAGE_RECORD_CHANGED}  # nothing waited yet
-        return ActResult(False, None, _stale(error), False, (failure,) if failure else (), touched=task_id)
+        focus = "split" if isinstance(error, MdmError) and error.code in SPLIT_CODES else None
+        return ActResult(
+            False, None, _stale(error), False, (failure,) if failure else (), touched=task_id, focus=focus
+        )
     row, gone = _row_again(ctx, task_id)
     label = row.staged.label if row is not None and row.staged is not None else "Your decision"
     seconds = ctx.settings.undo_seconds
     window = f"{seconds} s" if seconds < 120 else duration(timedelta(seconds=seconds))
     note = notify(f"{label}. It commits in {window}; press U to undo it.", "teal", title="In the tray")
-    return ActResult(True, row, False, True, (note[0],), remove=gone, touched=task_id)
+    return ActResult(True, row, False, True, (note[0],), remove=gone, touched=task_id, named=split_on)
 
 
 def _undo(ctx: UiContext, task_id: str | None) -> ActResult:
@@ -496,6 +576,14 @@ def _undo(ctx: UiContext, task_id: str | None) -> ActResult:
     if entry is None:
         note = notify("Nothing of yours is waiting in the tray.", "gray", title="Nothing to undo")
         return ActResult(False, None, False, False, (note[0],), touched=task_id)
+    if entry.decision in BATCH_DECISIONS:
+        # the whole batch is back, its entry's task field its ID: every row of it changes, so the tray's
+        # settlement reloads the page (I9), and the case on screen is drawn again
+        undone = "undone" if entry.decision == "batch_compensate" else "linked"
+        note = notify(
+            f"Undone: batch {entry.task_id} is ready again, and nothing was {undone}.", "teal", title="Undone"
+        )
+        return ActResult(False, None, True, True, (note[0],), touched=task_id)
     label = display.tray_label(entry.decision, entry.subject, entry.target)
     row, gone = _row_again(ctx, entry.task_id)
     note = notify(f"Undone: {label}. The task is back in your queue.", "teal", title="Undone")
@@ -549,6 +637,7 @@ def act(
     candidate: str | None = None,
     stamp: Mapping[str, Any] | None = None,
     view: str = "mine",
+    split: str | None = None,
 ) -> ActResult:
     """One action on the selected task (I7): `link` stages a link to `candidate` (else the candidate the
     case on screen names by default); `not_a_match` stages not a match or keep apart by the case's shape;
@@ -556,7 +645,9 @@ def act(
     `claim`; `undo` the selected task's entry, else the last. Every service call through
     `context.guarded`. `stamp` is CASE_STAMP, the case on screen: an action on a task whose case has not
     been drawn yet does nothing and says so, and a decision is checked against the event or version the
-    case was built on. `view` is the list on screen, which decides whether a snoozed task leaves it."""
+    case was built on. `view` is the list on screen, which decides whether a snoozed task leaves it.
+    `split` is the comparison named on a forced-sample review (story 3.3), passed with a decision that
+    disagrees with the case's suggestion only: "Not a match", or a link to another candidate."""
     if action == "undo":
         return _undo(ctx, task_id)
     if not task_id:
@@ -585,7 +676,8 @@ def act(
     if decision is None:
         refused = context.notice(Forbidden("decision_not_offered"))
         return ActResult(False, None, False, False, (refused,), touched=task_id)
-    target = candidate or (_code(seen, "default") if decision == "link" else None)
+    default = _code(seen, "default")
+    target = candidate or (default if decision == "link" else None)
     return _stage(
         ctx,
         task_id,
@@ -593,7 +685,25 @@ def act(
         candidate=target,
         seen_event=_code(seen, "event_id"),
         seen_task=_code(seen, "task_version"),
+        split_on=split if disagrees(decision, target, default) else None,
     )
+
+
+def disagrees(decision: str, target: str | None, default: str | None) -> bool:
+    """Whether a decision on a forced-sample review disagrees with its case's suggestion: "Not a match", or
+    a link to another candidate than the one suggested (a link on a close call, which suggests nothing, is
+    void rather than a disagreement)."""
+    if decision == "not_a_match":
+        return True
+    return decision == "link" and default is not None and target is not None and target != default
+
+
+def split_of(selected: Any, task_id: str | None) -> str | None:
+    """The comparison SELECTED_SPLIT names for `task_id` (the forced-sample review on screen), or None."""
+    if not isinstance(selected, Mapping) or not task_id or selected.get("task") != task_id:
+        return None
+    on = selected.get("on")
+    return on if isinstance(on, str) and SAFE_TEXT_RE.match(on) else None
 
 
 def requested_action(request: Any) -> str | None:
@@ -633,6 +743,7 @@ def result_store(
         if result.row is not None
         else None,
         "remove": result.remove,
+        **({"focus": result.focus} if result.focus else {}),
     }
 
 
@@ -643,6 +754,9 @@ def empty_view(ctx: UiContext, query: Mapping[str, Any] | None) -> Component:
     """The pane of a view with nothing in it: "Nothing is breaching. Team has 67 open tasks." with a link
     to Team; the plain line when the view is not empty (no task selected yet)."""
     query = query or {}
+    filtered = filtered_empty(query)
+    if filtered is not None:
+        return filtered
     view = str(query.get("view") or "mine")
     entity = query.get("entity") or None
     counts, _failure = context.guarded(ctx.hub.inbox.counts, actor=ctx.actor, entity=entity)
@@ -665,9 +779,13 @@ def case_view(
     chosen: str | None = None,
     next_hint: str | None = None,
     query: Mapping[str, Any] | None = None,
+    split: str | None = None,
+    kept: bool = True,
 ) -> tuple[Component, dict | None]:
     """I5 without Dash: the pane for the selected task and CASE_STAMP (`stamp_of`, codes only); prepares
-    the next row's case while the steward reads. With no task, what the view on screen (`query`) holds."""
+    the next row's case while the steward reads. With no task, what the view on screen (`query`) holds.
+    `split` is the comparison SELECTED_SPLIT names for this task (story 3.3): the pane keeps it when it draws
+    the same case again (`kept`), and a decision of it in the tray says what it named, whatever came between."""
     if not task_id:
         return empty_view(ctx, query), None
     case, error, failure = _attempt(ctx.hub.decisions.case, task_id, actor=ctx.actor)
@@ -680,7 +798,8 @@ def case_view(
         text = (failure or {}).get("message") or decide.DECIDED
         return decide.empty_pane(text), None
     context.prefetch(ctx, next_hint if next_hint != task_id else None)
-    return decide.render(case, chosen=chosen), stamp_of(case)
+    shown = split if kept or case.staged is not None else None
+    return decide.render(case, chosen=chosen, split=shown), stamp_of(case)
 
 
 def reveal_view(
@@ -704,6 +823,23 @@ def reveal_view(
         return None, failure or {}
     table = compare.render(shown.columns, shown.compare, revealed=True)
     return table, notify(f"Values shown; logged ({shown.logged} entries).", "teal", title="Shown")[0]
+
+
+def settled_batch(settled: Any) -> bool:
+    """Whether a SETTLED document names a batch (story 3.3): a batch settles many rows at once, chunk by
+    chunk, so the inbox reads its page on screen again rather than row by row."""
+    return isinstance(settled, list) and any(
+        isinstance(entry, dict) and isinstance(entry.get("batch_id"), str) for entry in settled
+    )
+
+
+def reloaded(cursor: Any) -> dict:
+    """INBOX_CURSOR asking I1 for the page on screen again: its stack unchanged, nothing moved, and a
+    counter bumped so the same page is a change."""
+    kept = cursor if isinstance(cursor, Mapping) else {}
+    stack = list(kept.get("stack") or [])
+    count = kept.get("reload")
+    return {"stack": stack, "moved": None, "reload": (count if isinstance(count, int) else 0) + 1}
 
 
 def settled_updates(
@@ -782,6 +918,7 @@ def _stores(
         dcc.Store(id=ids.PAGE_AFTER, storage_type="memory", data=after),
         dcc.Store(id=ids.SELECTED_TASK, storage_type="memory", data=selected),
         dcc.Store(id=ids.SELECTED_CANDIDATE, storage_type="memory", data=None),
+        dcc.Store(id=ids.SELECTED_SPLIT, storage_type="memory", data=None),
         dcc.Store(id=ids.NEXT_HINT, storage_type="memory", data=next_hint),
         dcc.Store(id=ids.CASE_VERSION, storage_type="memory", data=0),
         dcc.Store(id=ids.CASE_STAMP, storage_type="memory", data=None),
@@ -822,10 +959,12 @@ def _page(
     next_disabled: bool,
     stores: list[Component],
     pane: Component | None = None,
+    filtered: Component | None = None,
 ) -> Component:
     queue = html.Div(
         [
             html.Div(health_strip, id=ids.HEALTH_STRIP),
+            html.Div(filtered, id=ids.INBOX_FILTER),
             html.H2(label, id=ids.PAGE_LABEL, className="mdm-queue-heading", style=HEADING_STYLE),
             html.Div(grid, role="region", className="mdm-queue", **{"aria-label": "Tasks"}),
             dmc.Group(
@@ -883,6 +1022,7 @@ def skeleton() -> Component:
         [
             html.Div([reveal.open_button("decide"), reveal.modal("decide")], id=ids.DECIDE_COMPARE),
             dmc.RadioGroup([], id=ids.CANDIDATE_CHOICE),
+            dmc.RadioGroup([], id=ids.SPLIT_CHOICE),
             html.Div(id=ids.WHY_SECTION),
             html.Div(id=ids.ACTION_REASONS),
             dmc.Button("Previous task", id=ids.PREV_TASK),
@@ -923,7 +1063,13 @@ def layout(ctx: UiContext, query: Mapping[str, str]) -> Component:
     if failure is not None:
         label = failure.get("message", label)
     return _page(
-        strip_view, label, grid, prev_disabled, next_disabled, _stores(parsed, after, selected, next_hint)
+        strip_view,
+        label,
+        grid,
+        prev_disabled,
+        next_disabled,
+        _stores(parsed, after, selected, next_hint),
+        filtered=filter_line(parsed),
     )
 
 
@@ -972,6 +1118,7 @@ def register(app) -> None:
         Output(ids.INBOX_QUERY, "data"),
         Output(ids.INBOX_CURSOR, "data"),
         Output(ids.SELECTED_TASK, "data", allow_duplicate=True),
+        Output(ids.INBOX_FILTER, "children"),
         Input(ADDRESS, "data"),
         Input(ids.INBOX_CURSOR, "data"),
         State(ids.INBOX_QUERY, "data"),
@@ -982,15 +1129,17 @@ def register(app) -> None:
     def load_list(address, cursor, kept, persona, selected):
         request_ctx = _request(persona)
         if request_ctx is None:
-            return (no_update,) * 9
+            return (no_update,) * 10
         query_out: Any = no_update
         cursor_out: Any = no_update
+        filter_out: Any = no_update
         if dash_ctx.triggered_id == ADDRESS:
             query = new_query(address, kept, request_ctx.badges.entities)
             if query is None:
-                return (no_update,) * 9
+                return (no_update,) * 10
             cursor = {"stack": [], "moved": None}
             query_out, cursor_out = query, cursor
+            filter_out = filter_line(query)  # the page follows its own query without being rebuilt
         else:
             query = kept or {}
         rows, selected_rows, label, prev_off, next_off, after, failure = load(
@@ -1000,7 +1149,18 @@ def register(app) -> None:
             set_props(ids.NOTIFY, {"sendNotifications": [failure]})
         # a list with nothing in it: no task is selected, and the pane says what the view holds
         emptied = None if not rows and failure is None else no_update
-        return rows, selected_rows, label, prev_off, next_off, after, query_out, cursor_out, emptied
+        return (
+            rows,
+            selected_rows,
+            label,
+            prev_off,
+            next_off,
+            after,
+            query_out,
+            cursor_out,
+            emptied,
+            filter_out,
+        )
 
     # I2: the page buttons
     app.clientside_callback(
@@ -1052,8 +1212,9 @@ def register(app) -> None:
         State(ids.SELECTED_CANDIDATE, "data"),
         State(ids.CASE_STAMP, "data"),
         State(ids.INBOX_QUERY, "data"),
+        State(ids.SELECTED_SPLIT, "data"),
     )
-    def render_case(task_id, _version, persona, next_hint, chosen, stamp, query):
+    def render_case(task_id, _version, persona, next_hint, chosen, stamp, query, split):
         request_ctx = _request(persona)
         if request_ctx is None:
             return no_update, no_update
@@ -1064,6 +1225,8 @@ def register(app) -> None:
             chosen=chosen if same else None,
             next_hint=next_hint,
             query=query if isinstance(query, dict) else None,
+            split=split_of(split, task_id),
+            kept=same,  # kept across a redraw of the same case, and named on its decision in the tray
         )
 
     # I6: a candidate chosen (1–3 or a click), in the browser: its panel and impact line show, and the
@@ -1077,6 +1240,15 @@ def register(app) -> None:
         Output({"type": ids.ACTION, "decision": ALL}, "variant"),
         Output({"type": ids.ACTION, "decision": ALL}, "disabled"),
         Input(ids.CANDIDATE_CHOICE, "value"),
+        prevent_initial_call=True,
+    )
+
+    # I6b: the comparison named on a forced-sample review (story 3.3), copied out of the pane in the
+    # browser with the task it belongs to, so I5 keeps it across a redraw and I7 reads it from a store
+    app.clientside_callback(
+        ClientsideFunction(namespace="mdm_inbox", function_name="chooseSplit"),
+        Output(ids.SELECTED_SPLIT, "data"),
+        Input(ids.SPLIT_CHOICE, "value"),
         prevent_initial_call=True,
     )
 
@@ -1109,6 +1281,7 @@ def register(app) -> None:
         Output(ids.CASE_VERSION, "data", allow_duplicate=True),
         Output(ids.TRAY_VERSION, "data", allow_duplicate=True),
         Output(ids.NOTIFY, "sendNotifications", allow_duplicate=True),
+        Output(ids.SELECTED_SPLIT, "data", allow_duplicate=True),
         Input(ACT_REQUEST, "data"),
         State(ids.SELECTED_TASK, "data"),
         State(ids.SELECTED_CANDIDATE, "data"),
@@ -1118,6 +1291,7 @@ def register(app) -> None:
         State(ids.ACT_RESULT, "data"),
         State(ids.CASE_VERSION, "data"),
         State(ids.TRAY_VERSION, "data"),
+        State(ids.SELECTED_SPLIT, "data"),
         prevent_initial_call=True,
     )
     def act_on_task(
@@ -1130,10 +1304,11 @@ def register(app) -> None:
         previous,
         case_version,
         tray_version,
+        split,
     ):
         action = requested_action(request)
         if action is None:
-            return (no_update,) * 4
+            return (no_update,) * 5
         request_ctx = _request(persona)
         if request_ctx is None:
             note = notify("Your session could not be read. Reload the page.", "red")
@@ -1142,6 +1317,7 @@ def register(app) -> None:
                 no_update,
                 no_update,
                 note,
+                no_update,
             )
         task_id = task_id if isinstance(task_id, str) else None
         pane = request.get("task") if isinstance(request, dict) else None
@@ -1155,6 +1331,7 @@ def register(app) -> None:
                     no_update,
                     no_update,
                     list(result.notices),
+                    no_update,
                 )
         result = act(
             request_ctx,
@@ -1163,6 +1340,7 @@ def register(app) -> None:
             candidate=candidate if isinstance(candidate, str) else None,
             stamp=stamp if isinstance(stamp, dict) else None,
             view=str((query or {}).get("view") or "mine"),
+            split=split_of(split, task_id),
         )
         return (
             result_store(
@@ -1175,6 +1353,8 @@ def register(app) -> None:
             (case_version or 0) + 1 if result.bump_case else no_update,
             (tray_version or 0) + 1 if result.bump_tray else no_update,
             list(result.notices) if result.notices else no_update,
+            # what a staged decision named, so its staged line says so whenever its case is drawn again
+            {"task": task_id, "on": result.named} if result.advance and task_id else no_update,
         )
 
     # I8: the grid takes the row back and the selection advances to the next row not staged, in the
@@ -1188,22 +1368,27 @@ def register(app) -> None:
         prevent_initial_call=True,
     )
 
-    # I9: decisions the tray settled
+    # I9: decisions the tray settled; a batch's chunk reloads the page on screen (story 3.3)
     @app.callback(
         Output(ids.INBOX_GRID, "rowTransaction", allow_duplicate=True),
         Output(ids.CASE_VERSION, "data", allow_duplicate=True),
+        Output(ids.INBOX_CURSOR, "data", allow_duplicate=True),
         Input(SETTLED_HERE, "data"),
         State(ids.SELECTED_TASK, "data"),
         State(ids.PERSONA, "data"),
         State(ids.INBOX_GRID, "virtualRowData"),
         State(ids.CASE_VERSION, "data"),
         State(ids.INBOX_QUERY, "data"),
+        State(ids.INBOX_CURSOR, "data"),
         prevent_initial_call=True,
     )
-    def settled_rows(settled, selected, persona, shown, case_version, query):
+    def settled_rows(settled, selected, persona, shown, case_version, query, cursor):
         request_ctx = _request(persona)
         if request_ctx is None or not settled:
-            return no_update, no_update
+            return no_update, no_update, no_update
+        if settled_batch(settled):
+            # a batch settles many rows at once: the page is read again, and the case on screen with it
+            return no_update, (case_version or 0) + 1, reloaded(cursor)
         on_page = [row.get("task_id") for row in shown or () if isinstance(row, dict)]
         transaction, touched = settled_updates(
             request_ctx,
@@ -1216,6 +1401,7 @@ def register(app) -> None:
         return (
             transaction if transaction is not None else no_update,
             (case_version or 0) + 1 if touched else no_update,
+            no_update,
         )
 
     # I10: the reveal modal opens and cancels (clientside, the shell's builder). The modal sits inside

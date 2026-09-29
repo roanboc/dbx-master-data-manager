@@ -8,18 +8,28 @@ the privacy service masks by role before anything is shown (decision 20).
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from mdm.models.authority import ROLE_LABELS, Actor
+from mdm.models.batch import SPLIT_ALL, SPLIT_REASON_PREFIX
+from mdm.models.changes import (
+    ChangeItem,
+    EndRelationship,
+    LinkSource,
+    UpdateGolden,
+    UpsertRelationship,
+    WorkWrites,
+)
 from mdm.models.entity_model import EntityModel
 from mdm.models.errors import NotFound
-from mdm.models.records import SourceKey
+from mdm.models.records import GoldenRow, SourceKey
 from mdm.models.tasks import KIND_LABELS, WAITS_TEXT, Task, waits_for_restore
 from mdm.models.wording import attribute_label as _attribute_words
 from mdm.models.wording import comparison_name
+from mdm.models.workbench import Impact, Mark, Preview, PreviewRow
 
 #: what a masked personal value that is not text reads (a date, a group)
 HIDDEN = "hidden"
@@ -269,6 +279,8 @@ def tray_label(decision: str, subject: Mapping[str, Any], target: str | None) ->
     """One tray line, from IDs and source keys only: "Link crm:C000123 to ORG-000123", "Not a match:
     crm:C000123", "Approve the update of crm:C000123", "Keep ORG-000123 and ORG-004410 apart", "Quality
     sample: crm:C000123 belongs to ORG-000123"."""
+    if decision in ("batch_link", "batch_compensate"):
+        return batch_label(decision, subject)
     source = _source_of(subject)
     masters = _masters_of(subject)
     pair = f"{masters[0]} and {masters[1]}" if len(masters) >= 2 else "the golden records"
@@ -479,3 +491,185 @@ def ordered_attributes(model: EntityModel, names: Sequence[str]) -> list[str]:
     """`names` in model order, names the model does not know last."""
     order = {a.name: i for i, a in enumerate(model.attributes)}
     return sorted(names, key=lambda n: (order.get(n, len(order)), n))
+
+
+# ---------------------------------------------------------------------------------------------- signature batches
+# (story 3.3): a pattern of comparisons in words, a batch's tray line, and the before-and-after of a golden
+# record, which the decide pane and a batch's rows share. Built from codes, counts, attribute labels, IDs and
+# source keys only; a value reaches a preview only through the masking callable the caller passes.
+
+#: a comparison's mark in a signature, and what it means
+MARK_WORDS: Mapping[str, str] = {"=": "the same", "≈": "similar", "≠": "different", "∅": "missing"}
+
+#: why a batch's review was left out, failed or ended, after its count: "3 claimed by another steward"
+ITEM_REASON_WORDS: Mapping[str, str] = {
+    "closed": "whose task closed",
+    "staged": "held by another decision in the tray",
+    "claimed": "claimed by another steward",
+    "snoozed": "snoozed",
+    "escalated": "escalated",
+    "record_changed": "whose record changed",
+    "linked": "already linked to a golden record",
+    "no_candidate": "with no golden record to link to now",
+    "blocked": "kept apart by a cannot-link rule",
+    "close_call": "now a close call",
+    "signature_changed": "whose pattern changed",
+    "rules_changed": "scored under an earlier rule version",
+    "split_earlier": "split off an earlier batch",
+    "task_closed": "whose task closed",
+    "target_changed": "whose golden record changed",
+    "moved_since": "changed after the batch",
+    "stopped": "back in the queue after a stop",
+    "bulk_withdrawn": "back in the queue after bulk decisions were withdrawn",
+    "chunk_failed": "back in the queue after a chunk failed",
+    "over_max": "beyond the largest batch",
+    "nothing_left": "back in the queue",
+    "committed": "committed",
+}
+
+
+def parse_signature(signature: str | None) -> list[tuple[str, str]]:
+    """(comparison, mark) of each part of a signature, in rule order: "given_name= · birth_date≈" gives
+    [("given_name", "="), ("birth_date", "≈")]. A part without a known mark is left out."""
+    out: list[tuple[str, str]] = []
+    for part in (signature or "").split(" · "):
+        part = part.strip()
+        if len(part) >= 2 and part[-1] in MARK_WORDS:
+            out.append((part[:-1], part[-1]))
+    return out
+
+
+def _comparison_attribute(model: EntityModel | None, comparison: str) -> str:
+    if model is not None:
+        for spec in model.match.comparisons:
+            if spec.name == comparison:
+                return spec.attribute
+    return comparison
+
+
+def comparison_label(model: EntityModel | None, comparison: str) -> str:
+    """A comparison's label, from the attribute it compares: "Birth date"."""
+    return attribute_label(model, _comparison_attribute(model, comparison))
+
+
+def signature_marks(model: EntityModel | None, signature: str | None) -> tuple[Mark, ...]:
+    """A signature as marks in rule order, each with its label and words: Mark("birth_date", "Birth date",
+    "≈", "similar")."""
+    return tuple(
+        Mark(comparison, comparison_label(model, comparison), mark, MARK_WORDS[mark])
+        for comparison, mark in parse_signature(signature)
+    )
+
+
+def signature_words(model: EntityModel | None, signature: str | None) -> str:
+    """A signature in words, for the command line: "given name the same · family name the same · birth date
+    similar · …"."""
+    return (
+        " · ".join(f"{m.label.lower()} {m.words}" for m in signature_marks(model, signature)) or "no pattern"
+    )
+
+
+def signature_comparisons(signature: str | None) -> tuple[str, ...]:
+    """The comparisons a signature names, in rule order: the choices of "Which comparison misled?"."""
+    return tuple(comparison for comparison, _ in parse_signature(signature))
+
+
+def stratum_label(stratum: str) -> str:
+    """A forced-sample stratum in words: "crm/hr" -> "crm and hr"."""
+    left, _, right = stratum.partition("/")
+    return f"{left} and {right}" if right else left
+
+
+def item_reason_words(code: str | None) -> str:
+    """A batch review's reason in words: "claimed by another steward"; a split's "split off on birth date"."""
+    if not code:
+        return ""
+    if code.startswith(SPLIT_REASON_PREFIX):
+        named = code[len(SPLIT_REASON_PREFIX) :]
+        if named == SPLIT_ALL:
+            return "split off with every alike review"
+        return f"split off on {comparison_name(named)}"
+    return ITEM_REASON_WORDS.get(code, code.replace("_", " "))
+
+
+def split_on_label(model: EntityModel | None, split_on: str | None) -> str:
+    """The comparison a disagreeing sample decision named, in words: "birth date", or "every alike review"."""
+    if not split_on or split_on == SPLIT_ALL:
+        return "every alike review"
+    return comparison_label(model, split_on).lower()
+
+
+def batch_label(decision: str, subject: Mapping[str, Any]) -> str:
+    """A batch's tray line, from its subject's codes and counts alone: "Link 566 alike reviews (BAT-…)", or
+    "Undo batch BAT-…: 566 links"."""
+    batch_id = subject.get("batch_id") if isinstance(subject.get("batch_id"), str) else "a batch"
+    count = subject.get("decisions")
+    count = count if isinstance(count, int) and not isinstance(count, bool) else 0
+    if decision == "batch_compensate":
+        original = subject.get("compensates") if isinstance(subject.get("compensates"), str) else "a batch"
+        return f"Undo batch {original}: {count} link{'s' if count != 1 else ''}"
+    return f"Link {count} alike review{'s' if count != 1 else ''} ({batch_id})"
+
+
+def preview_rows(
+    model: EntityModel,
+    now: Mapping[str, Any],
+    after: Mapping[str, Any],
+    masked_text: Callable[[str, Any], str | None],
+) -> tuple[tuple[PreviewRow, ...], tuple[str, ...]]:
+    """The golden values before and after, each masked through `masked_text(name, value)`, and the labels of
+    the attributes that change."""
+    rows: list[PreviewRow] = []
+    changed: list[str] = []
+    for attribute in model.column_attributes():
+        name = attribute.name
+        before = value_text(model, name, now.get(name))
+        later = value_text(model, name, after.get(name))
+        differs = before != later
+        label = attribute_label(model, name)
+        if differs:
+            changed.append(label)
+        rows.append(
+            PreviewRow(
+                label=label,
+                now=masked_text(name, now.get(name)),
+                after=masked_text(name, after.get(name)),
+                changed=differs,
+            )
+        )
+    return tuple(rows), tuple(changed)
+
+
+def changed_names(model: EntityModel, now: Mapping[str, Any], after: Mapping[str, Any]) -> tuple[str, ...]:
+    """The names of the attributes whose display form differs between two sets of golden values."""
+    return tuple(
+        a.name
+        for a in model.column_attributes()
+        if value_text(model, a.name, now.get(a.name)) != value_text(model, a.name, after.get(a.name))
+    )
+
+
+def impact_of(
+    model: EntityModel,
+    items: Sequence[ChangeItem],
+    work: WorkWrites,
+    master_id: str,
+    golden: GoldenRow | None,
+    masked_text: Callable[[str, Any], str | None],
+) -> Preview:
+    """What a plan does to one golden record: its values before and after, masked, and the impact line."""
+    now = golden.values if golden is not None else {}
+    after = dict(now)
+    for item in items:
+        if isinstance(item, UpdateGolden) and item.master_id == master_id:
+            after = dict(item.values)
+    rows, changed = preview_rows(model, now, after, masked_text)
+    links = [i for i in items if isinstance(i, LinkSource)]
+    impact = Impact(
+        xrefs_added=sum(1 for i in links if i.target == master_id),
+        xrefs_removed=sum(1 for i in links if i.expected_master_id not in (None, master_id)),
+        golden_changed=changed,
+        relationships_changed=sum(1 for i in items if isinstance(i, (UpsertRelationship, EndRelationship))),
+        held_released=len(work.release),
+    )
+    return Preview(master_id=master_id, rows=rows, impact=impact)

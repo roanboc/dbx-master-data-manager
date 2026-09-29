@@ -43,3 +43,14 @@ def test_the_time_limit_stops_cleanly(tmp_path: Path) -> None:
     assert result["stopped"] == "time_limit during the bulk arrival"
     assert "bulk arrival" not in result["finished"] and "evaluation" in result["finished"]
     assert result["projection"]["linear_seconds"] is None
+
+
+def test_the_batch_phase_reports_what_it_did(tmp_path: Path) -> None:
+    """With --batch the spike draws the largest person signature group, or says why it could not."""
+    spike = _spike()
+    args = ["--engine", "duckdb", "--records", "600", "--out", str(tmp_path), "--batch"]
+    result = spike.run(spike.parse_args(args))
+    batch = result["batch"]
+    assert "skipped" in batch or {"draw_seconds", "population", "sample"} <= set(batch)
+    if "chunks" in batch:
+        assert all(c["rows"] <= 500 for c in batch["chunks"])

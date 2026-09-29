@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1397,3 +1398,325 @@ def test_claim_snooze_and_escalate_wrap_as_one_group_after_the_decisions() -> No
         assert any("claim" in g for g in grouped) and not any("not_a_match" in g for g in grouped)
         ids_before = [str(getattr(c, "id", "")) for d in decisions for c in walk(d)]
         assert decisions and not any("claim" in i for i in ids_before)
+
+
+# ---------------------------------------------------------------------------------------------- forced samples (story 3.3)
+
+
+def test_a_forced_sample_review_says_so_and_nudges_no_decision() -> None:
+    pane = decide.render(samples.CASE_SAMPLE, now=NOW)
+    notices = [c for c in walk(pane) if "mdm-sample-notice" in classes(c)]
+    assert len(notices) == 1
+    assert text_of(notices[0]) == (
+        f"Forced sample for batch {samples.BATCH_ID}: review 3 of 9. Decide it on its own: the rest are linked "
+        "together only if every sample agrees. Open the batch"
+    )
+    [link] = [c for c in walk(notices[0]) if type(c).__name__ == "Anchor"]
+    assert link.href == f"/batch/{samples.BATCH_ID}"
+    assert prop(pane, "data-quiet") == "yes" and prop(pane, "data-sample") == "yes"
+    assert prop(pane, "data-default") == "PER-000451"
+    decisions = [
+        c for c in walk(pane) if isinstance(getattr(c, "id", None), dict) and c.id.get("type") == ids.ACTION
+    ]
+    assert decisions and not [c for c in decisions if getattr(c, "variant", None) == "filled"]
+    assert decide.quiet_case(samples.CASE_SAMPLE) and not decide.quiet_case(samples.CASE_PERSON_STAGED)
+    plain = decide.render(samples.CASE_CLOSE_CALL, now=NOW)
+    assert prop(plain, "data-sample") is None and prop(plain, "data-default") is None
+
+
+def test_a_close_call_in_the_sample_has_no_default_so_its_link_names_no_comparison() -> None:
+    close = replace(samples.CASE_CLOSE_CALL, sample=samples.SAMPLE_LINE)
+    assert prop(decide.render(close, now=NOW), "data-default") == ""
+
+
+def test_which_comparison_misled_is_a_closed_choice_with_no_default() -> None:
+    pane = decide.render(samples.CASE_SAMPLE, now=NOW)
+    [details] = [c for c in walk(pane) if "mdm-split" in classes(c)]
+    assert not getattr(details, "open", False)
+    assert text_of(details.children[0]) == (
+        "Not a match, or another golden record? Name the comparison that misled"
+    )
+    group = one(pane, ids.SPLIT_CHOICE)
+    assert group.label == "Which comparison misled?" and group.value is None
+    radios = [c for c in walk(group) if type(c).__name__ == "Radio"]
+    assert [r.value for r in radios] == [m.comparison for m in samples.MARKS_PERSON] + ["all"]
+    assert text_of(radios[2].label) == "Birth date ≈ similar"
+    assert radios[-1].label == "Every alike review in this batch"
+    assert decide.SPLIT_NOTE in [text_of(c) for c in walk(details) if type(c).__name__ == "P"]
+    footer = next(c for c in walk(pane) if "mdm-decide-footer" in classes(c))
+    assert details in list(walk(footer))  # under the decisions
+
+
+def test_the_chosen_comparison_is_kept_on_the_same_case_and_never_invented() -> None:
+    kept = decide.render(samples.CASE_SAMPLE, split="birth_date", now=NOW)
+    assert one(kept, ids.SPLIT_CHOICE).value == "birth_date"
+    [details] = [c for c in walk(kept) if "mdm-split" in classes(c)]
+    assert details.open is True
+    assert one(decide.render(samples.CASE_SAMPLE, split="all", now=NOW), ids.SPLIT_CHOICE).value == "all"
+    assert one(decide.render(samples.CASE_SAMPLE, split="shoe_size", now=NOW), ids.SPLIT_CHOICE).value is None
+    assert (
+        decide.split_codes(samples.CASE_SAMPLE)[-1] == "all"
+        and decide.split_codes(samples.CASE_CLOSE_CALL) == ()
+    )
+
+
+def test_no_comparison_is_asked_where_nothing_can_be_decided() -> None:
+    for case in (samples.CASE_SAMPLE_STAGED, samples.CASE_BATCH_HELD, samples.CASE_PERSON_STAGED):
+        assert not by_id(decide.render(case, now=NOW), ids.SPLIT_CHOICE)
+    owner = replace(
+        samples.CASE_SAMPLE,
+        actions=tuple(replace(a, enabled=False, why_not="No.") for a in samples.CASE_SAMPLE.actions),
+    )
+    assert not by_id(decide.render(owner, now=NOW), ids.SPLIT_CHOICE)
+
+
+def test_a_disagreeing_sample_decision_in_the_tray_says_what_leaves() -> None:
+    at = samples.STAGED_SAMPLE.deadline.strftime("%H:%M:%S")
+    named = decide.staged_line(samples.CASE_SAMPLE_STAGED, split="birth_date", now=NOW)
+    assert text_of(named) == (
+        f"Not a match, flagged on birth date: when it commits at {at} UTC, the reviews that share this record's "
+        f"value on it leave batch {samples.BATCH_ID}. U undoes it, and nothing leaves."
+    )
+    every = decide.staged_line(samples.CASE_SAMPLE_STAGED, split="all", now=NOW)
+    assert f"every alike review leaves batch {samples.BATCH_ID}" in text_of(every)
+    unnamed = decide.staged_line(samples.CASE_SAMPLE_STAGED, now=NOW)
+    assert text_of(unnamed).startswith("In the tray: Not a match: crm:C001377. When it commits at ")
+    assert text_of(unnamed).endswith("U undoes it, and nothing leaves.")
+    agreeing = replace(
+        samples.CASE_SAMPLE_STAGED,
+        staged=replace(samples.STAGED_SAMPLE, decision="link", label="Link crm:C001377 to PER-000451"),
+    )
+    assert text_of(decide.staged_line(agreeing, now=NOW)).startswith(
+        "In the tray: Link crm:C001377 to PER-000451."
+    )
+
+
+def test_a_review_a_batch_holds_says_so_and_its_decisions_wait() -> None:
+    pane = decide.render(samples.CASE_BATCH_HELD, now=NOW)
+    at = samples.STAGED_BATCH.deadline.strftime("%H:%M:%S")
+    line = decide.staged_line(samples.CASE_BATCH_HELD, now=NOW)
+    assert text_of(line) == (
+        f"Part of batch {samples.BATCH_ID} in the tray: it commits at {at} UTC unless the batch is undone. U undoes "
+        "the whole batch. Open the batch"
+    )
+    [link] = [c for c in walk(line) if type(c).__name__ == "Anchor"]
+    assert link.href == f"/batch/{samples.BATCH_ID}"
+    committing = decide.staged_line(samples.CASE_BATCH_COMMITTING, now=NOW)
+    assert text_of(committing) == f"Part of batch {samples.BATCH_ID}, which is committing. Open the batch"
+    decisions = [
+        c for c in walk(pane) if isinstance(getattr(c, "id", None), dict) and c.id.get("type") == ids.ACTION
+    ]
+    link_and_no = [c for c in decisions if c.id["decision"] in ("link", "not_a_match")]
+    assert link_and_no and all(c.disabled for c in link_and_no)
+    assert samples.HELD_BY_BATCH in text_of(one(pane, ids.ACTION_REASONS))
+    assert prop(pane, "data-sample") is None  # held by the batch: no longer a sample to decide
+
+
+def test_the_keys_name_the_comparison_before_a_disagreeing_decision() -> None:
+    source = (Path(__file__).resolve().parents[1] / "src" / "mdm" / "ui" / "assets" / "inbox.js").read_text(
+        "utf-8"
+    )
+    start = source.index("needsSplit: function (action)")
+    body = source[start : source.index("focusSplit: function", start)]
+    assert '[data-sample="yes"]' in body and ".mdm-split-choice input[type=radio]:checked" in body
+    assert 'action === "not_a_match"' in body and 'getAttribute("data-default")' in body
+    assert "naming" in source[source.index("actRequest: function") : source.index("needsChoice: function")]
+
+
+def test_a_group_or_a_batch_filters_the_inbox_and_names_its_list() -> None:
+    entities = ("organisation", "person")
+    group, batch = samples.GROUP_KEY_PERSON, samples.BATCH_ID
+    assert inbox.query_from_search(f"?group={group}&batch={batch}&task=TSK-1a&name=x") == {
+        "group": group,
+        "batch": batch,
+        "task": "TSK-1a",
+    }
+    parsed = inbox.parse_query({"view": "team", "group": group}, entities)
+    assert parsed["group"] == group and "batch" not in parsed
+    assert inbox.parse_query({"batch": batch, "group": group}, entities)["batch"] == batch
+    assert "group" not in inbox.parse_query({"group": "given_name="}, entities)  # not a key's shape
+    assert "batch" not in inbox.parse_query({"batch": "BAT-1"}, entities)
+    assert inbox.address_query({"search": f"?batch={batch}", "entity": "", "path": "/"}, entities) == {
+        "view": "mine",
+        "kind": None,
+        "entity": "",
+        "batch": batch,
+    }
+    kept = {"view": "mine", "kind": None, "entity": ""}
+    moved = inbox.new_query({"search": f"?group={group}", "entity": "", "path": "/"}, kept, entities)
+    assert moved == {"view": "mine", "kind": None, "entity": "", "group": group}
+    assert inbox.new_query({"search": f"?group={group}", "entity": "", "path": "/"}, moved, entities) is None
+    assert inbox.list_name({"view": "team", "group": group}) == "Alike reviews"
+    assert inbox.page_label({"view": "mine", "batch": batch}, 0, 9) == "Forced sample: 1–9"
+    assert not inbox.mixed_kinds({"view": "team", "group": group})
+    assert not inbox.mixed_kinds({"view": "team", "batch": batch})
+
+
+def test_the_filter_line_names_the_group_or_the_batch_and_links_back() -> None:
+    group = inbox.filter_line({"group": samples.GROUP_KEY_PERSON})
+    assert text_of(group) == "Alike reviews: every open review with one pattern. Back to Alike reviews"
+    assert [c.href for c in walk(group) if type(c).__name__ == "Anchor"] == ["/groups"]
+    batch = inbox.filter_line({"batch": samples.BATCH_ID})
+    assert text_of(batch) == (
+        f"Forced sample of batch {samples.BATCH_ID}: decide each review on its own. Back to the batch"
+    )
+    assert [c.href for c in walk(batch) if type(c).__name__ == "Anchor"] == [f"/batch/{samples.BATCH_ID}"]
+    assert inbox.filter_line({"view": "team"}) is None and inbox.filter_line(None) is None
+    skeleton = inbox.skeleton()
+    assert len(by_id(skeleton, ids.INBOX_FILTER)) == 1
+
+
+def test_an_empty_group_or_sample_says_so_in_the_pane() -> None:
+    assert text_of(inbox.filtered_empty({"group": samples.GROUP_KEY_PERSON})) == (
+        "No review with this pattern is open."
+    )
+    sample = inbox.filtered_empty({"batch": samples.BATCH_ID})
+    assert text_of(sample) == "Every review of this sample is decided. Back to the batch to go on."
+    assert inbox.filtered_empty({"view": "mine"}) is None
+
+
+# ---------------------------------------------------------------------------------------------- alike reviews, on a hub
+#
+# Story 3.3: the inbox filtered to a group's reviews or a batch's forced sample, the comparison named with a
+# disagreeing sample decision, a review a batch holds, U on it, and the page read again when a batch settles.
+
+
+@pytest.fixture
+def alike() -> Iterator[Hub]:
+    """12 alike Person reviews on an in-memory DuckDB: one group, a forced sample of 5."""
+    settings = base_settings()
+    store = open_store(settings)
+    store.init_schema(create_landing=True)
+    hub = open_hub(settings, store, "duckdb")
+    try:
+        helpers.workbench_world(hub, persons=32)
+        helpers.alike_reviews(hub, 12, first=20)
+        yield hub
+    finally:
+        hub.close()
+        store.close()
+
+
+def drawn(hub: Hub) -> tuple[str, str]:
+    """(the group's key, the batch a data steward draws from it)."""
+    ctx = context.for_test(hub)
+    group = hub.batches.groups(actor=ctx.actor, entity="person").groups[0]
+    return group.group_key, hub.batches.draw(group.group_key, actor=ctx.actor, entity="person").batch_id
+
+
+def sample_tasks(hub: Hub, batch_id: str) -> list[str]:
+    return [i.task_id for i in hub.store.batch_items(batch_id, ("sample",), ("open",), None, 1000)]
+
+
+def test_a_group_or_a_batch_in_the_address_lists_its_reviews_whatever_the_view(alike: Hub) -> None:
+    group, batch_id = drawn(alike)
+    ctx = context.for_test(alike)
+    reviews = inbox.load_page(ctx, {"view": "escalated", "group": group}, None)
+    assert len(reviews.rows) == 12 and {r.kind for r in reviews.rows} == {"review"}
+    sample = inbox.load_page(ctx, {"view": "mine", "batch": batch_id}, None)
+    assert sorted(r.task_id for r in sample.rows) == sorted(sample_tasks(alike, batch_id))
+    shown = inbox.layout(ctx, {"batch": batch_id})
+    assert one(shown, ids.PAGE_LABEL).children == "Forced sample: 1–5"
+    assert text_of(one(shown, ids.INBOX_FILTER)).startswith(f"Forced sample of batch {batch_id}:")
+    assert one(shown, ids.INBOX_QUERY).data == {"view": "mine", "kind": None, "entity": "", "batch": batch_id}
+    grouped = inbox.layout(ctx, {"group": group})
+    assert one(grouped, ids.PAGE_LABEL).children == "Alike reviews: 1–12"
+
+
+def test_a_disagreeing_sample_decision_names_its_comparison_or_is_refused_and_focuses_the_choice(
+    alike: Hub,
+) -> None:
+    _, batch_id = drawn(alike)
+    ctx = context.for_test(alike)
+    first, second, third = sample_tasks(alike, batch_id)[:3]
+    pane, seen = inbox.case_view(ctx, first)
+    assert prop(pane, "data-sample") == "yes"
+    assert [c for c in walk(pane) if getattr(c, "id", None) == ids.SPLIT_CHOICE]
+    unnamed = inbox.act(ctx, "not_a_match", task_id=first, stamp=seen)
+    assert not unnamed.advance and unnamed.focus == "split"
+    assert unnamed.notices[0]["title"] == "Name the comparison"
+    stored = inbox.result_store(unnamed, first, None)
+    assert stored["focus"] == "split"
+    named = inbox.act(ctx, "not_a_match", task_id=first, stamp=seen, split="birth_date")
+    assert named.advance and named.focus is None and named.named == "birth_date"
+    [entry] = [e for e in alike.tray.entries(actor=ctx.actor) if e.task_id == first]
+    assert alike.store.tray_entries([entry.entry_id])[entry.entry_id].subject.get("split_on") == "birth_date"
+    # the choice is kept across a redraw of the same case, and says what leaves when it commits
+    kept, _ = inbox.case_view(ctx, first, split="birth_date")
+    assert "Not a match, flagged on birth date: when it commits" in text_of(kept)
+    # its decision in the tray says what it named even after another case came between
+    back, _ = inbox.case_view(ctx, first, split="birth_date", kept=False)
+    assert "Not a match, flagged on birth date: when it commits" in text_of(back)
+    # an open review drawn afresh chooses nothing for the steward
+    fresh, _ = inbox.case_view(ctx, third, split="birth_date", kept=False)
+    [choice] = [c for c in walk(fresh) if getattr(c, "id", None) == ids.SPLIT_CHOICE]
+    assert choice.value is None
+    again, _ = inbox.case_view(ctx, third, split="birth_date")
+    [choice] = [c for c in walk(again) if getattr(c, "id", None) == ids.SPLIT_CHOICE]
+    assert choice.value == "birth_date"
+    # an agreeing link names no comparison, whatever the store holds
+    _, seen_second = inbox.case_view(ctx, second)
+    agreed = inbox.act(ctx, "link", task_id=second, stamp=seen_second, split="birth_date")
+    assert agreed.advance and agreed.named is None, agreed.notices
+    linked, _ = inbox.case_view(ctx, second, split=None, kept=False)
+    assert "flagged on" not in text_of(linked) and "In the tray: Link" in text_of(linked)
+    assert inbox.split_of({"task": third, "on": "birth_date"}, second) is None
+    assert inbox.split_of({"task": third, "on": "birth_date"}, third) == "birth_date"
+    assert inbox.split_of({"task": third, "on": "Tamsin Quorrel"}, third) is None
+    assert inbox.disagrees("not_a_match", None, "PER-000001")
+    assert inbox.disagrees("link", "PER-000002", "PER-000001")
+    assert not inbox.disagrees("link", "PER-000001", "PER-000001")
+    assert not inbox.disagrees("link", "PER-000002", None)  # a close call suggests nothing: void
+
+
+def test_u_on_a_review_a_batch_holds_undoes_the_batch_and_u_elsewhere_never_does(alike: Hub) -> None:
+    _, batch_id = drawn(alike)
+    ctx = context.for_test(alike)
+    helpers.decide_sample(alike, batch_id, actor=ctx.actor)
+    alike.batches.refresh(batch_id)
+    alike.batches.prepare(batch_id, actor=ctx.actor)
+    alike.batches.stage(batch_id, actor=ctx.actor)
+    held = next(i.task_id for i in alike.store.batch_items(batch_id, ("bulk",), ("planned",), None, 1000))
+    pane, _ = inbox.case_view(ctx, held)
+    assert f"Part of batch {batch_id} in the tray" in text_of(pane)
+    nothing = inbox.act(ctx, "undo", task_id=None)
+    assert nothing.notices[0]["message"] == "Nothing of yours is waiting in the tray."
+    assert alike.batches.batch(batch_id, actor=ctx.actor).status == "staged"
+    undone = inbox.act(ctx, "undo", task_id=held)
+    assert undone.notices[0]["message"] == f"Undone: batch {batch_id} is ready again, and nothing was linked."
+    assert undone.bump_case and undone.bump_tray and undone.row is None and not undone.remove
+    assert alike.batches.batch(batch_id, actor=ctx.actor).status == "ready"
+
+
+def test_a_batch_settlement_reads_the_page_on_screen_again() -> None:
+    batch_doc = [
+        {"entry_id": "TR-1", "task_id": samples.BATCH_ID, "status": "committed", "batch_id": samples.BATCH_ID}
+    ]
+    single = [{"entry_id": "TR-2", "task_id": "TSK-1", "status": "committed", "outcome": "committed"}]
+    assert (
+        inbox.settled_batch(batch_doc) and not inbox.settled_batch(single) and not inbox.settled_batch(None)
+    )
+    assert inbox.reloaded({"stack": [["2026-09-27T12:00:00", "TSK-9"]], "moved": "next"}) == {
+        "stack": [["2026-09-27T12:00:00", "TSK-9"]],
+        "moved": None,
+        "reload": 1,
+    }
+    assert inbox.reloaded({"stack": [], "moved": None, "reload": 4})["reload"] == 5
+    assert inbox.reloaded(None) == {"stack": [], "moved": None, "reload": 1}
+
+
+def test_the_skeleton_holds_the_split_choice_and_its_store() -> None:
+    skeleton = inbox.skeleton()
+    one(skeleton, ids.SPLIT_CHOICE)
+    one(skeleton, ids.SELECTED_SPLIT)
+    one(skeleton, ids.INBOX_FILTER)
+    app = Dash(__name__)
+    inbox.register(app)
+    [split] = [c for c in app._callback_list if c["output"] == f"{ids.SELECTED_SPLIT}.data"]
+    assert split["prevent_initial_call"] is True
+    [settled] = [
+        c
+        for c in app._callback_list
+        if f"{ids.INBOX_CURSOR}.data@" in c["output"] and "rowTransaction" in c["output"]
+    ]
+    assert settled["prevent_initial_call"] is True

@@ -126,3 +126,44 @@ def test_the_workbench_actor_is_a_persona_locally_and_the_forwarded_user_in_an_a
     assert laptop.actor_for_request(persona="data_owner", forwarded_user="ignored") == Actor(
         "reader-three", "person", "consumer"
     )
+
+
+def test_a_batch_chunk_names_its_batch_and_above_the_threshold_its_checker() -> None:
+    """Story 3.3: a chunk of a batch its maker did not make, or of no batch, is refused; above the threshold the
+    chunk names the recorded second steward, who is not the maker."""
+    from mdm.models.authority import Authority
+    from mdm.models.changes import new_change_set
+
+    maker = Actor("persona:data_steward", "person", "data_steward", persona=True)
+    checker = Actor("persona:coordinating_steward", "person", "coordinating_steward", persona=True)
+    batch = SimpleNamespace(maker=maker.name, decisions=300, checker=checker.name)
+    store = SimpleNamespace(batches=lambda ids: {i: batch for i in ids if i == "BAT-" + "e" * 20})
+    service = AuthorityService(Settings(), store=store, registry=None)  # type: ignore[arg-type]
+
+    def chunk(named: str | None, with_checker: Actor | None) -> object:
+        return new_change_set(
+            "person",
+            "batch_link",
+            maker,
+            Authority("role", "data_steward"),
+            (),
+            planning_version=0,
+            evidence={"batch_id": named} if named else {},
+            checker=with_checker,
+        )
+
+    for named, expected in ((None, "batch_unknown"), ("BAT-" + "f" * 20, "batch_unknown")):
+        with pytest.raises(Forbidden) as refused:
+            service.check(chunk(named, checker))
+        assert refused.value.code == expected
+    with pytest.raises(Forbidden) as missing:
+        service.check(chunk("BAT-" + "e" * 20, None))
+    assert missing.value.code == "checker_required"
+    with pytest.raises(Forbidden) as own:
+        service.check(chunk("BAT-" + "e" * 20, maker))
+    assert own.value.code == "checker_is_maker"
+    other = Actor("persona:data_owner", "person", "coordinating_steward", persona=True)
+    with pytest.raises(Forbidden) as unrecorded:
+        service.check(chunk("BAT-" + "e" * 20, other))
+    assert unrecorded.value.code == "checker_not_recorded"
+    service.check(chunk("BAT-" + "e" * 20, checker))

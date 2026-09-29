@@ -5,6 +5,7 @@ B.6.7, B.9.1)."""
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -319,3 +320,41 @@ def test_a_provenance_entry_is_masked_unless_revealed(world: Hub) -> None:
         model, "city", world.store.provenance("person", [master])[master]["city"], reveal=False
     )
     assert city["winner"]["value"] == "Norvale"
+
+
+def test_a_batchs_chunks_read_on_the_timeline() -> None:
+    """Story 3.3: a chunk's links, and a compensation's, name the batch and the chunk; neither reads as a bare
+    decision."""
+    from mdm.services.lookup import LookupService
+
+    batch = "BAT-" + "c" * 20
+    proof = {"decision": "batch_link", "batch_id": batch, "chunk": 2, "chunks": 3}
+    assert LookupService._headline("updated", ("xref",), None, (), (), (), proof) == (  # noqa: SLF001
+        f"Members changed: linked in batch {batch}, chunk 2 of 3"
+    )
+    original = "BAT-" + "d" * 20
+    undo = {
+        "decision": "batch_compensate",
+        "batch_id": batch,
+        "compensates": original,
+        "chunk": 1,
+        "chunks": 1,
+    }
+    assert LookupService._headline("updated", ("xref",), None, (), (), (), undo) == (  # noqa: SLF001
+        f"Members changed: a batch's link undone, batch {original}, chunk 1 of 1"
+    )
+    assert LookupService._decision_headline(undo, "PER-000001") == (  # noqa: SLF001
+        "A batch's link was undone; nothing published"
+    )
+    assert "Decided; nothing published" not in LookupService._decision_headline(proof, "PER-000001")  # noqa: SLF001
+    # whatever the headline ("Values updated" when the golden values change too), the event names its chunk
+    commit = SimpleNamespace(
+        authority_kind="role", authority_ref="data_steward; checker coordinating_steward"
+    )
+    assert LookupService._authority_text(commit, False, (), proof) == (  # noqa: SLF001
+        f"Data steward; checker Coordinating steward · in batch {batch}, chunk 2 of 3"
+    )
+    assert LookupService._authority_text(commit, False, (), undo).endswith(  # noqa: SLF001
+        f" · undoing batch {original}, chunk 1 of 1"
+    )
+    assert LookupService._authority_text(commit, False) == "Data steward; checker Coordinating steward"  # noqa: SLF001

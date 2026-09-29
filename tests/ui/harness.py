@@ -1,5 +1,5 @@
-"""What the browser checks share: opening the inbox and waiting for its callbacks, keys, axe, and what the
-browser keeps.
+"""What the browser checks share: opening the inbox, the Alike reviews page and a batch's page and waiting
+for their callbacks, keys, axe, and what the browser keeps.
 
 Waits are locator expectations with a timeout of `WAIT_MS` or more
 (`expect(locator).to_have_text(…, timeout=WAIT_MS)`), never a network-idle wait: the tray's poll keeps
@@ -86,6 +86,29 @@ def open_inbox(page: Page, path: str = "/?view=team") -> None:
         " catch (e) { return false; } }",
         timeout=WAIT_MS,
     )
+    settle(page)
+
+
+def _go(page: Page, path: str) -> None:
+    """Opens `path`: a fresh page counts its requests and goes; a page on screen goes through `navigate`."""
+    if page.url in ("", "about:blank"):
+        count_requests(page)
+        page.goto(path)
+    else:
+        navigate(page, path)
+
+
+def open_groups(page: Page, path: str = "/groups") -> None:
+    """Opens the Alike reviews page (story 3.3) and waits for its title."""
+    _go(page, path)
+    expect(page.locator(f"#{ids.GROUPS_LIST} h1")).to_have_text("Alike reviews", timeout=WAIT_MS)
+    settle(page)
+
+
+def open_batch(page: Page, path: str) -> None:
+    """Opens a batch's page (`/batch/<BAT-…>`, story 3.3) and waits for its title."""
+    _go(page, path)
+    expect(page.locator(f"#{ids.BATCH_VIEW} h1")).to_be_visible(timeout=WAIT_MS)
     settle(page)
 
 

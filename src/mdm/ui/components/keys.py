@@ -31,6 +31,7 @@ KEY_HELP = (
     ("S", "Snooze"),
     ("E", "Escalate"),
     ("U", "Undo"),
+    ("G", "Alike reviews: open reviews grouped by signature"),
     ("F", "Decide pane full width"),
     (".", "Show or hide why"),
     ("Enter", "Open the candidate's record"),

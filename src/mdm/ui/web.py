@@ -31,6 +31,7 @@ from flask import Response, request
 from werkzeug.exceptions import HTTPException
 
 from mdm.config import Settings
+from mdm.models.batch import BATCH_ID_RE, SIGNATURE_KEY_RE
 from mdm.models.safety import MASTER_ID_RE, SAFE_TEXT_RE, SOURCE_KEY_RE, TASK_ID_RE
 from mdm.ui import ids
 from mdm.ui.components import common
@@ -77,6 +78,8 @@ LOGGED_QUERY = {
     "tab": re.compile(r"^[a-z_]{1,40}\Z"),
     "entity": re.compile(r"^[a-z_]{1,40}\Z"),
     "task": TASK_ID_RE,
+    "group": SIGNATURE_KEY_RE,  # a signature group's key, "SIG-<16 hex>" (story 3.3)
+    "batch": BATCH_ID_RE,  # a batch's ID, "BAT-<20 hex>"
     "m": re.compile(r"^[0-9.]{1,40}\Z"),  # the assets' cache-busting stamp
 }
 _REQUEST_LINE = re.compile(
@@ -201,16 +204,18 @@ def safe_query(query: str) -> bool:
 
 def logged_path(path: str) -> bool:
     """Whether a path may be logged: `/`, Dash's routes and the assets (safe text), `/record/<ref>` with a
-    master ID or a source key, or `/source/<system>/<key>` of a source key. Anything else could be a name
-    typed into the address bar."""
+    master ID or a source key, `/source/<system>/<key>` of a source key, `/groups`, or `/batch/<ID>` of a
+    batch ID's shape. Anything else could be a name typed into the address bar."""
     decoded = unquote(path)
-    if decoded == "/":
+    if decoded in ("/", "/groups"):
         return True
     if decoded.startswith(LOGGED_PREFIXES):
         return safe_path(decoded)
     segments = [segment for segment in decoded.split("/") if segment]
     if len(segments) == 2 and segments[0] == "record":
         return bool(MASTER_ID_RE.match(segments[1]) or SOURCE_KEY_RE.match(segments[1]))
+    if len(segments) == 2 and segments[0] == "batch":
+        return bool(BATCH_ID_RE.match(segments[1]))
     if len(segments) == 3 and segments[0] == "source":
         return bool(SOURCE_KEY_RE.match(f"{segments[1]}:{segments[2]}"))
     return False

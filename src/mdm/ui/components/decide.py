@@ -22,6 +22,13 @@ open, with the same equal weight. While the quality breaker has paused automatic
 task of that entity says so, except a blind one, which stays free of anything about the first decision's
 kind.
 
+A review of a batch's forced sample (story 3.3) says so at the top, and shows every decision at equal
+weight, none filled, as blind review does, so the pane never nudges the measurement. A decision that
+disagrees with the case's suggestion ("Not a match", or a link to another candidate) names the comparison
+that misled, in "Which comparison misled?" under the decisions (`SPLIT_CHOICE`): the reviews that share
+the record's value on it leave the batch when the decision commits. A review a batch holds says it is part
+of the batch, and its decisions are disabled with why.
+
 Owner: INBOX (B.8.7).
 """
 
@@ -36,6 +43,7 @@ import dash_mantine_components as dmc
 from dash import html
 from dash.development.base_component import Component
 
+from mdm.models.batch import SPLIT_ALL
 from mdm.models.canonical import utcnow
 from mdm.models.tasks import WAITS_TEXT, waits_for_restore
 from mdm.models.workbench import (
@@ -44,6 +52,7 @@ from mdm.models.workbench import (
     SNOOZE_HOURS,
     Action,
     Candidate,
+    Mark,
     Revealed,
     TaskCase,
     TaskRow,
@@ -89,6 +98,16 @@ MENUS = ("snooze", "escalate")
 #: the full-width toggle's labels (the page keeps it outside the pane, so it survives a new case)
 FULL_WIDTH = "Full width"
 SHOW_LIST = "Show the list"
+#: a forced-sample review's "Which comparison misled?" (story 3.3): its disclosure, its label, the choice
+#: that ends bulk for the whole batch, and what the choice does
+SPLIT_SUMMARY = "Not a match, or another golden record? Name the comparison that misled"
+SPLIT_LABEL = "Which comparison misled?"
+SPLIT_EVERY = "Every alike review in this batch"
+SPLIT_NOTE = (
+    "The reviews whose record holds the same value on it leave the batch, to be decided one by one. Values "
+    "stay hidden: the hub compares them, and logs each record it reads."
+)
+OPEN_BATCH = "Open the batch"
 
 
 def choice_keys(count: int) -> str:
@@ -668,12 +687,145 @@ def _record_path(case: TaskCase) -> str | None:
     return None
 
 
-def staged_line(case: TaskCase) -> Component | None:
+def batch_href(batch_id: str) -> str:
+    """A batch's page: "/batch/BAT-…"."""
+    return f"/batch/{quote(batch_id, safe='')}"
+
+
+def sample_notice(case: TaskCase) -> Component | None:
+    """A forced-sample review's line at the top of the pane: "Forced sample for batch BAT-…: review 3 of 9.
+    Decide it on its own: the rest are linked together only if every sample agrees." and "Open the
+    batch"."""
+    sample = case.sample
+    if sample is None:
+        return None
+    text = (
+        f"Forced sample for batch {sample.batch_id}: review {sample.position} of {sample.size}. Decide it on "
+        "its own: the rest are linked together only if every sample agrees. "
+    )
+    found = notice("info", [text, dmc.Anchor(OPEN_BATCH, href=batch_href(sample.batch_id), inherit=True)])
+    found.className = f"{found.className} mdm-sample-notice"
+    return found
+
+
+def split_codes(case: TaskCase) -> tuple[str, ...]:
+    """The codes "Which comparison misled?" offers: the pattern's comparisons in rule order, then `all`."""
+    if case.sample is None:
+        return ()
+    return (*(mark.comparison for mark in case.sample.choices), SPLIT_ALL)
+
+
+def chosen_split(case: TaskCase, split: str | None = None) -> str | None:
+    """The comparison chosen on this case, when it is one the pane offers; never a default."""
+    return split if split in split_codes(case) else None
+
+
+def split_words(case: TaskCase, split: str | None) -> str | None:
+    """A chosen code in words: "birth date", or "every alike review"."""
+    if split == SPLIT_ALL:
+        return "every alike review"
+    for mark in case.sample.choices if case.sample is not None else ():
+        if mark.comparison == split:
+            return mark.label[:1].lower() + mark.label[1:] if mark.label[1:2].islower() else mark.label
+    return None
+
+
+def _mark_label(mark: Mark) -> list:
+    """ "Birth date ≈ similar": the symbol beside its words, hidden from screen readers."""
+    return [
+        f"{mark.label} ",
+        html.Span(mark.mark, className="mdm-symbol", **{"aria-hidden": "true"}),
+        f" {mark.words}",
+    ]
+
+
+def split_choice(case: TaskCase, split: str | None = None) -> Component | None:
+    """ "Which comparison misled?" (SPLIT_CHOICE): a closed disclosure under the decisions of an open
+    forced-sample review, whose options are the pattern's comparisons in rule order and "Every alike review
+    in this batch", with no default; open when a comparison is chosen already (kept across a redraw of the
+    same case). None when the case is no sample review, or nothing can be decided on it now."""
+    if case.sample is None or case.staged is not None or locked(case):
+        return None
+    options = [
+        dmc.Radio(
+            label=_mark_label(mark), value=mark.comparison, size="md", **{"data-comparison": mark.comparison}
+        )
+        for mark in case.sample.choices
+    ]
+    options.append(dmc.Radio(label=SPLIT_EVERY, value=SPLIT_ALL, size="md", **{"data-comparison": SPLIT_ALL}))
+    chosen = chosen_split(case, split)
+    return html.Details(
+        [
+            html.Summary(SPLIT_SUMMARY, className="mdm-split-summary"),
+            dmc.RadioGroup(
+                dmc.Group(options, gap="md", mt=4),
+                id=ids.SPLIT_CHOICE,
+                label=SPLIT_LABEL,
+                value=chosen,
+                size="sm",
+                className="mdm-split-choice",
+            ),
+            html.P(SPLIT_NOTE, className="mdm-split-note"),
+        ],
+        open=chosen is not None,
+        className="mdm-split",
+    )
+
+
+def _batch_line(case: TaskCase, now: datetime) -> Component:
+    """A review a batch holds: in the tray with the batch, or committing with it; "Open the batch"."""
+    staged = case.staged
+    assert staged is not None and staged.batch_id is not None
+    if staged.deadline > now:
+        text = (
+            f"Part of batch {staged.batch_id} in the tray: it commits at {staged.deadline:%H:%M:%S} UTC unless "
+            "the batch is undone. U undoes the whole batch. "
+        )
+    else:
+        text = f"Part of batch {staged.batch_id}, which is committing. "
+    return notice("warning", [text, dmc.Anchor(OPEN_BATCH, href=batch_href(staged.batch_id), inherit=True)])
+
+
+def _sample_staged(case: TaskCase, split: str | None) -> str | None:
+    """What a forced-sample decision in the tray will do: "Not a match, flagged on birth date: when it
+    commits at 12:04:31 UTC, the reviews that share this record's value on it leave batch BAT-…. U undoes
+    it, and nothing leaves."; None for a decision that names no comparison."""
+    staged, sample = case.staged, case.sample
+    if staged is None or sample is None or not staged.mine:
+        return None
+    at = f"{staged.deadline:%H:%M:%S} UTC"
+    named = split_words(case, chosen_split(case, split))
+    words = "Not a match" if staged.decision == "not_a_match" else "Linked to another golden record"
+    if named == "every alike review":
+        return (
+            f"{words}, flagged on every alike review: when it commits at {at}, every alike review leaves batch "
+            f"{sample.batch_id}. U undoes it, and nothing leaves."
+        )
+    if named is not None:
+        return (
+            f"{words}, flagged on {named}: when it commits at {at}, the reviews that share this record's value "
+            f"on it leave batch {sample.batch_id}. U undoes it, and nothing leaves."
+        )
+    if staged.decision == "not_a_match":
+        return (
+            f"In the tray: {staged.label}. When it commits at {at}, the reviews that share this record's value "
+            f"on the comparison named with it leave batch {sample.batch_id}. U undoes it, and nothing leaves."
+        )
+    return None
+
+
+def staged_line(case: TaskCase, *, split: str | None = None, now: datetime | None = None) -> Component | None:
     """ "In the tray: Link crm:C000123 to ORG-000123. It commits at 12:04:31 UTC unless you undo it (U)."
-    A fixed time: the live countdown is the tray's."""
+    A fixed time: the live countdown is the tray's. A review a batch holds says so ("Part of batch BAT-… in
+    the tray: …"); a forced-sample decision that disagrees says what leaves the batch when it commits."""
     staged = case.staged
     if staged is None:
         return None
+    if staged.batch_id is not None:
+        return _batch_line(case, now if now is not None else utcnow())
+    sample = _sample_staged(case, split)
+    if sample is not None:
+        return notice("warning", sample)
     at = staged.deadline.strftime("%H:%M:%S")
     if staged.mine:
         text = f"In the tray: {staged.label}. It commits at {at} UTC unless you undo it (U)."
@@ -682,18 +834,29 @@ def staged_line(case: TaskCase) -> Component | None:
     return notice("warning", text)
 
 
+def quiet_case(case: TaskCase) -> bool:
+    """Whether every decision is outlined, none filled: a blind measurement, a dispute, or a review of a
+    batch's forced sample, where the pane must not nudge the answer."""
+    return case.shape in QUIET_SHAPES or case.sample is not None
+
+
 def render(
     case: TaskCase,
     *,
     revealed: Revealed | None = None,
     chosen: str | None = None,
+    split: str | None = None,
     now: datetime | None = None,
 ) -> Component:
     """The pane (DECIDE_PANE's children) for `case`; `revealed` renders the compare table in clear once;
-    `chosen` is the candidate the steward chose on this task (kept when the same task renders again)."""
+    `chosen` is the candidate the steward chose on this task, and `split` the comparison named on a
+    forced-sample review (both kept when the same task renders again)."""
     now = now if now is not None else utcnow()
     body: list = [header(case, now)]
-    staged = staged_line(case)
+    sample = sample_notice(case)
+    if sample is not None:
+        body.append(sample)
+    staged = staged_line(case, split=split, now=now)
     if staged is not None:
         body.append(staged)
     # the breaker's notice on a record it could have linked; never on a blind review, which would learn
@@ -736,18 +899,24 @@ def render(
         body.append(
             html.Div(impact.changes(case.preview, verb=verb, open_=True), className="mdm-shape-preview")
         )
-    footer = html.Div(
-        [*impact_lines(case, chosen), actions(case, chosen, quiet=case.shape in QUIET_SHAPES)],
-        className="mdm-decide-footer",
-    )
+    footer_parts: list = [*impact_lines(case, chosen), actions(case, chosen, quiet=quiet_case(case))]
+    naming = split_choice(case, split)
+    if naming is not None:
+        footer_parts.append(naming)
+    footer = html.Div(footer_parts, className="mdm-decide-footer")
     extra = {"data-task-id": case.row.task_id}
     path = _record_path(case)
     if path:
         extra["data-open-record"] = path
     if needs_choice(case, chosen):
         extra["data-needs-choice"] = "yes"
-    if case.shape in QUIET_SHAPES:
+    if quiet_case(case):
         extra["data-quiet"] = "yes"
+    if case.sample is not None:
+        # a forced-sample review: N, or L on another candidate than the default, names the comparison
+        # first (`needsSplit` in inbox.js); a close call has no default, and its link names none
+        extra["data-sample"] = "yes"
+        extra["data-default"] = case.default_candidate or ""
     if case.blind:
         extra["data-blind"] = "yes"
         if not any(a.decision == "blind_link" for a in case.actions):

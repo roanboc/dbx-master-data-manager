@@ -1,7 +1,7 @@
 """The throughput spike: land and arrive a large invented world, and report rates (owner: CLI, B.15).
 
     uv run python tools/spike_throughput.py --engine duckdb|postgres [--dsn DSN] --records 100000 \\
-        [--seed 7] [--time-limit 1800] [--out .mdm/spike] [--models models]
+        [--seed 7] [--time-limit 1800] [--out .mdm/spike] [--models models] [--batch]
 
 1. A fresh store: a DuckDB file under --out, or a Postgres prefix `spike`
    (--dsn, else a throwaway server from tests/postgres_server.py; never
@@ -13,7 +13,12 @@
    largest and 99th-percentile block per pass, records capped.
 5. Land 1,000 updates; time an incremental `arrival.run()`.
 6. Evaluate both entities.
-7. Write <out>/<engine>-<records>.json and print a Markdown row, with a linear
+7. With --batch (story 3.3): the largest person signature group is drawn, its
+   forced sample linked to each case's default through the tray (a window of
+   1 second, then a flush), every change shown, the batch staged (confirmed by
+   the coordinating steward above the threshold) and flushed until it commits;
+   the seconds to draw, prepare and commit each chunk, and each chunk's rows.
+8. Write <out>/<engine>-<records>.json and print a Markdown row, with a linear
    extrapolation to 1,000,000; --time-limit stops cleanly and reports what finished.
 
 It runs with the default settings, the matcher's checkpoint included (story
@@ -58,6 +63,7 @@ from mdm.backend.factory import open_store  # noqa: E402
 from mdm.backend.store import SqlStore  # noqa: E402
 from mdm.config import Settings  # noqa: E402
 from mdm.demo import DemoConfig, DemoWorld, evaluate, generate, land  # noqa: E402
+from mdm.models.authority import Actor  # noqa: E402
 from mdm.services import matching  # noqa: E402
 from mdm.services.arrival import ArrivalReport  # noqa: E402
 from mdm.services.context import Hub  # noqa: E402
@@ -86,6 +92,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=MODELS,
         help="entity models and codelists/ (default: the starter models)",
+    )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="after the load, draw, sample, prepare and commit the largest person signature batch",
     )
     return parser.parse_args(argv)
 
@@ -335,6 +346,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "skipped_at_cap": bulk.samples_skipped + int(incremental_report.get("samples_skipped") or 0),
         }
         result["commits"] = store.last_commit_version()
+        if getattr(args, "batch", False):
+            if time.monotonic() < deadline:
+                result["batch"] = _batch_phase(settings, store, deadline)
+                result["finished"].append("batch")
+            else:
+                result["batch"] = {"skipped": "time_limit"}
         hub.close()
     finally:
         probe.detach()
@@ -353,6 +370,78 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     target.write_text(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     result["written_to"] = str(target)
     return result
+
+
+def _batch_phase(settings: Settings, store: SqlStore, deadline: float) -> dict[str, Any]:
+    """Story 3.3: the largest person signature group drawn, its forced sample linked to each case's default
+    through the tray, every change shown, staged (and confirmed above the threshold), and flushed chunk by
+    chunk until it commits. The tray's window is 1 second; each flush waits it out."""
+    steward = Actor("persona:data_steward", "person", "data_steward", persona=True)
+    checker = Actor("persona:coordinating_steward", "person", "coordinating_steward", persona=True)
+    window = 1
+    hub = Hub.open(settings.with_(undo_seconds=window), store=store, as_role="data_owner")
+    out: dict[str, Any] = {}
+    try:
+        groups = [g for g in hub.batches.groups(actor=steward, entity="person").groups if not g.too_small]
+        if not groups:
+            return {"skipped": "no person group large enough"}
+        group = max(groups, key=lambda g: g.count)
+        clock = time.monotonic()
+        batch = hub.batches.draw(group.group_key, actor=steward, entity="person")
+        out.update(
+            group_reviews=group.count,
+            population=batch.population,
+            sample=batch.sample_size,
+            draw_seconds=round(time.monotonic() - clock, 2),
+        )
+        decided = 0
+        clock = time.monotonic()
+        while time.monotonic() < deadline:
+            waiting = [
+                i for i in store.batch_items(batch.batch_id, ("sample",), ("open",), None, capacity.BATCH_MAX)
+            ]
+            if not waiting:
+                break
+            item = waiting[0]
+            task = store.tasks_by_id([item.task_id])[item.task_id]
+            state = store.source_states("person", [task.source])[task.source] if task.source else None
+            hub.tray.stage(
+                item.task_id, "link", actor=steward, seen_event=state.event_id if state is not None else None
+            )
+            time.sleep(window + 0.05)
+            hub.tray.flush()
+            decided += 1
+        found = hub.batches.refresh(batch.batch_id)
+        out.update(
+            sample_decided=decided, sample_seconds=round(time.monotonic() - clock, 2), status=found.status
+        )
+        if found.status != "ready":
+            return out
+        clock = time.monotonic()
+        view = hub.batches.prepare(batch.batch_id, actor=steward)
+        out["prepare_seconds"] = round(time.monotonic() - clock, 2)
+        out["decisions"] = view.summary.xrefs if view.summary is not None else 0
+        staged = hub.batches.stage(batch.batch_id, actor=steward)
+        if staged.status == "awaiting_checker":
+            hub.batches.confirm(batch.batch_id, actor=checker)
+            out["second_steward"] = True
+        chunks: list[dict[str, Any]] = []
+        time.sleep(window + 0.05)
+        while time.monotonic() < deadline:
+            clock = time.monotonic()
+            report = hub.tray.flush()
+            seconds = time.monotonic() - clock
+            current = store.batches([batch.batch_id])[batch.batch_id]
+            if report.chunks:
+                last = store.batch_chunks(batch.batch_id)[-1]
+                chunks.append({"seconds": round(seconds, 2), "rows": last.rows, "items": last.items})
+            if current.status not in ("staged", "committing"):
+                out["status"] = current.status
+                break
+        out["chunks"] = chunks
+        return out
+    finally:
+        hub.close()
 
 
 def _active_golden(store: SqlStore, entity: str) -> int:

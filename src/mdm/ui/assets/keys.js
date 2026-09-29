@@ -5,8 +5,9 @@
 // 2.1.4), and it acts only on a page that carries data-mdm-keys="on" (the inbox). It reads row and
 // candidate IDs only, never a value on the page, and writes no markup.
 //
-// Owner: SHELL (plan B.8.8). The inbox's own helpers (move, choose, openMenu, local, openRecord) are in
-// inbox.js, under window.dash_clientside.mdm_inbox; the IDs below are those of src/mdm/ui/ids.py.
+// Owner: SHELL (plan B.8.8). The inbox's own helpers (move, choose, openMenu, local, openRecord, openGroups,
+// needsChoice, needsSplit) are in inbox.js, under window.dash_clientside.mdm_inbox; the IDs below are those
+// of src/mdm/ui/ids.py. G opens Alike reviews (story 3.3), on the inbox only, like every single key.
 (function () {
   "use strict";
   var dc = (window.dash_clientside = window.dash_clientside || {});
@@ -85,6 +86,18 @@
     trayExpanded: function (opened) {
       return opened ? "true" : "false";
     },
+    // S6b: the tray's poll wakes when the counts see more (or fewer) of this steward's entries moving than
+    // the tab's tray shows: staged, or a batch still committing (story 3.3); the tray's own refresh then
+    // decides how long it polls
+    trayWake: function (live, state) {
+      if (typeof live !== "number") {
+        return noUpdate();
+      }
+      var shown = (state || []).filter(function (entry) {
+        return entry && (entry.status === "staged" || (entry.batch_id && entry.outcome === "committing"));
+      }).length;
+      return live !== shown ? false : noUpdate();
+    },
     // S9: the tray button's count and countdown, and each staged entry's countdown in the popover
     trayCountdown: function (_ticks, state) {
       var now = Date.now();
@@ -106,7 +119,13 @@
         return left > 0 ? clock(left) : "Committing…";
       });
       if (!staged.length) {
-        return ["Tray", "mdm-tray-button", texts];
+        // a batch whose chunks still commit keeps the button marked, with nothing to count down
+        var committing = (state || []).some(function (entry) {
+          return entry && entry.outcome === "committing";
+        });
+        return committing
+          ? ["Tray · committing", "mdm-tray-button mdm-staged", texts]
+          : ["Tray", "mdm-tray-button", texts];
       }
       var soonest = Math.min.apply(
         null,
@@ -231,7 +250,9 @@
     if (!window.mdmKeys.enabled()) {
       return;
     }
-    if (!document.querySelector('[data-mdm-keys="on"]')) {
+    // the page root that asks for the keys (the inbox); the body's own flag says only whether they are on,
+    // so it never counts: on Alike reviews, a batch, a record or a source no single key acts (decision 18)
+    if (!document.querySelector('[data-mdm-keys="on"]:not(body)')) {
       return;
     }
     if (typing(e.target)) {
@@ -261,6 +282,12 @@
       window.dash_clientside.set_props("help-modal", {opened: true});
       return;
     }
+    if (key === "g") {
+      // Alike reviews (story 3.3): a navigation, so it sets no busy flag and sends no key event
+      e.preventDefault();
+      call("openGroups");
+      return;
+    }
     if (key === "f" || key === ".") {
       e.preventDefault();
       call("local", key);
@@ -285,6 +312,10 @@
     }
     if (action === "link" && typeof nav.needsChoice === "function" && nav.needsChoice()) {
       nav.focusChoice(); // a close call not chosen yet: L moves to the choice
+      return;
+    }
+    if (typeof nav.needsSplit === "function" && nav.needsSplit(action)) {
+      nav.focusSplit(); // a forced-sample review that disagrees: N or L names the comparison first
       return;
     }
     busy = true;

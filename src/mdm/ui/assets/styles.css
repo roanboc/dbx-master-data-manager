@@ -1379,6 +1379,326 @@ body[data-mdm-keys="off"] .mdm-decide-actions .mdm-kbd {
   }
 }
 
+/* ------------------------------------------------------------------ alike reviews and batches (story 3.3) */
+/* one column of sections, separated by space and a hairline; each opens with its own h2 */
+.mdm-page-intro {
+  margin: 0 0 var(--mdm-space-3);
+  max-width: 72ch;
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-md);
+}
+.mdm-section-title {
+  font-size: 1rem;
+  font-weight: 650;
+  margin: 0 0 var(--mdm-space-2);
+}
+.mdm-groups-section,
+.mdm-batch-section,
+.mdm-batch-actions {
+  margin-top: var(--mdm-space-3);
+  padding-top: var(--mdm-space-3);
+  border-top: 1px solid var(--mdm-rule);
+}
+.mdm-batch {
+  max-width: 1100px;
+}
+/* a pattern: each mark beside its words, separated by a muted dot; only ≠ takes a colour */
+.mdm-marks {
+  line-height: 1.6;
+}
+.mdm-mark {
+  white-space: nowrap;
+}
+.mdm-mark.mdm-missing {
+  font-style: normal;
+}
+.mdm-marks-sep {
+  color: var(--mdm-muted);
+}
+/* a mark's symbol sits beside its words with one space, not the compare table's fixed column */
+.mdm-marks .mdm-symbol,
+.mdm-split-choice .mdm-symbol {
+  min-width: 0;
+  margin-right: 0;
+}
+/* the groups: the pattern wraps, the counts are tabular */
+.mdm-group-table td {
+  font-size: var(--mdm-text-sm);
+}
+.mdm-group-table .mdm-group-pattern {
+  min-width: 14rem;
+}
+.mdm-group-table td[data-column="Labels"],
+.mdm-group-table td[data-column="Blind review"] {
+  min-width: 9.5rem;
+}
+.mdm-group-table .mdm-num,
+.mdm-group-count,
+.mdm-progress-text {
+  font-variant-numeric: tabular-nums;
+}
+.mdm-group-figure summary,
+.mdm-sample-summary,
+.mdm-split-summary {
+  cursor: pointer;
+}
+.mdm-group-figure p {
+  margin: 4px 0 0;
+  color: var(--mdm-muted);
+}
+.mdm-group-none,
+.mdm-group-why,
+.mdm-group-note {
+  color: var(--mdm-muted);
+}
+.mdm-group-why,
+.mdm-group-note {
+  margin: 0 0 var(--mdm-space-2);
+  font-size: var(--mdm-text-sm);
+}
+.mdm-group-note {
+  margin: var(--mdm-space-2) 0 0;
+}
+.mdm-bulk-notice p {
+  margin: 0;
+}
+.mdm-bulk-notice p + p {
+  margin-top: 4px;
+  color: var(--mdm-muted);
+}
+.mdm-confirm-list,
+.mdm-sample-list,
+.mdm-split-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--mdm-space-2);
+}
+.mdm-confirm-item,
+.mdm-sample-item,
+.mdm-split-line {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--mdm-rule);
+  font-size: var(--mdm-text-sm);
+}
+.mdm-confirm-item:last-child,
+.mdm-sample-item:last-child,
+.mdm-split-line:last-child {
+  border-bottom: none;
+}
+.mdm-sample-summary {
+  font-size: var(--mdm-text-sm);
+}
+/* the batch's header and its notes */
+.mdm-batch-marks {
+  margin: 0 0 var(--mdm-space-1);
+  font-size: var(--mdm-text-sm);
+}
+.mdm-batch-state {
+  margin: 0 0 var(--mdm-space-2);
+  font-weight: 600;
+}
+.mdm-batch-note {
+  margin: var(--mdm-space-1) 0 0;
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-sm);
+}
+.mdm-batch-summary,
+.mdm-batch-result {
+  margin: 0 0 var(--mdm-space-1);
+  font-size: var(--mdm-text-md);
+  font-weight: 600;
+}
+.mdm-batch-note code {
+  font-size: var(--mdm-text-xs);
+  color: var(--mdm-ink);
+  overflow-wrap: anywhere;
+}
+/* the meter: the bar in the accent (5.7:1 on the light surface, 6.8:1 on the dark) on a track in the rule,
+   so the bar also stands 4.1:1 and 4.9:1 against its track; the same figure is text beside it */
+.mdm-meter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0 0 var(--mdm-space-2);
+}
+.mdm-meter-bar {
+  flex: 1 1 160px;
+  max-width: 320px;
+}
+/* the track shows the whole (3.3:1 light, 4.1:1 dark); the bar is the accent (5.7:1 light, 6.8:1 dark) */
+.mdm-meter .mantine-Progress-root {
+  background-color: var(--mdm-rule-strong);
+}
+.mdm-meter .mantine-Progress-section {
+  background-color: var(--mdm-accent);
+}
+.mdm-progress-text {
+  font-size: var(--mdm-text-sm);
+}
+.mdm-sample-stratum,
+.mdm-sample-title,
+.mdm-batch-title {
+  color: var(--mdm-muted);
+}
+.mdm-sample-disagreed {
+  color: var(--mdm-neg);
+}
+/* every row's change */
+.mdm-batch-rows td {
+  font-size: var(--mdm-text-sm);
+}
+.mdm-batch-title {
+  display: block;
+}
+.mdm-batch-impact,
+.mdm-row-state {
+  margin: 0;
+}
+.mdm-row-state {
+  margin-top: 4px;
+  color: var(--mdm-muted);
+}
+.mdm-row-changed {
+  margin: 4px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--mdm-review-line);
+  color: var(--mdm-ink);
+}
+.mdm-rows-label {
+  margin: var(--mdm-space-2) 0 4px;
+  font-size: var(--mdm-text-sm);
+  font-weight: 600;
+}
+/* the actions' footer: at most one filled button on the page; a link that moves on reads as a button */
+.mdm-batch-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+/* on a wide screen the actions stay in view at the foot of the window while every row's change is read above
+   them, as the decide pane's footer does; below the small breakpoint they follow the rows */
+@media (min-width: 48em) {
+  .mdm-batch-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    background: var(--mdm-surface);
+    padding-bottom: var(--mdm-space-2);
+  }
+}
+.mdm-link-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 18px;
+  border: 1px solid var(--mdm-rule-strong);
+  border-radius: var(--mantine-radius-md);
+  color: var(--mdm-ink);
+  font-size: var(--mdm-text-md);
+  font-weight: 600;
+  text-decoration: none;
+}
+.mdm-link-button:hover {
+  background: var(--mdm-row-hover);
+}
+.mdm-link-button-filled {
+  border-color: transparent;
+  background: var(--mantine-primary-color-filled);
+  color: #ffffff;
+}
+.mdm-link-button-filled:hover {
+  background: var(--mantine-primary-color-filled-hover);
+}
+/* the decide pane of a forced-sample review: the comparison that misled, under the decisions */
+.mdm-split {
+  margin-top: var(--mdm-space-2);
+  font-size: var(--mdm-text-sm);
+}
+.mdm-split-summary {
+  font-weight: 600;
+}
+.mdm-split-choice {
+  margin-top: 6px;
+}
+.mdm-split-choice .mantine-Radio-label {
+  font-size: var(--mdm-text-md);
+}
+.mdm-split-note {
+  margin: 6px 0 0;
+  color: var(--mdm-muted);
+}
+/* the inbox filtered to a group's reviews or a batch's forced sample: one muted line above the list */
+.mdm-inbox-filter {
+  margin: 0 0 var(--mdm-space-1);
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-sm);
+}
+/* a link inside a line of text on these pages, in a notice or in an empty pane is underlined, so colour is
+   not the only thing that tells it apart (WCAG 1.4.1) */
+.mdm-notice .mantine-Anchor-root,
+.mdm-empty .mantine-Anchor-root,
+.mdm-inbox-filter .mantine-Anchor-root,
+.mdm-batch-facts .mantine-Anchor-root,
+.mdm-batch-note .mantine-Anchor-root,
+.mdm-confirm-item .mantine-Anchor-root,
+.mdm-sample-item .mantine-Anchor-root {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* the tray: a batch's link to its page, and a batch that still commits */
+.mdm-tray-batch {
+  font-size: var(--mdm-text-xs);
+}
+.mdm-tray-committing .mdm-tray-outcome {
+  color: var(--mdm-ink);
+}
+
+/* below the small breakpoint the groups and the rows become one card per row, as the compare table does */
+@media (max-width: 47.99em) {
+  .mdm-group-table thead,
+  .mdm-batch-rows thead {
+    display: none;
+  }
+  .mdm-group-table,
+  .mdm-group-table tbody,
+  .mdm-group-table tr,
+  .mdm-group-table td,
+  .mdm-batch-rows,
+  .mdm-batch-rows tbody,
+  .mdm-batch-rows tr,
+  .mdm-batch-rows td {
+    display: block;
+    width: 100%;
+  }
+  .mdm-group-table tr,
+  .mdm-batch-rows tr {
+    border: 1px solid var(--mdm-rule);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    padding: 4px 0;
+  }
+  .mdm-group-table td,
+  .mdm-batch-rows td {
+    border-bottom: none;
+  }
+  .mdm-group-table td[data-column]::before,
+  .mdm-batch-rows td[data-column]::before {
+    content: attr(data-column) ": ";
+    display: block;
+    color: var(--mdm-muted);
+    font-size: var(--mdm-text-xs);
+    font-weight: 600;
+  }
+  .mdm-group-table .mdm-group-pattern {
+    min-width: 0;
+  }
+  .mdm-mark {
+    white-space: normal;
+  }
+}
+
 /* ------------------------------------------------------------------ the header on a narrow screen */
 .mdm-act-as {
   color: var(--mdm-muted);

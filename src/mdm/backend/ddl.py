@@ -296,6 +296,11 @@ TABLES: tuple[Table, ...] = (
             _c("escalated_at", "timestamptz"),
             _c("escalated_by", "text"),
             _c("escalation", "text"),
+            # signature batches (story 3.3): a review's comparison signature ('' for none; NULL before the
+            # backfill), its match rule version, and its signature group's key, derived from both
+            _c("signature", "text"),
+            _c("rule_version", "int"),
+            _c("signature_key", "text"),
         ),
         ("task_id",),
         indexes=(
@@ -306,6 +311,7 @@ TABLES: tuple[Table, ...] = (
             ("claimed_by", "claimed_at"),  # "3 claimed by you" under My queue
             # the records the quality breaker held, handed back on a restore, paged in task-ID order
             ("entity", "reason", "status", "task_id"),
+            ("signature_key", "status", "due_at", "task_id"),  # a signature group's reviews, in due order
         ),
     ),
     Table("work", "open_task", (_n("task_key", "text"), _n("task_id", "text")), ("task_key",)),
@@ -367,7 +373,7 @@ TABLES: tuple[Table, ...] = (
             _n("decided_at", "timestamptz"),
         ),
         ("entity", "left_ref", "right_ref"),
-        indexes=(("entity", "right_ref"),),
+        indexes=(("entity", "right_ref"), ("entity", "signature", "label")),  # a signature's label history
     ),
     # the matcher's checkpoint (story 3.2): a committed decision drawn for blind review, and its answer
     Table(
@@ -402,6 +408,7 @@ TABLES: tuple[Table, ...] = (
             _c("reviewed_at", "timestamptz"),
             _c("review_entry_id", "text"),
             _c("dispute_task_id", "text"),
+            _c("checked_by", "text"),  # a batch sample: the batch's second steward (story 3.3)
         ),
         ("sample_id",),
         indexes=(
@@ -409,6 +416,7 @@ TABLES: tuple[Table, ...] = (
             ("entity", "source_system", "source_key", "status"),  # voids and the blind case
             ("task_id",),
             ("entity", "origin", "status"),  # the open-sample cap
+            ("entity", "origin", "signature", "reviewed_at", "sample_id"),  # a signature's bulk-rights window
         ),
     ),
     # running counts of blind reviews per entity, origin, band and signature ('' when there is none)
@@ -426,7 +434,8 @@ TABLES: tuple[Table, ...] = (
         ),
         ("entity", "origin", "band", "signature"),
     ),
-    # each entity's automatic band, normal or demoted by the quality breaker (decision 3)
+    # each entity's automatic band, normal or demoted by the quality breaker (decision 3), and each
+    # signature's bulk rights under a band `bulk:<16 hex>` (story 3.3)
     Table(
         "work",
         "breaker_state",
@@ -445,6 +454,7 @@ TABLES: tuple[Table, ...] = (
             _c("restore_reason", "text"),
             _c("restore_change_set", "text"),
             _n("updated_at", "timestamptz"),
+            _c("signature", "text"),  # a bulk-rights row's signature, written through safe_signature
         ),
         ("entity", "band"),
     ),
@@ -460,6 +470,110 @@ TABLES: tuple[Table, ...] = (
         ),
         ("entity", "hour_start"),
     ),
+    # signature batches (story 3.3): every status, kind and role is checked by the service, never here, so
+    # each list can grow story by story (init_schema never changes a CHECK on an existing store)
+    Table(
+        "work",
+        "batch",
+        (
+            _n("batch_id", "text"),
+            _n("entity", "text"),
+            _n("kind", "text"),
+            _n("status", "text"),
+            _c("rule_version", "int"),
+            _n("signature", "text", default="''"),  # '' for none
+            _c("signature_key", "text"),
+            _c("bulk_band", "text"),
+            _n("maker", "text"),
+            _n("maker_role", "text"),
+            _n("persona", "boolean", default="false"),
+            _c("checker", "text"),
+            _c("checker_role", "text"),
+            _c("checked_at", "timestamptz"),
+            _n("population", "int", default="0"),
+            _n("sample_size", "int", default="0"),
+            _n("decisions", "int", default="0"),
+            _n("chunks", "int", default="0"),
+            _n("chunks_committed", "int", default="0"),
+            _n("rows_committed", "bigint", default="0"),
+            _c("entry_id", "text"),
+            _c("compensates", "text"),
+            _c("compensated_by", "text"),
+            _c("compensate_reason", "text"),
+            _c("stop_requested_by", "text"),
+            _c("stop_requested_at", "timestamptz"),
+            _c("not_before", "timestamptz"),
+            _n("attempts", "int", default="0"),
+            _c("outcome", "text"),
+            _n("figures", "json", default="'{}'"),
+            _n("planning_version", "bigint"),
+            _n("created_at", "timestamptz"),
+            _n("updated_at", "timestamptz"),
+            _c("staged_at", "timestamptz"),
+            _c("finished_at", "timestamptz"),
+        ),
+        ("batch_id",),
+        indexes=(
+            ("status", "not_before", "batch_id"),  # the flush's walk
+            ("signature_key", "status", "batch_id"),  # a group's batches
+            ("maker", "created_at"),
+            ("checker", "staged_at"),  # the batches a second steward confirmed, for their tray
+            ("compensates",),
+        ),
+    ),
+    Table(
+        "work",
+        "batch_item",
+        (
+            _n("batch_id", "text"),
+            _n("task_id", "text"),
+            _n("role", "text"),
+            _n("status", "text"),
+            _n("source_system", "text"),
+            _n("source_key", "text"),
+            _c("event_id", "text"),
+            _c("target", "text"),
+            _c("target_version", "bigint"),
+            _c("score", "numeric"),
+            _c("band", "text"),
+            _n("stratum", "text", default="''"),
+            _n("draw", "bigint", default="0"),
+            _n("position", "int"),
+            _n("review", "boolean", default="false"),
+            _n("changes", "json", default="'[]'"),
+            _c("chunk_no", "int"),
+            _c("change_set_id", "text"),
+            _c("entry_id", "text"),
+            _c("reason", "text"),
+            _c("split_on", "text"),
+            _n("split_applied", "boolean", default="false"),
+            _n("updated_at", "timestamptz"),
+        ),
+        ("batch_id", "task_id"),
+        indexes=(
+            ("task_id", "status"),  # sample outcomes, earlier splits and the case's sample line
+            ("batch_id", "role", "status", "position"),  # pages of a batch's reviews
+            ("batch_id", "chunk_no"),
+        ),
+    ),
+    Table(
+        "work",
+        "batch_chunk",
+        (
+            _n("batch_id", "text"),
+            _n("chunk_no", "int"),
+            _n("change_set_id", "text"),
+            _c("commit_version", "bigint"),
+            _n("items", "int"),
+            _n("rows", "int"),
+            _n("committed_at", "timestamptz"),
+            _c("compensated_by", "text"),
+            _c("compensated_at", "timestamptz"),
+        ),
+        ("batch_id", "chunk_no"),
+    ),
+    # one open batch per signature group, as open_task holds one open task per task key
+    Table("work", "open_batch", (_n("signature_key", "text"), _n("batch_id", "text")), ("signature_key",)),
     Table(
         "work",
         "rule_result",

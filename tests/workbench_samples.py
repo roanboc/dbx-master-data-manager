@@ -16,14 +16,26 @@ from datetime import UTC, datetime, timedelta
 from mdm import capacity
 from mdm.models.workbench import (
     Action,
+    AgreementView,
+    BatchLine,
+    BatchProgress,
+    BatchRow,
+    BatchRowPage,
+    BatchSummary,
+    BatchView,
     BreakerView,
+    BulkRightView,
     Candidate,
     Choice,
     CompareRow,
     FlushReport,
+    GroupList,
+    GroupRow,
     Health,
     HubBadges,
     Impact,
+    LabelHistory,
+    Mark,
     MatchLabel,
     MemberView,
     Preview,
@@ -33,8 +45,11 @@ from mdm.models.workbench import (
     Resolution,
     Revealed,
     RunnerUp,
+    SampleLine,
+    SampleReview,
     ServiceLevels,
     SourceView,
+    SplitLine,
     StagedRef,
     Staging,
     TaskCase,
@@ -328,7 +343,7 @@ CANDIDATE_1 = Candidate(
     ),
     hard_rule=None,
     blocked_by=None,
-    signature="org_name=exact|city=exact|postcode=else|registered_id=null",
+    signature="name= · registered_id∅ · phone∅ · postcode≠ · city= · website∅",
     rule_version=1,
     preview=_link_preview("ORG-000123"),
     what_if=(("registered_id", 5.3), ("postcode", 3.1)),
@@ -346,7 +361,7 @@ CANDIDATE_2 = Candidate(
     flip=("The same postcode would make it an automatic link.",),
     hard_rule=None,
     blocked_by=None,
-    signature="org_name=exact|city=exact|postcode=else|registered_id=null",
+    signature="name= · registered_id∅ · phone∅ · postcode≠ · city= · website∅",
     rule_version=1,
     preview=_link_preview("ORG-004410"),
 )
@@ -363,7 +378,7 @@ CANDIDATE_3 = Candidate(
     flip=(),
     hard_rule=None,
     blocked_by="A different registered ID keeps these apart.",
-    signature="org_name=similar|city=else|postcode=else",
+    signature="name≈ · registered_id≠ · phone∅ · postcode≠ · city≠ · website∅",
     rule_version=1,
     preview=None,
 )
@@ -495,7 +510,7 @@ CANDIDATE_PERSON = Candidate(
     flip=("The same birth date would make it an automatic link.",),
     hard_rule=None,
     blocked_by=None,
-    signature="given_name=exact|family_name=exact|birth_date=one_digit",
+    signature="given_name= · family_name= · birth_date≈ · email∅ · phone∅ · postcode∅ · person_ref∅",
     rule_version=1,
     preview=Preview(
         master_id="PER-000451",
@@ -1456,6 +1471,613 @@ SOURCE_VIEW = SourceView(
 HUB_BADGES = HubBadges(engine="DuckDB", assistant="stub", local=True, entities=("organisation", "person"))
 HUB_BADGES_SHARED = HubBadges(engine="Lakebase", assistant="stub", local=False, entities=("organisation",))
 
+# ---------------------------------------------------------------------------------------------- signature batches
+# (story 3.3): the Alike reviews page, the batch page in every state, the forced-sample pane and the tray's batch
+# entries. Invented: masked person titles, invented organisation names, keys of the right shape.
+
+#: the Person pattern of the mini world's alike reviews, in rule order
+MARKS_PERSON = (
+    Mark("given_name", "Given name", "=", "the same"),
+    Mark("family_name", "Family name", "=", "the same"),
+    Mark("birth_date", "Birth date", "≈", "similar"),
+    Mark("email", "Email", "∅", "missing"),
+    Mark("phone", "Phone", "∅", "missing"),
+    Mark("postcode", "Postcode", "∅", "missing"),
+    Mark("person_ref", "Person reference", "∅", "missing"),
+)
+#: CANDIDATE_1's Organisation pattern, in rule order
+MARKS_ORGANISATION = (
+    Mark("name", "Name", "=", "the same"),
+    Mark("registered_id", "Registered ID", "∅", "missing"),
+    Mark("phone", "Phone", "∅", "missing"),
+    Mark("postcode", "Postcode", "≠", "different"),
+    Mark("city", "City", "=", "the same"),
+    Mark("website", "Website", "∅", "missing"),
+)
+BATCH_ID = "BAT-5d2e8a1f0c9b4e7a3d6c"
+BATCH_ID_OTHER = "BAT-8e1b6c3a9d0f2e5b7a4c"
+COMPENSATION_ID = "BAT-2a7f9c4e1b8d0a6e3f5b"
+COMPENSATION_STOPPED_ID = "BAT-6c0e3b9a2f7d1e4c8b5a"
+GROUP_KEY_PERSON = "SIG-5a1c9e0b7d3f2468"
+GROUP_KEY_ORGANISATION = "SIG-0b8e4d2c6a1f3957"
+GROUP_KEY_WITHDRAWN = "SIG-7c3e1a9f5b2d8064"
+GROUP_KEY_SMALL = "SIG-2f6b0d8e4c7a1935"
+BULK_KEY = "bulk:3f9a0c1d2e4b5a6f"
+
+LABELS = LabelHistory(matched=136, not_matched=4)
+LABELS_NONE = LabelHistory(matched=0, not_matched=0)
+AGREEMENT = AgreementView(
+    agreed=70, reviewed=71, by_origin={"automated": (60, 60), "steward": (8, 9), "batch": (2, 2)}
+)
+AGREEMENT_NONE = AgreementView(agreed=0, reviewed=0, by_origin={})
+#: the breaker withdrew the pattern's bulk decisions: blind review agreed 3 of the last 5 batch links
+BULK_WITHDRAWN = BulkRightView(
+    entity="person",
+    key=BULK_KEY,
+    since=datetime(2026, 9, 27, 11, 2, tzinfo=UTC),
+    figures={"agreed": 3, "reviewed": 5, "threshold": 0.95, "window": 50},
+)
+#: the largest Person group, with its open batch drawn and a third of its sample decided
+GROUP_PERSON = GroupRow(
+    group_key=GROUP_KEY_PERSON,
+    entity="person",
+    entity_label="Person",
+    rule_version=1,
+    marks=MARKS_PERSON,
+    count=612,
+    labels=LABELS,
+    agreement=AGREEMENT,
+    withdrawn=None,
+    too_small=False,
+    batch_id=BATCH_ID,
+    batch_status="sampling",
+    batch_words="forced sample, 3 of 9 decided",
+)
+#: an Organisation group with no batch, no label and no blind review yet: the draw is offered
+GROUP_ORGANISATION = GroupRow(
+    group_key=GROUP_KEY_ORGANISATION,
+    entity="organisation",
+    entity_label="Organisation",
+    rule_version=1,
+    marks=MARKS_ORGANISATION,
+    count=10,
+    labels=LABELS_NONE,
+    agreement=AGREEMENT_NONE,
+    withdrawn=None,
+    too_small=False,
+)
+#: a Person group whose bulk decisions the breaker withdrew: no draw, and no restore anywhere
+GROUP_WITHDRAWN = replace(
+    GROUP_PERSON,
+    group_key=GROUP_KEY_WITHDRAWN,
+    marks=tuple(
+        replace(m, mark="=", words="the same") if m.comparison == "birth_date" else m for m in MARKS_PERSON
+    ),
+    count=24,
+    withdrawn=BULK_WITHDRAWN,
+    batch_id=None,
+    batch_status=None,
+    batch_words=None,
+)
+#: an Organisation group too small to link together
+GROUP_SMALL = replace(GROUP_ORGANISATION, group_key=GROUP_KEY_SMALL, count=3, too_small=True)
+#: a group whose count reads "999+"
+GROUP_AT_CAP = replace(
+    GROUP_ORGANISATION, count=capacity.COUNT_CAP, labels=LabelHistory(capacity.COUNT_CAP, 12)
+)
+BATCH_LINE = BatchLine(
+    batch_id=BATCH_ID_OTHER,
+    entity="person",
+    entity_label="Person",
+    kind="link",
+    decisions=566,
+    maker_label="Data steward",
+)
+GROUP_LIST = GroupList(
+    groups=(GROUP_PERSON, GROUP_ORGANISATION, GROUP_WITHDRAWN, GROUP_SMALL),
+    window=capacity.GROUP_WINDOW,
+    older_rules=12,
+    to_confirm=(BATCH_LINE,),
+)
+GROUP_LIST_EMPTY = GroupList(groups=(), window=capacity.GROUP_WINDOW, older_rules=0, to_confirm=())
+
+#: the forced sample's reviews, masked as a steward reads them
+SAMPLE_OPEN = SampleReview(
+    task_id="TSK-e1f2a3b4c5d6e7f8",
+    source="crm:C001377",
+    title="K*** B***",
+    stratum_label="crm and hr",
+    status="open",
+    words="Waiting",
+    open=True,
+)
+SAMPLE_AGREED = SampleReview(
+    task_id="TSK-f2a3b4c5d6e7f809",
+    source="crm:C001388",
+    title="T*** Q***",
+    stratum_label="crm and hr",
+    status="agreed",
+    words="Linked as suggested",
+    open=False,
+)
+SAMPLE_DISAGREED = SampleReview(
+    task_id="TSK-a3b4c5d6e7f8091a",
+    source="crm:C001409",
+    title="M*** V***",
+    stratum_label="student_records and hr",
+    status="disagreed",
+    words="Not a match: disagrees, flagged on birth date",
+    open=False,
+)
+SAMPLE_VOID = SampleReview(
+    task_id="TSK-b4c5d6e7f8091a2b",
+    source="crm:C001415",
+    title="A*** R***",
+    stratum_label="crm and hr",
+    status="void",
+    words="Void: another review replaces it",
+    open=False,
+)
+
+
+def _reviews(agreed: int, opened: int) -> tuple[SampleReview, ...]:
+    """A sample of `agreed` agreed and `opened` open reviews, with task IDs and source keys of their own."""
+    found: list[SampleReview] = []
+    for index in range(agreed + opened):
+        base = SAMPLE_AGREED if index < agreed else SAMPLE_OPEN
+        found.append(replace(base, task_id=f"TSK-{index:04d}c5d6e7f8091a", source=f"crm:C0014{index:02d}"))
+    return tuple(found)
+
+
+SPLIT_APPLIED = SplitLine(
+    task_id=SAMPLE_DISAGREED.task_id,
+    source=SAMPLE_DISAGREED.source,
+    decision_words="Not a match",
+    on_label="birth date",
+    count=38,
+)
+SPLIT_WAITING = replace(SPLIT_APPLIED, count=None)
+SPLIT_EVERY = replace(SPLIT_APPLIED, on_label="every alike review", count=612)
+
+SUMMARY = BatchSummary(
+    xrefs=566, golden=566, chunks=3, rows=1132, reviews=12, left_out={"claimed": 3, "close_call": 1}
+)
+SUMMARY_SMALL = BatchSummary(xrefs=5, golden=5, chunks=1, rows=10, reviews=1, left_out={})
+SUMMARY_UNDO = BatchSummary(xrefs=566, golden=566, chunks=3, rows=1132, reviews=0, left_out={})
+PROGRESS = BatchProgress(
+    chunks=3,
+    chunks_committed=2,
+    rows_committed=1000,
+    not_before=NOW + timedelta(minutes=6),
+    stop_requested=False,
+)
+PROGRESS_STOPPING = replace(PROGRESS, not_before=None, stop_requested=True)
+PROGRESS_DONE = replace(PROGRESS, chunks_committed=3, rows_committed=1132, not_before=None)
+PROGRESS_STOPPED = replace(PROGRESS, not_before=None, stop_requested=True)
+PROGRESS_ONE = replace(PROGRESS, chunks_committed=1, rows_committed=500, not_before=None)
+PROGRESS_NONE = replace(PROGRESS, chunks_committed=0, rows_committed=0, not_before=None)
+
+
+def _act(code: str, label: str, *, why: str | None = None) -> Action:
+    """A batch page action (a code of `models.batch.PAGE_ACTIONS`), enabled unless `why` says why not."""
+    return Action(code, label, None, why is None, why)
+
+
+DECIDE_SAMPLE = _act("decide_sample", "Decide the sample in the inbox")
+DISCARD = _act("discard", "Discard this batch")
+#: the maker's page while the forced sample is decided: 4 of 9 decided, all agreed
+BATCH_SAMPLING = BatchView(
+    batch_id=BATCH_ID,
+    kind="link",
+    entity="person",
+    entity_label="Person",
+    group_key=GROUP_KEY_PERSON,
+    marks=MARKS_PERSON,
+    status="sampling",
+    maker_label="you",
+    checker_label=None,
+    population=612,
+    sample_size=9,
+    sample=_reviews(4, 5),
+    decided=4,
+    agreed=4,
+    disagreed=0,
+    waiting=5,
+    actions=(DECIDE_SAMPLE, DISCARD),
+)
+#: after one disagreement named birth date: 38 of the 612 drawn left, a top-up joined, 574 remain for a sample
+#: of 8 (the population stays what the draw fixed; the sample's size follows what is left)
+BATCH_SPLIT = replace(
+    BATCH_SAMPLING,
+    sample_size=8,
+    sample=(*_reviews(4, 4), SAMPLE_DISAGREED),
+    decided=5,
+    disagreed=1,
+    waiting=4,
+    splits=(SPLIT_APPLIED,),
+)
+#: the disagreement committed, its split waits for the next refresh
+BATCH_SPLIT_WAITING = replace(BATCH_SPLIT, sample_size=9, splits=(SPLIT_WAITING,))
+#: every sample review decided, one still in the tray: nothing left to decide in the inbox
+BATCH_SAMPLE_DONE = replace(
+    BATCH_SAMPLING,
+    sample=(*_reviews(8, 0), SAMPLE_VOID),
+    decided=9,
+    agreed=8,
+    waiting=0,
+    actions=(
+        _act("decide_sample", "Decide the sample in the inbox", why="Every sample review is decided."),
+        DISCARD,
+    ),
+)
+#: the sample agreed; the maker has not shown every change yet
+BATCH_READY = replace(
+    BATCH_SAMPLING,
+    status="ready",
+    population=566,
+    sample=_reviews(9, 0),
+    decided=9,
+    agreed=9,
+    waiting=0,
+    actions=(_act("prepare", "Show every change"), DISCARD),
+)
+#: the same, as another data steward reads it
+BATCH_READY_OTHER = replace(
+    BATCH_READY,
+    maker_label="Data steward",
+    actions=(_act("prepare", "Show every change", why="Only the steward who drew this batch prepares it."),),
+)
+#: every change shown; above 250 links, the maker asks a second steward
+BATCH_PREPARED = replace(
+    BATCH_READY,
+    summary=SUMMARY,
+    actions=(_act("stage", "Ask a second steward to confirm"), DISCARD),
+)
+#: a small batch at or below the threshold: "Link all 5"
+BATCH_PREPARED_SMALL = replace(
+    BATCH_READY,
+    population=10,
+    sample_size=5,
+    sample=_reviews(5, 0),
+    decided=5,
+    agreed=5,
+    summary=SUMMARY_SMALL,
+    actions=(_act("stage", "Link all 5"), DISCARD),
+)
+#: waiting for a second steward, as its maker reads it
+BATCH_AWAITING = replace(
+    BATCH_PREPARED,
+    status="awaiting_checker",
+    actions=(
+        _act("confirm", "Confirm the batch", why="You prepared this batch, so another steward confirms it."),
+        DISCARD,
+    ),
+)
+#: and as the coordinating steward who checks it
+BATCH_AWAITING_CHECKER = replace(
+    BATCH_AWAITING,
+    maker_label="Data steward",
+    actions=(_act("confirm", "Confirm the batch"), _act("send_back", "Send it back"), DISCARD),
+)
+#: confirmed, in the tray
+BATCH_STAGED = replace(
+    BATCH_PREPARED,
+    status="staged",
+    checker_label="Coordinating steward",
+    entry_id="TR-7e8f9a0b1c2d3e4f5061",
+    deadline=datetime(2026, 9, 27, 12, 4, 31, tzinfo=UTC),
+    actions=(_act("undo", "Undo"),),
+)
+#: its chunks commit; the throttle holds the next one
+BATCH_COMMITTING = replace(
+    BATCH_STAGED,
+    status="committing",
+    progress=PROGRESS,
+    entry_id=None,
+    deadline=None,
+    outcome="committing",
+    actions=(_act("stop", "Stop"),),
+)
+BATCH_STOPPING = replace(
+    BATCH_COMMITTING,
+    progress=PROGRESS_STOPPING,
+    actions=(_act("stop", "Stop", why="Stop is already asked."),),
+)
+#: committed in three chunks, within its 30 days
+BATCH_COMMITTED = replace(
+    BATCH_COMMITTING,
+    status="committed",
+    progress=PROGRESS_DONE,
+    outcome="committed",
+    commits=(41, 43),
+    finished_at=NOW - timedelta(days=2),
+    counts={"committed": 566},
+    undo_until=datetime(2026, 10, 28, 12, 0, tzinfo=UTC),
+    actions=(),
+)
+#: four reviews failed alone at their chunk
+BATCH_FAILED_ALONE = replace(BATCH_COMMITTED, counts={"committed": 562, "failed": 4})
+#: stopped by a steward after chunk 2 of 3
+BATCH_STOPPED = replace(
+    BATCH_COMMITTED,
+    status="stopped",
+    progress=PROGRESS_STOPPED,
+    outcome="stopped",
+    commits=(41, 42),
+    counts={"committed": 500, "released": 66},
+)
+#: stopped after chunk 1 of 3 when the breaker withdrew the pattern's bulk decisions
+BATCH_BULK_STOPPED = replace(
+    BATCH_STOPPED,
+    progress=PROGRESS_ONE,
+    outcome="bulk_withdrawn",
+    commits=(41, 41),
+    counts={"committed": 250, "released": 316},
+    withdrawn=BULK_WITHDRAWN,
+)
+#: stopped after chunk 1 of 3 when the next chunk failed three times
+BATCH_CHUNK_FAILED = replace(BATCH_BULK_STOPPED, outcome="chunk_failed", withdrawn=None)
+#: every review moved before the first chunk
+BATCH_NOTHING = replace(
+    BATCH_COMMITTED,
+    status="failed",
+    progress=PROGRESS_NONE,
+    outcome="nothing_left",
+    commits=None,
+    counts={"failed": 566},
+    undo_until=None,
+)
+BATCH_DISCARDED = replace(BATCH_READY, status="discarded", outcome="discarded", actions=(), finished_at=NOW)
+BATCH_SPLIT_ALL = replace(
+    BATCH_SPLIT, status="discarded", outcome="split_all", splits=(SPLIT_EVERY,), actions=(), finished_at=NOW
+)
+BATCH_TOO_FEW = replace(BATCH_SPLIT, status="discarded", outcome="too_few_left", actions=(), finished_at=NOW)
+#: a compensation of it is open (not committed yet)
+BATCH_BEING_UNDONE = replace(BATCH_COMMITTED, compensated_by=COMPENSATION_ID)
+#: a compensation undid it; 3 of its links were changed since, and stay
+BATCH_UNDONE = replace(
+    BATCH_COMMITTED,
+    compensated_by=COMPENSATION_ID,
+    undone_by=(COMPENSATION_ID,),
+    counts={"committed": 3, "compensated": 563},
+)
+#: a compensation undid its first chunk and stopped: the other 316 can still be undone
+BATCH_PARTLY_UNDONE = replace(
+    BATCH_COMMITTED,
+    undone_by=(COMPENSATION_STOPPED_ID,),
+    counts={"committed": 316, "compensated": 250},
+)
+#: the compensation that undid it: 563 of 566 links undone, 3 kept
+COMPENSATION = BatchView(
+    batch_id=COMPENSATION_ID,
+    kind="compensate",
+    entity="person",
+    entity_label="Person",
+    group_key=None,
+    marks=MARKS_PERSON,
+    status="committed",
+    maker_label="Data steward",
+    checker_label="Coordinating steward",
+    population=566,
+    sample_size=0,
+    sample=(),
+    decided=0,
+    agreed=0,
+    disagreed=0,
+    waiting=0,
+    summary=SUMMARY_UNDO,
+    progress=PROGRESS_DONE,
+    compensates=BATCH_ID,
+    outcome="committed",
+    commits=(52, 54),
+    finished_at=NOW,
+    counts={"committed": 563, "kept": 3},
+)
+#: a compensation prepared, as its maker reads it before staging it on the command line
+COMPENSATION_READY = replace(
+    COMPENSATION,
+    status="ready",
+    maker_label="you",
+    checker_label=None,
+    progress=None,
+    outcome=None,
+    commits=None,
+    finished_at=None,
+    counts={},
+    actions=(DISCARD,),
+)
+BATCH_VIEWS = (
+    BATCH_SAMPLING,
+    BATCH_SPLIT,
+    BATCH_SPLIT_WAITING,
+    BATCH_SAMPLE_DONE,
+    BATCH_READY,
+    BATCH_READY_OTHER,
+    BATCH_PREPARED,
+    BATCH_PREPARED_SMALL,
+    BATCH_AWAITING,
+    BATCH_AWAITING_CHECKER,
+    BATCH_STAGED,
+    BATCH_COMMITTING,
+    BATCH_STOPPING,
+    BATCH_COMMITTED,
+    BATCH_FAILED_ALONE,
+    BATCH_STOPPED,
+    BATCH_BULK_STOPPED,
+    BATCH_CHUNK_FAILED,
+    BATCH_NOTHING,
+    BATCH_DISCARDED,
+    BATCH_SPLIT_ALL,
+    BATCH_TOO_FEW,
+    BATCH_BEING_UNDONE,
+    BATCH_UNDONE,
+    BATCH_PARTLY_UNDONE,
+    COMPENSATION,
+    COMPENSATION_READY,
+)
+
+#: every row's change, masked as a steward reads it
+BATCH_ROW = BatchRow(
+    task_id=SAMPLE_OPEN.task_id,
+    source="crm:C001377",
+    title="K*** B***",
+    target="PER-000451",
+    target_title="K*** B***",
+    impact=Impact(xrefs_added=1, golden_changed=("Phone",)),
+    preview=(
+        PreviewRow("Given name", "K***", "K***", False),
+        PreviewRow("Phone", None, "hidden", True),
+    ),
+    joins=0,
+    status="planned",
+    reason=None,
+    changed_since=False,
+    chunk_no=None,
+)
+#: three rows of the batch join one golden record, which changed since preparation
+BATCH_ROW_SHARED = replace(
+    BATCH_ROW,
+    task_id="TSK-c5d6e7f8091a2b3c",
+    source="crm:C001421",
+    title="J*** P***",
+    target="PER-000877",
+    target_title="J*** P***",
+    joins=2,
+    changed_since=True,
+)
+BATCH_ROW_COMMITTED = replace(BATCH_ROW, status="committed", chunk_no=2)
+BATCH_ROW_FAILED = replace(BATCH_ROW_SHARED, status="failed", reason="record_changed", changed_since=False)
+BATCH_ROW_RELEASED = replace(
+    BATCH_ROW, task_id="TSK-d6e7f8091a2b3c4d", source="crm:C001433", status="released", reason="stopped"
+)
+BATCH_ROW_UNDO = replace(
+    BATCH_ROW,
+    impact=Impact(xrefs_removed=1, golden_changed=("Phone",)),
+    preview=(PreviewRow("Phone", "hidden", None, True),),
+)
+ROW_PAGE = BatchRowPage(rows=(BATCH_ROW, BATCH_ROW_SHARED), after=2)
+ROW_PAGE_LAST = BatchRowPage(rows=(BATCH_ROW_COMMITTED, BATCH_ROW_FAILED, BATCH_ROW_RELEASED), after=None)
+ROW_PAGE_UNDO = BatchRowPage(rows=(BATCH_ROW_UNDO,), after=None)
+
+#: the decide pane of a forced-sample review: review 3 of 9, the pattern's comparisons to name
+SAMPLE_LINE = SampleLine(batch_id=BATCH_ID, position=3, size=9, decided=4, choices=MARKS_PERSON)
+ROW_SAMPLE_REVIEW = replace(
+    ROW_PERSON_REVIEW, task_id=SAMPLE_OPEN.task_id, subject=SAMPLE_OPEN.source, staged=None
+)
+
+
+def _sample_actions(*, why: str | None = None, target: str = "PER-000451") -> tuple[Action, ...]:
+    return (
+        Action("link", f"Link to {target}", "L", why is None, why, target=target),
+        Action("not_a_match", "Not a match", "N", why is None, why),
+        *_work(why=why),
+    )
+
+
+CASE_SAMPLE = TaskCase(
+    row=ROW_SAMPLE_REVIEW,
+    reason_text="The arriving record scores in the review band against one golden record.",
+    shape="source",
+    columns=("Arriving · crm:C001377", "1 · PER-000451"),
+    compare=COMPARE_PERSON,
+    candidates=(CANDIDATE_PERSON,),
+    default_candidate="PER-000451",
+    close_call=False,
+    preview=None,
+    actions=_sample_actions(),
+    notice=None,
+    masked=True,
+    revealable=("given_name", "family_name", "birth_date", "email"),
+    staged=None,
+    claimed_by=None,
+    event_id="crm-7-00005377",
+    sample=SAMPLE_LINE,
+)
+#: the steward's "Not a match" on it waits in the tray
+STAGED_SAMPLE = StagedRef(
+    entry_id="TR-8f9a0b1c2d3e4f506172",
+    decision="not_a_match",
+    label="Not a match: crm:C001377",
+    deadline=NOW + timedelta(seconds=48),
+    mine=True,
+)
+CASE_SAMPLE_STAGED = replace(
+    CASE_SAMPLE,
+    row=replace(ROW_SAMPLE_REVIEW, staged=STAGED_SAMPLE),
+    staged=STAGED_SAMPLE,
+    actions=(
+        *_sample_actions(why="Your decision on this task is already in the tray."),
+        Action("undo", "Undo", "U", True, None),
+    ),
+)
+#: a review a batch holds while it waits in the tray, and while it commits
+STAGED_BATCH = StagedRef(
+    entry_id=BATCH_STAGED.entry_id or "",
+    decision="batch_link",
+    label=f"Link 566 alike reviews ({BATCH_ID})",
+    deadline=NOW + timedelta(seconds=48),
+    mine=True,
+    batch_id=BATCH_ID,
+)
+HELD_BY_BATCH = f"It is part of batch {BATCH_ID}. Undo the batch to decide it on its own."
+CASE_BATCH_HELD = replace(
+    CASE_SAMPLE,
+    row=replace(ROW_SAMPLE_REVIEW, task_id="TSK-e7f8091a2b3c4d5e", staged=STAGED_BATCH),
+    staged=STAGED_BATCH,
+    sample=None,
+    actions=_sample_actions(why=HELD_BY_BATCH),
+)
+CASE_BATCH_COMMITTING = replace(
+    CASE_BATCH_HELD,
+    staged=replace(STAGED_BATCH, deadline=NOW - timedelta(minutes=1)),
+)
+SAMPLE_CASES = (CASE_SAMPLE, CASE_SAMPLE_STAGED, CASE_BATCH_HELD, CASE_BATCH_COMMITTING)
+
+#: the tray's batch entries: the maker's while it waits, confirmed; the second steward's; committing,
+#: committed, stopped and failed
+TRAY_BATCH_STAGED = TrayView(
+    entry_id=STAGED_BATCH.entry_id,
+    task_id=BATCH_ID,
+    decision="batch_link",
+    label=STAGED_BATCH.label,
+    deadline=STAGED_BATCH.deadline,
+    status="staged",
+    outcome=None,
+    commit_version=None,
+    batch_id=BATCH_ID,
+    progress=(0, 3),
+    mine=True,
+    second_steward="coordinating_steward",
+)
+TRAY_BATCH_CONFIRMED = replace(TRAY_BATCH_STAGED, mine=False)
+TRAY_BATCH_COMMITTING = replace(
+    TRAY_BATCH_STAGED, status="committed", outcome="committing", commit_version=41, progress=(1, 3)
+)
+TRAY_BATCH_COMMITTED = replace(
+    TRAY_BATCH_COMMITTING, outcome="committed", commit_version=43, progress=(3, 3), settled_at=NOW
+)
+TRAY_BATCH_STOPPED = replace(TRAY_BATCH_COMMITTING, outcome="stopped", progress=(2, 3), settled_at=NOW)
+TRAY_BATCH_WITHDRAWN = replace(
+    TRAY_BATCH_COMMITTING, outcome="bulk_withdrawn", progress=(1, 3), settled_at=NOW
+)
+TRAY_BATCH_FAILED = replace(
+    TRAY_BATCH_STAGED, status="failed", outcome="nothing_left", progress=(0, 3), settled_at=NOW
+)
+TRAY_BATCH_VIEWS = (
+    TRAY_BATCH_STAGED,
+    TRAY_BATCH_CONFIRMED,
+    TRAY_BATCH_COMMITTING,
+    TRAY_BATCH_COMMITTED,
+    TRAY_BATCH_STOPPED,
+    TRAY_BATCH_WITHDRAWN,
+    TRAY_BATCH_FAILED,
+)
+#: the rail's counts with alike reviews and a batch to confirm
+COUNTS_ALIKE = replace(COUNTS_UNDER_CAP, alike=612, batches_to_confirm=1, tray_live=1)
+TASK_QUERY_GROUP = TaskQuery(
+    now=NOW, entity="person", kind="review", snoozed=None, signature_key=GROUP_KEY_PERSON
+)
+
 #: every sample, so a test can check that each dataclass of the module has one
 ALL = (
     SERVICE_LEVELS,
@@ -1513,4 +2135,23 @@ ALL = (
     SOURCE_VIEW,
     HUB_BADGES,
     HUB_BADGES_SHARED,
+    *MARKS_PERSON,
+    LABELS,
+    AGREEMENT,
+    BULK_WITHDRAWN,
+    *GROUP_LIST.groups,
+    BATCH_LINE,
+    GROUP_LIST,
+    SAMPLE_OPEN,
+    SPLIT_APPLIED,
+    SUMMARY,
+    PROGRESS,
+    *BATCH_VIEWS,
+    BATCH_ROW,
+    ROW_PAGE,
+    SAMPLE_LINE,
+    *SAMPLE_CASES,
+    *TRAY_BATCH_VIEWS,
+    COUNTS_ALIKE,
+    TASK_QUERY_GROUP,
 )

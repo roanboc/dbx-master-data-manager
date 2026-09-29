@@ -46,6 +46,8 @@ __all__ = [
 ]
 
 PERSONA_PREFIX = "persona:"
+#: the change-set actions of a signature batch's chunks (story 3.3), whose batch the check reads
+BATCH_ACTIONS = frozenset({"batch_link", "batch_compensate"})
 DEFAULT_PERSONA = "data_owner"
 #: the workbench's persona when none is asked for (adopted): the command line keeps the data owner
 WORKBENCH_PERSONA = "data_steward"
@@ -211,7 +213,29 @@ class AuthorityService:
             if checker.name == actor.name or checker.kind != "person":
                 raise Forbidden("checker_is_maker", action=cs.action)
             require(checker, cs.action)
+        if cs.action in BATCH_ACTIONS:
+            self._check_batch(cs)
         del in_transaction  # the same checks hold before and inside the transaction
+
+    def _check_batch(self, cs: ChangeSet) -> None:
+        """A signature batch's chunk (story 3.3): the batch its evidence names exists and is the actor's
+        (`Forbidden(batch_unknown)`), and above `batch_checker_above` decisions the chunk names the batch's
+        recorded second steward, a person other than the maker whose role may confirm a batch
+        (`checker_required`, `checker_is_maker`, `checker_not_recorded`). RULE3's large bulk change."""
+        named = (cs.evidence or {}).get("batch_id")
+        batch = self.store.batches([named]).get(named) if isinstance(named, str) else None
+        if batch is None or batch.maker != cs.actor.name:
+            raise Forbidden("batch_unknown", action=cs.action)
+        if batch.decisions <= self.settings.batch_checker_above:
+            return
+        checker = cs.checker
+        if checker is None or checker.kind != "person":
+            raise Forbidden("checker_required", action=cs.action)
+        if checker.name == batch.maker:
+            raise Forbidden("checker_is_maker", action=cs.action)
+        if checker.name != batch.checker:
+            raise Forbidden("checker_not_recorded", action=cs.action)
+        require(checker, "confirm_batch")
 
     @staticmethod
     def clause_held(model: EntityModel, clause: str) -> bool:

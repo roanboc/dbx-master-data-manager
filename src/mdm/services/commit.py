@@ -308,7 +308,7 @@ class CommitService:
         self.authority.check(cs)
         guarded = self._automatic_band(cs)
         if guarded:
-            band = self.store.breaker_states([cs.entity]).get((cs.entity, AUTO_BAND))
+            band = self.store.breaker_state(cs.entity, AUTO_BAND)  # one keyed row, never the bulk rows
             if band is not None and band.demoted:
                 raise Conflict([token(cs.entity)], code="breaker_demoted")
         model = self.registry.published(cs.entity)
@@ -339,7 +339,7 @@ class CommitService:
             plan = self._plan(cs, model, vaulted, version, mapping)
             counts, row_count = self._write(cs, model, plan, version)
             # step 9: the work, so the effect and its settlement commit together
-            self.store.apply_work(self._map_work(work, mapping, cs))
+            self.store.apply_work(self._map_work(work, mapping, cs, version=version, rows=row_count))
             # step 10 and 11: change rows, the commit-log row
             changes = self._change_rows(plan, version)
             self.store.write_changes(changes)
@@ -1060,10 +1060,24 @@ class CommitService:
             )
         return rows
 
-    def _map_work(self, work: WorkWrites, mapping: Mapping[str, str], cs: ChangeSet) -> WorkWrites:
+    def _map_work(
+        self,
+        work: WorkWrites,
+        mapping: Mapping[str, str],
+        cs: ChangeSet,
+        *,
+        version: int | None = None,
+        rows: int = 0,
+    ) -> WorkWrites:
         """Tasks naming CreateGolden refs name the master IDs instead; a task without a source is re-keyed.
         Every open task without a due time gets one from the service level of its kind; every tray settlement
-        without a change set names this one."""
+        without a change set names this one. A batch's chunk write (story 3.3) is stamped with this change
+        set, its commit version (None when nothing publishes) and the published rows it wrote."""
+        if work.batch is not None:
+            work = replace(
+                work,
+                batch=replace(work.batch, change_set_id=cs.change_set_id, commit_version=version, rows=rows),
+            )
         work = self._remap_tasks(work, mapping, cs)
         work = self._remap_samples(work, mapping)
         levels = self.service_levels

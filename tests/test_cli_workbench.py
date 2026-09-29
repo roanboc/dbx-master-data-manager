@@ -188,7 +188,15 @@ def test_tray_flush_prints_its_line_and_its_report(initialised, monkeypatch: pyt
         == "another flush holds the tray; nothing done\n"
     )
     report = json.loads(mdm(initialised, "--json", "tray", "flush").stdout)
-    assert report == {"committed": 0, "failed": 0, "outcomes": {}, "requeued": 0, "skipped_busy": False}
+    assert report == {
+        "batches_finished": 0,
+        "chunks": 0,
+        "committed": 0,
+        "failed": 0,
+        "outcomes": {},
+        "requeued": 0,
+        "skipped_busy": False,
+    }
     assert [a["limit"] for a in asked] == [100, 7, 100]
     assert asked[0]["role"] is not None, "the command line names who started the flush"
     assert mdm(initialised, "tray", "flush", "--limit", "0", code=2).exit_code == 2

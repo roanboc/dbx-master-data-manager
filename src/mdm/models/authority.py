@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
+
+from mdm.models.safety import safe
 
 ROLES = (
     "data_owner",
@@ -86,6 +89,12 @@ ACTIONS: Mapping[str, frozenset[str]] = {
     "restore_breaker": frozenset({"data_owner"}),
     # an automated actor's NAME: only the quality breaker demotes a band
     "trip_breaker": frozenset({QUALITY_BREAKER.name}),
+    # signature batches (story 3.3): drawing, preparing, staging and discarding a batch of alike reviews;
+    # reversing a committed batch; confirming one as its second steward; stopping one that commits
+    "batch_link": _STEWARDS,
+    "batch_compensate": _STEWARDS,
+    "confirm_batch": _STEWARDS,
+    "stop_batch": _STEWARDS,
 }
 NEVER_AUTOMATIC = frozenset(
     {
@@ -115,6 +124,29 @@ ROLE_LABELS: Mapping[str, str] = {
     "consumer": "Consumer",
     "administrator": "Administrator",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class AccessRow:
+    """One `mdm_audit.access_log` row a service asks the store to append among many (`append_accesses`): a
+    batch's split writes one per record whose value it compared on a personal comparison. The action, the
+    reason and every text of the detail are codes, IDs and source keys (`safe`), checked here and again where
+    the store writes them."""
+
+    actor: str  # the actor's name
+    actor_role: str
+    action: str  # a code: `batch_split`
+    entity: str | None
+    master_id: str | None
+    attribute: str | None
+    reason: str  # a code
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        safe(self.action)
+        safe(self.reason)
+        safe(self.attribute)
+        safe(dict(self.detail))
 
 
 def allowed(actor: Actor, action: str) -> bool:

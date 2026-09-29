@@ -161,7 +161,9 @@ def test_the_help_lists_the_keys_and_turning_them_off_stops_them(page: Page, liv
     expect(page.locator("body")).to_have_attribute("data-mdm-keys", "off")
     page.keyboard.press("Escape")
     expect(dialog).to_be_hidden()
-    assert requests_during(page, lambda: [press(page, key) for key in ("j", "k", "2", "l")]) == []
+    address = page.url
+    assert requests_during(page, lambda: [press(page, key) for key in ("j", "k", "2", "l", "g")]) == []
+    assert page.url == address  # G, too, does nothing with the keys off (story 3.3)
     press(page, "?")
     page.wait_for_timeout(300)
     expect(dialog).to_be_hidden()

@@ -53,6 +53,10 @@ SETTLED = "settled"  # dcc.Store(memory): [{entry_id, task_id, status}] newly se
 TRAY_POLL = (
     "tray-poll"  # dcc.Interval, TRAY_POLL_SECONDS, disabled while nothing of this tab's steward is staged
 )
+#: how many of the steward's tray entries still move (staged, or a batch committing), from the counts every
+#: COUNTS_REFRESH_SECONDS: a tray that is not polling wakes when it differs from what the tab shows (story
+#: 3.3: a batch the second steward confirmed appears in its maker's tray)
+TRAY_LIVE = "tray-live"  # dcc.Store(memory): an int
 CLOCK_TICK = "clock-tick"  # dcc.Interval, 1 s (clientside countdown only)
 TRAY_UNDO = "tray-undo"  # pattern {"type": TRAY_UNDO, "entry": entry_id}
 TRAY_COUNTDOWN = "tray-countdown"  # pattern {"type": TRAY_COUNTDOWN, "entry": entry_id}
@@ -113,6 +117,42 @@ INBOX_ACT_REQUEST = {
     "page": "inbox",
 }  # {"action", "n", "task"}: a key, button or menu item
 INBOX_TRAY = {"type": TRAY_STATE, "page": "inbox"}  # the shell's TRAY_STATE, while the inbox is on screen
+# the inbox filtered to a signature group or a batch's forced sample (story 3.3)
+INBOX_FILTER = "inbox-filter"  # the line above the list that names the group or the batch, and links back
+#: the decide pane's "Which comparison misled?" on a forced-sample review: a RadioGroup whose value is a
+#: comparison's name or `all`, beside CANDIDATE_CHOICE
+SPLIT_CHOICE = "split-choice"
+#: the comparison named on the forced-sample review on screen, copied out of the pane in the browser (as
+#: SELECTED_CANDIDATE is), so the act callback never names a State the pane may lack: {"task", "on"}, codes
+SELECTED_SPLIT = "selected-split"
+
+# alike reviews (story 3.3): the signature groups
+GROUPS = "groups"  # page root
+GROUPS_LIST = "groups-list"  # the page's regions, redrawn after a draw or a settlement
+GROUPS_VERSION = "groups-version"  # dcc.Store(memory): an int bumped after a draw
+GROUPS_DRAW_WHY = "groups-draw-why"  # why every draw is disabled for this role (aria-describedby)
+GROUP_DRAW = "group-draw"  # pattern {"type": GROUP_DRAW, "group": "SIG-…", "entity": entity}
+#: the page's own copies of the shell's address and settlements (the inbox's bridges fill them)
+GROUPS_ADDRESS = {"type": INBOX_QUERY, "part": "groups"}  # {"search", "entity", "path"}
+GROUPS_SETTLED = {"type": SETTLED, "page": "groups"}
+
+# a batch of alike reviews (story 3.3)
+BATCH = "batch"  # page root
+BATCH_REF = "batch-ref"  # dcc.Store(memory): {"batch_id"}
+BATCH_VIEW = "batch-view"  # the page's regions, redrawn only when the batch's stamp changes
+BATCH_STAMP = "batch-stamp"  # dcc.Store(memory): the batch's status, sample outcomes, splits, chunks, stop
+BATCH_POLL = (
+    "batch-poll"  # dcc.Interval: every 2 s while staged or committing, 30 s while open, off once done
+)
+BATCH_VERSION = "batch-version"  # dcc.Store(memory): an int bumped after an action
+BATCH_ROWS = "batch-rows"  # one page of every row's change
+BATCH_ROWS_LABEL = "batch-rows-label"  # "Rows 51–100 of 566"
+BATCH_ROWS_PREV = "batch-rows-prev"
+BATCH_ROWS_NEXT = "batch-rows-next"
+BATCH_ROWS_CURSOR = "batch-rows-cursor"  # dcc.Store(memory): {"stack": [position, …], "after": position}
+BATCH_ACTION_REASONS = "batch-action-reasons"  # visible text: why unavailable actions are unavailable
+BATCH_ACTION = "batch-action"  # pattern {"type": BATCH_ACTION, "action": code of PAGE_ACTIONS}
+BATCH_SETTLED = {"type": SETTLED, "page": "batch"}  # the shell's SETTLED, while the batch is on screen
 
 # record
 RECORD = "record"
@@ -197,3 +237,14 @@ def tray_countdown(entry_id: str) -> dict:
 def prov_chip(attribute: str) -> dict:
     """The provenance chip of one golden value: `attribute` an attribute name."""
     return {"type": PROV_CHIP, "attr": safe(attribute)}
+
+
+def group_draw(group_key: str, entity: str) -> dict:
+    """The "Draw a forced sample" button of one signature group: `group_key` a key ("SIG-…"), `entity` a
+    code. A signature itself never passes: it is not safe text."""
+    return {"type": GROUP_DRAW, "group": safe(group_key), "entity": safe(entity)}
+
+
+def batch_action(code: str) -> dict:
+    """An action button of the batch page: `code` one of `models.batch.PAGE_ACTIONS`."""
+    return {"type": BATCH_ACTION, "action": safe(code)}

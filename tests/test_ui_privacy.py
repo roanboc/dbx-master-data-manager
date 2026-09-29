@@ -5,7 +5,8 @@ For a Person golden record and a Person review task, as a data steward without a
 every page, pane, Why, header, tray, notification and store document the workbench builds is rendered,
 and every string in it (text, labels, IDs, data attributes, store data) is checked against the personal
 values the test landed. After a reveal, the clear values appear only inside the compare table, and in no
-store, ID or later case.
+store, ID or later case. For signature batches (story 3.3), the Alike reviews page, a batch's page in each
+state with every row, its tray entry and the forced sample's pane are checked the same way.
 """
 
 from __future__ import annotations
@@ -19,12 +20,15 @@ from typing import Any
 import pytest
 from dash.development.base_component import Component
 
+from mdm import capacity
 from mdm.backend.factory import open_store
 from mdm.models.records import SourceKey
 from mdm.services.context import Hub
 from mdm.ui import app as app_module
 from mdm.ui import context, ids, layout
 from mdm.ui.components import decide, provenance, tray
+from mdm.ui.pages import batch as batch_page
+from mdm.ui.pages import groups as groups_page
 from mdm.ui.pages import inbox, record
 from tests import helpers
 from tests.conftest import base_settings, open_hub
@@ -244,3 +248,136 @@ def _without(tree: Any, cut: Component) -> list[str]:
 
     visit(tree)
     return found
+
+
+# ---------------------------------------------------------------------------------------------- alike reviews
+#
+# Story 3.3: the Alike reviews page, a batch's page in each state it passes through (with its split lines and
+# every row of the prepared batch), the tray with the batch's entry, the inbox filtered to the forced sample
+# and its pane with "Which comparison misled?" open, for a data steward and a consumer.
+
+ALIKE_PERSONS = 32
+ALIKE_FIRST = 20
+ALIKE_REVIEWS = 12
+
+
+def alike_values() -> set[str]:
+    """Every personal value the alike world landed: the mini world's, and the alike records' birth dates."""
+    rows = list(helpers.mini_world(persons=ALIKE_PERSONS, organisations=3).rows)
+    found: set[str] = set()
+    for landed in rows:
+        if landed.entity != "person":
+            continue
+        for attribute in PERSONAL:
+            value = landed.payload.get(attribute)
+            if isinstance(value, str) and len(value) >= 4:
+                found.add(value)
+                if attribute == "phone":
+                    found.add(re.sub(r"\D", "", value))
+                if attribute == "postcode":
+                    found.add(value.replace(" ", ""))
+    for i in range(ALIKE_REVIEWS):
+        held = helpers.person_payload(ALIKE_FIRST + i)
+        found.add(helpers._alike_payload(held, None)["birth_date"])  # noqa: SLF001 - the landed record's own
+    return {value.lower() for value in found if len(value) >= 4}
+
+
+ALIKE_VALUES = alike_values()
+
+
+def alike_leaks(*pieces: Any) -> list[str]:
+    text = "\n".join(s for piece in pieces for s in strings(piece)).lower()
+    return sorted(value for value in ALIKE_VALUES if value in text)
+
+
+@pytest.fixture(scope="module")
+def alike() -> Iterator[Hub]:
+    settings = base_settings()
+    store = open_store(settings)
+    store.init_schema(create_landing=True)
+    hub = open_hub(settings, store, "duckdb")
+    try:
+        helpers.workbench_world(hub, persons=ALIKE_PERSONS, organisations=3)
+        helpers.alike_reviews(hub, ALIKE_REVIEWS, first=ALIKE_FIRST)
+        yield hub
+    finally:
+        hub.close()
+        store.close()
+
+
+def batch_screens(hub: Hub, role: str, batch_id: str) -> list[tuple[str, Any]]:
+    """Everything the workbench builds for `role` around one batch: the Alike reviews page, the batch's page
+    with every page of its rows, the tray, the inbox filtered to its forced sample, and the pane of each open
+    sample review with its comparison named."""
+    ctx = context.for_test(hub, role=role)
+    shown: list[tuple[str, Any]] = [
+        ("groups route", app_module.render_route(ctx, "/groups", "", "person")),
+        ("groups view", groups_page.view(ctx, None)),
+        ("batch route", app_module.render_route(ctx, f"/batch/{batch_id}", "", "")),
+        ("sample inbox", app_module.render_route(ctx, "/", f"?batch={batch_id}", "")),
+        ("header", layout.header_parts(ctx, "", f"/batch/{batch_id}", "")),
+        ("tray", tray.refresh(ctx, None)),
+    ]
+    view, refused = context.guarded(hub.batches.batch, batch_id, actor=ctx.actor)
+    shown.append(("batch refusal", refused))
+    if view is None:
+        return shown
+    shown.append(("batch view", view))
+    stack: list[int] = []
+    while True:
+        page = batch_page.rows_at(ctx, view, stack)
+        shown.append(("rows", batch_page.body(ctx, view, page, len(stack))))
+        if page is None or page.after is None:
+            break
+        stack.append(page.after)
+    for review in view.sample:
+        if not review.open:
+            continue
+        case, refused = context.guarded(hub.decisions.case, review.task_id, actor=ctx.actor)
+        shown.append(("sample case refusal", refused))
+        if case is not None:
+            shown.append(("sample pane", decide.render(case, split="birth_date")))
+    return shown
+
+
+def test_the_alike_reviews_and_a_batch_show_no_personal_value_in_any_state(
+    alike: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(capacity, "BATCH_PAGE", 3)  # every row is seen, over several pages
+    steward = context.for_test(alike)
+    assert len(ALIKE_VALUES) > 60
+    group = alike.batches.groups(actor=steward.actor, entity="person").groups[0]
+    batch_id = alike.batches.draw(group.group_key, actor=steward.actor, entity="person").batch_id
+    first = alike.store.batch_items(batch_id, ("sample",), ("open",), None, 10)[0].task_id
+    states: dict[str, list[tuple[str, Any]]] = {}
+
+    def look(state: str) -> None:
+        for role in ("data_steward", "consumer"):
+            states[f"{state} as {role}"] = batch_screens(alike, role, batch_id)
+
+    look("drawn")
+    helpers.decide_sample(
+        alike, batch_id, actor=steward.actor, answers={first: ("not_a_match", "birth_date")}
+    )
+    alike.batches.refresh(batch_id)
+    helpers.decide_sample(alike, batch_id, actor=steward.actor)  # the top-up
+    view = alike.batches.batch(batch_id, actor=steward.actor)
+    assert view.splits and view.status == "ready", (view.status, view.splits)
+    look("split")
+    alike.batches.prepare(batch_id, actor=steward.actor)
+    look("prepared")
+    entry = alike.batches.stage(batch_id, actor=steward.actor)
+    assert entry.status == "staged"
+    look("staged")
+    helpers.flush_past_window(alike)
+    assert alike.batches.batch(batch_id, actor=steward.actor).status == "committed"
+    look("committed")
+    leaking = {
+        f"{state}: {name}": found
+        for state, pieces in states.items()
+        for name, piece in pieces
+        if (found := alike_leaks(piece))
+    }
+    assert leaking == {}
+    rows = [piece for name, piece in states["prepared as data_steward"] if name == "rows"]
+    assert len(rows) >= 2  # the check saw more than one page of rows

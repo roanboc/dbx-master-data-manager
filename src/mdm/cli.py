@@ -35,12 +35,14 @@ from mdm.backend import ddl as ddl_sql
 from mdm.backend.factory import open_store
 from mdm.config import LOCAL_HOSTS, Settings
 from mdm.demo import DemoConfig, evaluate, generate, land
+from mdm.models.batch import BATCH_ID_RE, BATCH_STATUSES
 from mdm.models.canonical import canonical_json
 from mdm.models.entity_model import NAME_RE
 from mdm.models.errors import MdmError, NotFound, PlatformRefused
 from mdm.models.records import SourceKey
 from mdm.models.safety import SAFE_TEXT_RE
 from mdm.models.tasks import TASK_KINDS
+from mdm.services import display
 from mdm.services.context import Hub
 from mdm.services.support import token
 
@@ -59,6 +61,7 @@ record_app = typer.Typer(help="Golden records.", no_args_is_help=True)
 feed_app = typer.Typer(help="The change feed, as a consumer reads it.", no_args_is_help=True)
 tray_app = typer.Typer(help="The undo tray.", no_args_is_help=True)
 breaker_app = typer.Typer(help="The quality breaker.", no_args_is_help=True)
+batch_app = typer.Typer(help="Batches of alike reviews.", no_args_is_help=True)
 app.add_typer(model_app, name="model")
 app.add_typer(rules_app, name="rules")
 app.add_typer(codelists_app, name="codelists")
@@ -68,6 +71,7 @@ app.add_typer(record_app, name="record")
 app.add_typer(feed_app, name="feed")
 app.add_typer(tray_app, name="tray")
 app.add_typer(breaker_app, name="breaker")
+app.add_typer(batch_app, name="batch")
 
 RULE_KINDS = ("match", "survivorship", "validation")
 ESTIMATION_METHODS = ("auto", "em", "identifier")
@@ -246,6 +250,7 @@ def init(
         settings, store = hub.settings, hub.store
         store.init_schema(create_landing=settings.local_mode)
         due_times = hub.inbox.backfill_due_times()
+        signatures = hub.batches.backfill_signatures()
         lists: dict[str, int] = {}
         loaded: list[dict[str, Any]] = []
         if models is not None:
@@ -265,6 +270,7 @@ def init(
             "code_lists": lists,
             "models": loaded,
             "due_times": due_times,
+            "signatures": signatures,
         }
 
         def lines() -> list[str]:
@@ -283,6 +289,8 @@ def init(
             )
             if due_times:
                 out.append(f"due times given to {due_times} open tasks")
+            if signatures:
+                out.append(f"signatures given to {signatures} open reviews")
             return out
 
         _emit(state, data, lines)
@@ -1112,6 +1120,12 @@ def _workbench_store(state: CliState, settings: Settings) -> str:
                 MdmError("workbench_tables_missing", prefix=hub.store.prefix),
                 "The store has no workbench tables yet; run `mdm init --models models` first.",
             )
+        if not hub.store.table_columns("work", "batch"):
+            raise _refuse(
+                state,
+                MdmError("batch_tables_missing", prefix=hub.store.prefix),
+                "The store has no tables for batches of alike reviews yet; run `mdm init` first.",
+            )
         return hub.badges().engine
     finally:
         hub.close()
@@ -1122,10 +1136,13 @@ def _flush_line(report: Any) -> str:
         return "another flush holds the tray; nothing done"
     failures = {code: n for code, n in sorted(report.outcomes.items()) if code != "committed" and n}
     why = f" ({_counts(failures)})" if failures else ""
-    return (
+    line = (
         f"flushed: committed {report.committed}, failed {report.failed}{why}, "
         f"records queued again {report.requeued}"
     )
+    if report.chunks or report.batches_finished:
+        line += f"; batch chunks committed {report.chunks}, batches finished {report.batches_finished}"
+    return line
 
 
 @tray_app.command("flush")
@@ -1247,9 +1264,33 @@ def breaker_status(
     with _hub(ctx) as hub:
         entities = [entity] if entity else hub.registry.published_entities()
         statuses = hub.breaker.status(entities, actor=hub.actor)
-        _emit(
-            state, _plain(statuses), lambda: [_breaker_line(s) for s in statuses] or ["no published entity"]
-        )
+        models = {e: hub.registry.published(e) for e in entities}
+
+        def lines() -> list[str]:
+            out: list[str] = []
+            for status in statuses:
+                out.append(_breaker_line(status))
+                out.extend(_bulk_line(models.get(status.entity), b) for b in status.withdrawn)
+            return out or ["no published entity"]
+
+        _emit(state, _plain(statuses), lines)
+
+
+def _bulk_line(model: Any, bulk: Any) -> str:
+    """One withdrawn signature under its entity (`mdm breaker status`): the pattern in words, its key, since
+    when, its figures, and the command that restores it."""
+    figures = bulk.figures or {}
+    agreed = int(figures.get("agreed") or 0)
+    reviewed = int(figures.get("reviewed") or 0)
+    threshold = float(figures.get("threshold") or 0.95)
+    share = _floor_percent(agreed / reviewed) if reviewed else 0
+    since = bulk.since.strftime("%Y-%m-%d %H:%M UTC")
+    return (
+        f"{bulk.entity}: bulk decisions withdrawn for {display.signature_words(model, bulk.signature)} "
+        f"({bulk.key}) since {since}: blind review agreed {agreed} of {reviewed} batch links ({share}%), "
+        f"confidently below {_floor_percent(threshold)}%. A data owner restores them: mdm breaker restore "
+        f"--entity {bulk.entity} --signature {bulk.key} --reason cause_fixed"
+    )
 
 
 _RESTORE_REFUSALS = {
@@ -1270,30 +1311,354 @@ def breaker_restore(
         str,
         typer.Option("--reason", help="cause_fixed, false_alarm or load_expected (a code, never free text)."),
     ],
+    signature: Annotated[
+        str | None,
+        typer.Option(
+            "--signature",
+            help="A pattern's bulk rights to restore instead: its key, bulk: and 16 hexadecimal characters.",
+            callback=_checked_key,
+        ),
+    ] = None,
 ) -> None:
-    """Restore an entity's automatic band after the quality breaker demoted it (a data owner, on record)."""
+    """Restore an entity's automatic band after the quality breaker demoted it, or a pattern's bulk decisions
+    with --signature (a data owner, on record)."""
     state = _state(ctx)
     with _hub(ctx) as hub:
         try:
-            restored = hub.breaker.restore(entity, actor=hub.actor, reason=reason)
+            restored = hub.breaker.restore(entity, actor=hub.actor, reason=reason, bulk=signature)
         except MdmError as error:
             if error.code == "forbidden":
                 role = hub.actor.role.replace("_", " ")
+                what = "bulk decisions" if signature else "the automatic band"
                 raise _refuse(
-                    state, error, f"Only a data owner restores the automatic band; you act as a {role}."
+                    state, error, f"Only a data owner restores {what}; you act as a {role}."
                 ) from None
-            words = _RESTORE_REFUSALS.get(error.code)
+            words = (_BULK_RESTORE_REFUSALS if signature else _RESTORE_REFUSALS).get(error.code)
             if words is None:
                 raise _fail(state, error) from None
-            raise _refuse(state, error, words.format(entity=entity)) from None
-        _emit(
-            state,
-            _plain(restored),
-            lambda: [
+            raise _refuse(state, error, words.format(entity=entity, key=signature)) from None
+        if signature:
+            lines = [
+                f"Restored bulk decisions for {signature} of {entity} (change set {restored.restore_change_set}). "
+                "Only blind reviews of batch links decided from now on count."
+            ]
+        else:
+            lines = [
                 f"Restored the automatic band of {entity} (change set {restored.restore_change_set}). The records "
                 "waiting for review because of the breaker go back to arrival on its next run."
-            ],
+            ]
+        _emit(state, _plain(restored), lambda: lines)
+
+
+_BULK_RESTORE_REFUSALS = {
+    "not_demoted": "Bulk decisions for {key} of {entity} are not withdrawn, so there is nothing to restore.",
+    "bad_restore_reason": "A restore of bulk decisions names its reason: cause_fixed or false_alarm.",
+    "bad_bulk_key": "A pattern's key is bulk: and 16 hexadecimal characters, as mdm breaker status prints it.",
+    "unknown_entity": "No published model is named {entity}.",
+    "no_published_model": "No published model is named {entity}.",
+}
+
+
+# ---------------------------------------------------------------------------------------------- batches of alike reviews
+
+
+def _checked_batch(value: str | None) -> str | None:
+    """A batch ID: BAT- and 20 hexadecimal characters."""
+    if value is not None and not BATCH_ID_RE.match(value):
+        raise typer.BadParameter("a batch ID is BAT- and 20 hexadecimal characters")
+    return value
+
+
+def _checked_status(value: str | None) -> str | None:
+    if value is not None and value not in BATCH_STATUSES:
+        raise typer.BadParameter("a status is one of " + ", ".join(BATCH_STATUSES))
+    return value
+
+
+#: a batch refusal in one sentence, by its code
+_BATCH_REFUSALS = {
+    "unknown_batch": "No batch has that ID.",
+    "not_the_maker": "Only the steward who drew or prepared this batch does that.",
+    "checker_is_maker": "A second steward, not the one who prepared it, confirms this.",
+    "not_prepared": "Every row's change is shown first: prepare the batch on its page, then stage it.",
+    "batch_empty": "Nothing is left to link: every review was left out or decided.",
+    "bulk_withdrawn": "The quality breaker withdrew bulk decisions for this pattern; only a data owner restores them.",
+    "batch_changed": "This batch changed meanwhile; look at it again with mdm batch show.",
+    "still_in_tray": "It is still in the tray: undo it instead.",
+    "not_committing": "This batch is not committing, so there is nothing to stop.",
+    "not_compensable": "Only a committed batch of links can be undone.",
+    "undo_window_passed": "This batch committed too long ago to be undone as a batch.",
+    "already_compensated": "This batch is already undone, or its undo is waiting.",
+    "bad_compensate_reason": "An undo names its reason: pattern_wrong, source_defect or sample_missed.",
+    "persona_refused": "Personas work only on a local store.",
+}
+
+
+def _batch_refusal(state: CliState, hub: Hub, error: MdmError) -> typer.Exit:
+    if error.code == "forbidden":
+        role = hub.actor.role.replace("_", " ")
+        return _refuse(state, error, f"Your role, {role}, cannot do that to a batch.")
+    words = _BATCH_REFUSALS.get(error.code)
+    return _fail(state, error) if words is None else _refuse(state, error, words)
+
+
+def _clock(moment: Any) -> str:
+    return moment.strftime("%H:%M:%S UTC") if moment is not None else "its deadline"
+
+
+def _long_day(moment: Any) -> str:
+    return f"{moment.day} {moment:%B %Y}"
+
+
+def _chunks_words(n: int) -> str:
+    return f"{n} chunk{'s' if n != 1 else ''}"
+
+
+def _batch_line(batch: Any) -> str:
+    """ "BAT-… · person · link · ready · 566 reviews · prepared by a data steward": roles only, never a name."""
+    reviews = (
+        batch.decisions if batch.decisions or batch.status not in ("sampling", "ready") else batch.population
+    )
+    maker = display.role_label(batch.maker_role).lower()
+    article = "an" if maker[:1] in "aeiou" else "a"
+    return (
+        f"{batch.batch_id} · {batch.entity} · {batch.kind} · {batch.status.replace('_', ' ')} · "
+        f"{reviews} review{'s' if reviews != 1 else ''} · prepared by {article} {maker}"
+    )
+
+
+@batch_app.command("list")
+def batch_list(
+    ctx: typer.Context,
+    entity: Annotated[str | None, typer.Option("--entity", callback=_checked_name)] = None,
+    status: Annotated[
+        str | None,
+        typer.Option("--status", help="One status (default: the open ones).", callback=_checked_status),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Machine output (canonical JSON).")] = False,
+) -> None:
+    """The batches of alike reviews, open ones by default, one line each."""
+    state = _state(ctx)
+    if json_output:
+        state.json = True
+    with _hub(ctx) as hub:
+        try:
+            found = hub.batches.listing(actor=hub.actor, entity=entity, statuses=[status] if status else None)
+        except MdmError as error:
+            raise _batch_refusal(state, hub, error) from None
+        _emit(state, _plain(found), lambda: [_batch_line(b) for b in found] or ["no batch"])
+
+
+def _view_lines(view: Any, hub: Hub) -> list[str]:
+    """What `mdm batch show` prints of one batch: its state, sample, splits, summary, progress and result."""
+    out = [
+        f"{view.batch_id} · {view.entity} · {view.kind} · {view.status.replace('_', ' ')} · "
+        f"prepared by {view.maker_label.lower() if view.maker_label != 'you' else 'you'}"
+        + (f" · confirmed by {view.checker_label.lower()}" if view.checker_label else "")
+    ]
+    if view.marks:
+        out.append("pattern: " + " · ".join(f"{m.label.lower()} {m.words}" for m in view.marks))
+    if view.compensates:
+        out.append(f"undoes the links of {view.compensates}")
+    if view.kind == "link":
+        out.append(
+            f"forced sample: {view.decided} of {view.sample_size} decided · {view.agreed} agreed · "
+            f"{view.disagreed} disagreed · {view.population} reviews drawn"
         )
+        out.extend(f"  {s.source} ({s.stratum_label}): {s.words}" for s in view.sample)
+        for split in view.splits:
+            left = (
+                f"{split.count} reviews left the batch"
+                if split.count is not None
+                else "its split applies soon"
+            )
+            out.append(
+                f"  split: {split.source} was decided {split.decision_words}, flagged on {split.on_label}: {left}"
+            )
+    if view.summary is not None:
+        s = view.summary
+        out.append(
+            f"every change: {s.xrefs} cross-references · {s.golden} golden records updated · "
+            f"{_chunks_words(s.chunks)} of at most {capacity.COMMIT_CHUNK_ROWS} published rows · {s.reviews} to blind review"
+        )
+        if s.left_out:
+            out.append(
+                "left out: "
+                + ", ".join(f"{n} {display.item_reason_words(r)}" for r, n in sorted(s.left_out.items()))
+            )
+    if view.progress is not None and view.status in ("staged", "committing"):
+        p = view.progress
+        out.append(
+            f"chunks: {p.chunks_committed} of {p.chunks} committed · {p.rows_committed} published rows"
+        )
+    if view.status == "staged" and view.deadline is not None:
+        out.append(f"in the tray until {_clock(view.deadline)}")
+    if view.outcome:
+        out.append(f"outcome: {view.outcome.replace('_', ' ')}")
+    counts = {k: v for k, v in view.counts.items() if v}
+    if counts:
+        out.append("reviews: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
+    linked = view.counts.get("committed", 0) + view.counts.get("compensated", 0)
+    for compensation in view.undone_by:
+        other = hub.batches.batch(compensation, actor=hub.actor)
+        ended = "" if other.status == "committed" else f", which {other.status}"
+        line = f"{other.counts.get('committed', 0)} of {linked} links undone by {compensation}{ended}"
+        rest = view.counts.get("committed", 0)
+        if rest and view.undo_until is not None and view.compensated_by is None:
+            line += f"; the other {rest} can be undone until {_long_day(view.undo_until)}"
+        out.append(line)
+    if view.compensated_by is not None and view.compensated_by not in view.undone_by:
+        out.append(f"being undone by {view.compensated_by}")
+    if (
+        view.kind == "link"
+        and view.status in ("committed", "stopped")
+        and view.compensated_by is None
+        and view.undo_until is not None
+        and view.counts.get("committed", 0)
+    ):
+        out.append(
+            f"its committed links can be undone until {_long_day(view.undo_until)}: mdm batch compensate "
+            f"{view.batch_id} --reason pattern_wrong|source_defect|sample_missed"
+        )
+    return out
+
+
+@batch_app.command("show")
+def batch_show(
+    ctx: typer.Context,
+    batch_id: Annotated[str, typer.Argument(callback=_checked_batch)],
+    rows: Annotated[bool, typer.Option("--rows", help="Every row's change, masked by your role.")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Machine output (canonical JSON).")] = False,
+) -> None:
+    """One batch: its state, sample, splits, summary, progress and result; with --rows, every row's change."""
+    state = _state(ctx)
+    if json_output:
+        state.json = True
+    with _hub(ctx) as hub:
+        try:
+            view = hub.batches.batch(batch_id, actor=hub.actor)
+            found: list[Any] = []
+            if rows:
+                after: int | None = None
+                while True:
+                    page = hub.batches.rows(batch_id, actor=hub.actor, after=after)
+                    found.extend(page.rows)
+                    if page.after is None:
+                        break
+                    after = page.after
+        except MdmError as error:
+            raise _batch_refusal(state, hub, error) from None
+
+        def lines() -> list[str]:
+            out = _view_lines(view, hub)
+            for row in found:
+                joins = f" · with {row.joins} other rows of this batch" if row.joins else ""
+                where = f" · chunk {row.chunk_no}" if row.chunk_no else ""
+                reason = f" ({display.item_reason_words(row.reason)})" if row.reason else ""
+                out.append(
+                    f"  {row.source} {row.title} -> {row.target} {row.target_title}: {row.impact.sentence()}"
+                    f"{joins} · {row.status}{reason}{where}"
+                )
+            return out
+
+        _emit(state, {"batch": _plain(view), "rows": _plain(found)} if rows else _plain(view), lines)
+
+
+def _staged_sentence(hub: Hub, batch_id: str, verb: str) -> str:
+    view = hub.batches.batch(batch_id, actor=hub.actor)
+    chunks = view.summary.chunks if view.summary is not None else view.progress.chunks if view.progress else 1
+    return f"{verb} {batch_id}: it waits in the tray until {_clock(view.deadline)}, then commits in {_chunks_words(chunks)}."
+
+
+@batch_app.command("stage")
+def batch_stage(
+    ctx: typer.Context, batch_id: Annotated[str, typer.Argument(callback=_checked_batch)]
+) -> None:
+    """Stage a prepared batch (its maker): it waits in the tray, or for a second steward above the threshold."""
+    state = _state(ctx)
+    with _hub(ctx) as hub:
+        try:
+            batch = hub.batches.stage(batch_id, actor=hub.actor)
+            if batch.status == "awaiting_checker":
+                line = (
+                    f"{batch_id} waits for a second steward: mdm batch confirm {batch_id}, or its page in the "
+                    "workbench."
+                )
+            else:
+                line = _staged_sentence(hub, batch_id, "Staged")
+        except MdmError as error:
+            raise _batch_refusal(state, hub, error) from None
+        _emit(state, _plain(batch), lambda: [line])
+
+
+@batch_app.command("confirm")
+def batch_confirm(
+    ctx: typer.Context, batch_id: Annotated[str, typer.Argument(callback=_checked_batch)]
+) -> None:
+    """Confirm a batch as its second steward: it enters the tray with its undo window."""
+    state = _state(ctx)
+    with _hub(ctx) as hub:
+        try:
+            batch = hub.batches.confirm(batch_id, actor=hub.actor)
+            line = _staged_sentence(hub, batch_id, "Confirmed")
+        except MdmError as error:
+            raise _batch_refusal(state, hub, error) from None
+        _emit(state, _plain(batch), lambda: [line])
+
+
+@batch_app.command("stop")
+def batch_stop(ctx: typer.Context, batch_id: Annotated[str, typer.Argument(callback=_checked_batch)]) -> None:
+    """Stop a committing batch before its next chunk; committed chunks stay."""
+    state = _state(ctx)
+    with _hub(ctx) as hub:
+        try:
+            batch = hub.batches.stop(batch_id, actor=hub.actor)
+        except MdmError as error:
+            raise _batch_refusal(state, hub, error) from None
+        _emit(
+            state,
+            _plain(batch),
+            lambda: [f"Stop asked for {batch_id}: it stops before its next chunk; committed chunks stay."],
+        )
+
+
+@batch_app.command("discard")
+def batch_discard(
+    ctx: typer.Context, batch_id: Annotated[str, typer.Argument(callback=_checked_batch)]
+) -> None:
+    """Discard a batch that is not in the tray yet; its reviews stay in the inbox."""
+    state = _state(ctx)
+    with _hub(ctx) as hub:
+        try:
+            batch = hub.batches.discard(batch_id, actor=hub.actor)
+        except MdmError as error:
+            raise _batch_refusal(state, hub, error) from None
+        _emit(state, _plain(batch), lambda: [f"Discarded {batch_id}; its reviews stay in the inbox."])
+
+
+@batch_app.command("compensate")
+def batch_compensate(
+    ctx: typer.Context,
+    batch_id: Annotated[str, typer.Argument(callback=_checked_batch)],
+    reason: Annotated[
+        str, typer.Option("--reason", help="pattern_wrong, source_defect or sample_missed (a code).")
+    ],
+) -> None:
+    """Prepare the undo of a committed batch's links, within its days; stage it with mdm batch stage."""
+    state = _state(ctx)
+    with _hub(ctx) as hub:
+        try:
+            batch = hub.batches.compensate(batch_id, actor=hub.actor, reason=reason)
+        except MdmError as error:
+            raise _batch_refusal(state, hub, error) from None
+        figures = batch.figures
+        line = (
+            f"Prepared {batch.batch_id} to undo {batch_id}'s {batch.decisions} links: "
+            f"{figures.get('xrefs', batch.decisions)} cross-references ended · {figures.get('golden', 0)} golden "
+            f"records recomputed · {_chunks_words(batch.chunks)}. Check every row with mdm batch show "
+            f"{batch.batch_id} --rows, then stage it with mdm batch stage {batch.batch_id}."
+        )
+        _emit(state, _plain(batch), lambda: [line])
 
 
 def main() -> None:

@@ -410,3 +410,171 @@ def task_of(hub: Hub, *, kind: str | None = None, source: SourceKey | None = Non
     found = [t for t in open_tasks(hub, kind=kind) if source is None or t.source == source]
     assert len(found) == 1, [(t.kind, t.reason, t.source) for t in found]
     return found[0]
+
+
+# ------------------------------------------------------------------------------------------ signature batches (story 3.3)
+
+#: the signature every `alike_reviews` record shows against its hr person
+ALIKE_SIGNATURE = "given_name= · family_name= · birth_date≈ · email∅ · phone∅ · postcode∅ · person_ref∅"
+#: the invented target `alike_reviews(..., one_target=True)` lands first: an hr person with no person reference
+ONE_TARGET = SourceKey("hr", "H990000")
+
+
+#: the one target's birth date; each record's differs from it in one digit of the month or the day, so no two
+#: records share one, and a record linked to the target never brings the others an exact birth date
+ONE_TARGET_BIRTH = "1964-05-12"
+
+
+def _one_digit_births(birth: str) -> list[str]:
+    """Valid dates of `birth`'s year that differ from it in one digit of the month or the day."""
+    out: list[str] = []
+    for position in (9, 8, 6):
+        for digit in "0123456789":
+            if birth[position] == digit:
+                continue
+            candidate = birth[:position] + digit + birth[position + 1 :]
+            month, day = int(candidate[5:7]), int(candidate[8:10])
+            if 1 <= month <= 12 and 1 <= day <= 28 and candidate not in out:
+                out.append(candidate)
+    return out
+
+
+def alike_key(i: int) -> str:
+    """The crm key of the i-th alike record: none of the mini world's keys, nor `person_review`'s."""
+    return f"C17{i:05d}"
+
+
+def _alike_payload(held: Mapping[str, Any], ref: str | None) -> dict[str, Any]:
+    """A record with `held`'s names, its birth date one digit different in the same year, and no postcode,
+    e-mail or phone (as `person_review` builds it); a person reference only when `ref` is given."""
+    birth = held["birth_date"]
+    day = int(birth[-2:])
+    other = f"{birth[:-2]}{day + 1 if day % 10 != 9 else day - 1:02d}"
+    payload: dict[str, Any] = {
+        "given_name": held["given_name"],
+        "family_name": held["family_name"],
+        "birth_date": other,
+        "city": held["city"],
+        "country": "XA",
+    }
+    if ref is not None:
+        payload["person_ref"] = ref
+    return payload
+
+
+def unique_person(i: int, **changes: Any) -> dict[str, Any]:
+    """An invented person whose names no other `unique_person` below 320 shares (so a record that meets one
+    never meets another), with a valid person reference, an e-mail, a phone and a postcode."""
+    given = GIVEN[i % len(GIVEN)]
+    family = FAMILY[(i // len(GIVEN)) % len(FAMILY)]
+    doc: dict[str, Any] = {
+        "given_name": given,
+        "family_name": family,
+        "birth_date": f"19{50 + i % 45:02d}-{1 + (i // 3) % 12:02d}-{1 + i % 27:02d}",
+        "email": f"{given.lower()}.{family.lower()}.u{i}@example.org",
+        "phone": f"0{i:03d} 66{i:04d}",
+        "postcode": f"XA{i % 9 + 1} {i % 7 + 1}QU",
+        "city": CITIES[i % len(CITIES)],
+        "country": "XA",
+        "person_ref": person_ref(3000 + i),
+    }
+    doc.update(changes)
+    return {k: v for k, v in doc.items() if v is not None}
+
+
+def alike_world(hub: Hub, n: int) -> None:
+    """n hr persons with names of their own (`unique_person`), landed and arrived: the targets of a large
+    group of alike reviews, `alike_reviews(hub, n, person=unique_person, first=0)`."""
+    land(hub, [row("hr", f"H8{i:05d}", "person", unique_person(i), version=1) for i in range(n)])
+    arrive(hub)
+
+
+def alike_reviews(
+    hub: Hub,
+    n: int,
+    *,
+    first: int = 20,
+    one_target: bool = False,
+    refs: Mapping[int, str] | None = None,
+    at: datetime | None = None,
+    person: Any = person_payload,
+) -> list[SourceKey]:
+    """n crm records that each meet hr person `first + i` the way `person_review` does, so each opens a review
+    task with the signature `ALIKE_SIGNATURE`; returns their source keys in order. Needs
+    `workbench_world(hub, persons=first + n)` first. The mini world's persons 80 apart share names and a birth
+    year, so a record would meet two golden records, a close call: with `first + n` at most 80 none does, and
+    `alike_world` lands persons with names of their own for larger groups.
+
+    With `one_target`, every record meets one golden record the helper lands first: an hr person with invented
+    names of its own and no person reference (the world's hr persons all hold one); the records are arrived one
+    per run, so no two form a cluster. `refs` maps a record's index to a valid person reference
+    (`person_ref(n)`): against a target with no person reference its signature stays the same."""
+    when = at or T0 + timedelta(hours=2)
+    refs = dict(refs or {})
+    keys = [SourceKey("crm", alike_key(first + i)) for i in range(n)]
+    if one_target:
+        held = person_payload(
+            9000, given_name="Ysmena", family_name="Thrushcombe", birth_date=ONE_TARGET_BIRTH
+        )
+        land(hub, [row("hr", ONE_TARGET.key, "person", held, at=when, version=1)])
+        arrive(hub)
+        births = _one_digit_births(ONE_TARGET_BIRTH)
+        for i, key in enumerate(keys):
+            payload = {**_alike_payload(held, refs.get(i)), "birth_date": births[i % len(births)]}
+            land(hub, [row("crm", key.key, "person", payload, at=when + timedelta(seconds=i + 1))])
+            arrive(hub)
+        return keys
+    rows = [
+        row(
+            "crm",
+            key.key,
+            "person",
+            _alike_payload(person(first + i), refs.get(i)),
+            at=when + timedelta(seconds=i + 1),
+        )
+        for i, key in enumerate(keys)
+    ]
+    # records of persons 80 apart share names and a birth year: land them in separate runs, so none meets another
+    for start in range(0, len(rows), 80):
+        land(hub, rows[start : start + 80])
+        arrive(hub)
+    return keys
+
+
+def decide_sample(
+    hub: Hub,
+    batch_id: str,
+    *,
+    actor: Actor,
+    answers: Mapping[str, tuple[str, str | None]] | None = None,
+    flush: bool = True,
+) -> list[str]:
+    """Decides each open sample review of the batch, one by one as a steward would: a link to its case's default,
+    or the answer `answers` gives for its task, such as `("not_a_match", "birth_date")`, whose second part is the
+    `split_on` code; each is flushed after its window with a fake clock before the next is staged (two decisions
+    staged against one golden record at once would meet each other's commit). With `flush=False` every
+    decision is staged and none flushed. Returns the task IDs decided."""
+    answers = dict(answers or {})
+    decided: list[str] = []
+    while True:
+        waiting = [
+            i
+            for i in hub.store.batch_items(batch_id, ("sample",), ("open",), None, 1000)
+            if i.task_id not in decided
+        ]
+        if not waiting:
+            return decided
+        item = waiting[0]
+        decision, split_on = answers.get(item.task_id, ("link", None))
+        hub.tray.stage(item.task_id, decision, actor=actor, split_on=split_on, **seen(hub, item.task_id))
+        decided.append(item.task_id)
+        if flush:
+            flush_past_window(hub)
+
+
+def flush_past_window(hub: Hub, seconds: float | None = None) -> Any:
+    """Moves the tray's (and the batches') clock past every staged decision's deadline, then flushes once."""
+    offset = timedelta(seconds=seconds if seconds is not None else hub.settings.undo_seconds + 1)
+    current = hub.tray.clock
+    hub.tray.clock = lambda: current() + offset
+    return hub.tray.flush()

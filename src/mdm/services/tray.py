@@ -5,6 +5,13 @@ entry with its locks for `Settings.undo_seconds`; `undo` takes it back while it 
 every entry whose window has passed, each in its own transaction through `DecisionService.execute`, and
 settles it `committed` or `failed` with an outcome code. `TrayWorker` runs `flush` in the workbench's
 process on a local store; on the platform a job runs `mdm tray flush`.
+
+A signature batch (story 3.3, decision 23) is one entry, its task ID the batch ID: its first chunk commits when
+its window passes, and each later chunk in a later pass, one chunk of a batch per pass, after the single
+decisions due (`BatchService.commit_first`, `commit_next`). Undo sends a batch's entry to `BatchService.undo`;
+U on a task where nothing is staged (`undo_last`) never reaches a batch. After a forced-sample decision commits,
+the batch is refreshed, so the split it named applies in the same pass; after a blind answer on a batch sample
+commits, the quality breaker checks the signature's bulk rights.
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ from mdm import capacity
 from mdm.backend.store import SqlStore
 from mdm.config import Settings
 from mdm.models.authority import Actor
+from mdm.models.batch import BATCH_DECISIONS
 from mdm.models.canonical import utcnow
 from mdm.models.errors import Conflict, Forbidden, MdmError, NotFound
 from mdm.models.records import SourceKey
@@ -27,6 +35,7 @@ from mdm.models.workbench import FlushReport, TrayEntry, TrayView
 from mdm.services import display
 from mdm.services.arrival import ArrivalService
 from mdm.services.authority import require
+from mdm.services.batches import BatchService, ChunkPass
 from mdm.services.breaker import BreakerService
 from mdm.services.decisions import DecisionService
 from mdm.services.inbox import InboxService, task_lock
@@ -46,6 +55,7 @@ class TrayService:
         clock: Callable[[], datetime] = utcnow,
         *,
         breaker: BreakerService | None = None,
+        batches: BatchService | None = None,
     ) -> None:
         """Wires the service; reads nothing from the store (`mdm init` wires the hub before the schema)."""
         self.settings = settings
@@ -55,6 +65,7 @@ class TrayService:
         self.arrival = arrival
         self.clock = clock
         self.breaker = breaker or decisions.breaker
+        self.batches = batches
 
     # ------------------------------------------------------------------ staging and undoing
 
@@ -67,14 +78,22 @@ class TrayService:
         target: str | None = None,
         seen_event: str | None = None,
         seen_task: str | None = None,
+        split_on: str | None = None,
     ) -> TrayEntry:
         """Checks the decision against the case the steward saw (`DecisionService.check`: `seen_event` for a
         task with a source record, `seen_task` for one without), claims the task and keeps the entry, staged,
         until its deadline; `Conflict(already_staged, mine=…)` when another entry holds one of its locks,
-        and then a claim this call took is released again. `work_tasks`."""
+        and then a claim this call took is released again. On a forced-sample review a disagreeing decision
+        names the comparison that misled (`split_on`, story 3.3). `work_tasks`."""
         require(actor, "work_tasks")
         staging = self.decisions.check(
-            task_id, decision, actor=actor, target=target, seen_event=seen_event, seen_task=seen_task
+            task_id,
+            decision,
+            actor=actor,
+            target=target,
+            seen_event=seen_event,
+            seen_task=seen_task,
+            split_on=split_on,
         )
         before = self.inbox.task(task_id)
         held_before = self.inbox.rows.claim_holder(before, self.clock()) == actor.name
@@ -114,9 +133,14 @@ class TrayService:
     def undo(self, entry_id: str, *, actor: Actor) -> TrayEntry:
         """Takes back the actor's own staged entry (`Forbidden(not_yours)` for another's);
         `Conflict(already_settled, status=…, version=…)` once it committed, failed or was undone. The claim
-        stays with the steward."""
+        stays with the steward. A batch's entry goes to `BatchService.undo`: its maker or its second steward
+        undoes the whole batch while it waits."""
         require(actor, "work_tasks")
         entry = self._entry(entry_id)
+        if entry.decision in BATCH_DECISIONS:
+            if self.batches is None:
+                raise Forbidden("not_yours")
+            return self.batches.undo(entry, actor=actor)
         if entry.actor != actor.name:
             raise Forbidden("not_yours")
         now = self.clock()
@@ -131,42 +155,66 @@ class TrayService:
         return self._entry(entry_id)
 
     def undo_for_task(self, task_id: str, *, actor: Actor) -> TrayEntry | None:
-        """Undoes the actor's staged entry on this task; None when there is none."""
+        """Undoes the actor's staged entry on this task; None when there is none. A task a batch holds, staged
+        or still committing, undoes the whole batch when the actor is its maker or its second steward (refused
+        `already_settled` once a chunk committed)."""
         require(actor, "work_tasks")
         held = self.store.staged_by_locks([task_lock(task_id)]).get(task_lock(task_id))
-        if held is None or held.actor != actor.name:
+        if held is None:
+            return None
+        if held.decision in BATCH_DECISIONS:
+            batch = self.store.batches([held.task_id]).get(held.task_id)
+            if batch is None or self.batches is None or actor.name not in (batch.maker, batch.checker):
+                return None
+            return self.batches.undo(held, actor=actor)
+        if held.actor != actor.name:
             return None
         return self.undo(held.entry_id, actor=actor)
 
     def undo_last(self, *, actor: Actor) -> TrayEntry | None:
-        """Undoes the actor's most recently staged entry that still waits; None when there is none."""
+        """Undoes the actor's most recently staged entry that still waits; None when there is none. It never
+        reaches a batch: a batch is undone from one of its own rows, from the tray's Undo or from its page."""
         require(actor, "work_tasks")
         now = self.clock()
         waiting = [
-            e for e in self.store.tray_of_actor(actor.name, now, capacity.TRAY_SHOWN) if e.status == "staged"
+            e
+            for e in self.store.tray_of_actor(actor.name, now, capacity.TRAY_SHOWN)
+            if e.status == "staged" and e.decision not in BATCH_DECISIONS and e.actor == actor.name
         ]
         if not waiting:
             return None
         return self.undo(waiting[0].entry_id, actor=actor)
 
     def entries(self, *, actor: Actor, recent_minutes: int = 10) -> tuple[TrayView, ...]:
-        """The actor's own entries still staged or settled in the last `recent_minutes`, newest first, at
-        most `TRAY_SHOWN`; labels built from IDs and source keys only."""
+        """The actor's own entries still staged, still committing (a batch's) or settled in the last
+        `recent_minutes`, and those of the batches they confirmed as second steward, newest first, at most
+        `TRAY_SHOWN`; labels built from IDs and source keys only. A batch entry carries its batch, its chunks
+        committed and planned, whether it is the actor's own, and its second steward's role."""
         since = self.clock() - timedelta(minutes=max(recent_minutes, 0))
-        return tuple(
-            TrayView(
-                entry_id=e.entry_id,
-                task_id=e.task_id,
-                decision=e.decision,
-                label=display.tray_label(e.decision, e.subject, e.target),
-                deadline=e.deadline,
-                status=e.status,
-                outcome=e.outcome,
-                commit_version=e.commit_version,
-                settled_at=e.settled_at,
+        found = self.store.tray_of_actor(actor.name, since, capacity.TRAY_SHOWN)
+        batch_ids = sorted({e.task_id for e in found if e.decision in BATCH_DECISIONS})
+        batches = self.store.batches(batch_ids) if batch_ids else {}
+        out: list[TrayView] = []
+        for e in found:
+            batch = batches.get(e.task_id) if e.decision in BATCH_DECISIONS else None
+            out.append(
+                TrayView(
+                    entry_id=e.entry_id,
+                    task_id=e.task_id,
+                    decision=e.decision,
+                    label=display.tray_label(e.decision, e.subject, e.target),
+                    deadline=e.deadline,
+                    status=e.status,
+                    outcome=e.outcome,
+                    commit_version=e.commit_version,
+                    settled_at=e.settled_at,
+                    batch_id=batch.batch_id if batch is not None else None,
+                    progress=(batch.chunks_committed, batch.chunks) if batch is not None else None,
+                    mine=e.actor == actor.name,
+                    second_steward=batch.checker_role if batch is not None and batch.checker else None,
+                )
             )
-            for e in self.store.tray_of_actor(actor.name, since, capacity.TRAY_SHOWN)
-        )
+        return tuple(out)
 
     # ------------------------------------------------------------------ the flush
 
@@ -186,7 +234,18 @@ class TrayService:
             now = self.clock()
             outcomes: Counter[str] = Counter()
             requeued = 0
+            chunks = finished = 0
+            moved: set[str] = set()  # the batches that committed a chunk in this pass
             for entry in self.store.due_tray(now, limit):
+                if entry.decision in BATCH_DECISIONS:
+                    step = self._flush_batch(entry, now)
+                    if step.outcome is not None:
+                        outcomes[step.outcome] += 1
+                    if step.chunks:
+                        moved.add(entry.task_id)
+                    chunks += step.chunks
+                    finished += step.finished
+                    continue
                 outcome, queued = self._flush_one(entry, now)
                 if outcome is not None:
                     outcomes[outcome] += 1
@@ -194,14 +253,44 @@ class TrayService:
                     requeued += len(queued)
                     self._settle_records(entry.entity, queued)
                 if outcome == "committed" and entry.decision in ("blind_link", "blind_none"):
-                    self._check_agreement(entry.entity)
+                    self._check_agreement(entry)
+                if outcome == "committed" and entry.decision in ("link", "not_a_match"):
+                    self._refresh_sample(entry)
+            if self.batches is not None:
+                try:
+                    later = self.batches.commit_next(now, skip=frozenset(moved), limit=limit)
+                    chunks += later.get("chunks", 0)
+                    finished += later.get("finished", 0)
+                except Exception as error:  # noqa: BLE001 - the single decisions have committed already
+                    logger.warning("tray_batches_failed type=%s", type(error).__name__)
             committed = outcomes.get("committed", 0)
             return FlushReport(
                 committed=committed,
                 failed=sum(outcomes.values()) - committed,
                 requeued=requeued,
                 outcomes=dict(sorted(outcomes.items())),
+                chunks=chunks,
+                batches_finished=finished,
             )
+
+    def _flush_batch(self, entry: TrayEntry, now: datetime) -> ChunkPass:
+        """A batch entry past its window: its first chunk (`BatchService.commit_first`)."""
+        if self.batches is None:
+            return ChunkPass()
+        return self.batches.commit_first(entry, now)
+
+    def _refresh_sample(self, entry: TrayEntry) -> None:
+        """After a decision on a forced-sample review commits, its batch is refreshed, so the split the decision
+        named applies in this pass (reading 5); any failure is logged by its type, and the next refresh tries
+        it again."""
+        if self.batches is None:
+            return
+        try:
+            items = self.store.items_by_task([entry.task_id]).get(entry.task_id, [])
+            for batch_id in sorted({i.batch_id for i in items if i.role in ("sample", "split")}):
+                self.batches.refresh(batch_id)
+        except Exception as error:  # noqa: BLE001 - the decision has committed; the batch page refreshes it
+            logger.warning("tray_batch_refresh_failed type=%s", type(error).__name__)
 
     def _flush_one(self, entry: TrayEntry, now: datetime) -> tuple[str | None, tuple[SourceKey, ...]]:
         """One entry: (its outcome, the records queued again). None when it was undone meanwhile, or when an
@@ -239,13 +328,21 @@ class TrayService:
             return outcome
         return None  # undone meanwhile: nothing to do
 
-    def _check_agreement(self, entity: str) -> None:
-        """After a blind answer commits, the quality breaker checks the agreement of automatic links; any
-        failure is logged by its type, since the answer has committed already."""
+    def _check_agreement(self, entry: TrayEntry) -> None:
+        """After a blind answer commits, the quality breaker checks the agreement of automatic links, and, for a
+        batch's sample, the bulk rights of its signature; any failure is logged by its type, since the answer
+        has committed already."""
         try:
-            self.breaker.check_agreement(entity)
+            self.breaker.check_agreement(entry.entity)
         except Exception as error:  # noqa: BLE001 - the answer has committed; the next check tries again
             logger.warning("breaker_check_failed type=%s", type(error).__name__)
+        try:
+            named = (entry.subject or {}).get("sample_id")
+            sample = self.store.samples_by_id([named]).get(named) if isinstance(named, str) else None
+            if sample is not None and sample.origin == "batch":
+                self.breaker.check_signature(entry.entity, sample.signature)
+        except Exception as error:  # noqa: BLE001 - the answer has committed; the next check tries again
+            logger.warning("breaker_bulk_check_failed type=%s", type(error).__name__)
 
     def _settle_records(self, entity: str, sources: tuple[SourceKey, ...]) -> None:
         """Arrival settles the records a "not a match" queued again; any failure leaves them queued for the
