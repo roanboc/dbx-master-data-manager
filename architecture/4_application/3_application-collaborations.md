@@ -168,7 +168,7 @@ sequenceDiagram
   ui->>stw: decide the sample one by one in the inbox, through the tray, as in Deciding a task
   opt a sample decision disagrees
     ui->>stw: the steward who decides it names the comparison that misled, with the decision
-    stw->>sto: after it commits, one transaction splits off the reviews that share the record's value, and logs each record read on a personal comparison
+    stw->>sto: after it commits, one transaction holds the batch and, once only, splits off the reviews that share the record's value, logging each record split off on a personal comparison
   end
   ui->>stw: show every change
   stw->>stw: leave out a review a cannot-link rule keeps apart from its target or an earlier review of the same target
@@ -176,9 +176,9 @@ sequenceDiagram
   opt above 250 decisions
     ui->>stw: a second steward confirms, after seeing every row as prepared
   end
-  stw->>sto: one transaction stages the batch and locks every review
+  stw->>sto: one transaction holds the batch, reads its planned reviews, stages it, draws 2% for blind review and locks every review
   loop one chunk a flush pass
-    stw->>sto: check each review of the chunk again, with keyed reads
+    stw->>sto: check each review of the chunk again, with keyed reads; a drawn review that fails passes its draw on
     stw->>lif: plan the chunk's links, one golden update per target
     stw->>com: commit the chunk under the maker's role, with the second steward
     com->>sto: one transaction holds the batch and its bulk rights, publishes the chunk, closes its tasks, writes its labels and samples, releases its locks, and records the chunk
@@ -188,7 +188,7 @@ sequenceDiagram
   end
 ```
 
-Drawing, checking and staging a batch are [application service [`ASVC8`] Steward work](./1_application-services.md#application-services). Its commit is [application service [`ASVC9`] Undo tray](./1_application-services.md#application-services), within [business process [`BPROC3`] Decide a steward task](../2_business/3_business-processes.md#business-processes). The batch is one staged decision, and the flush commits one chunk of it a pass, after the single decisions due ([decision 23](../decisions/23_batches-in-the-undo-tray.md)). Other stewards' decisions flush between its chunks. Every transaction on a batch takes the batch row first. Each chunk is its own change set, with its own commit version and an ID formed from the batch ID.
+Drawing, checking and staging a batch are [application service [`ASVC8`] Steward work](./1_application-services.md#application-services). Its commit is [application service [`ASVC9`] Undo tray](./1_application-services.md#application-services), within [business process [`BPROC3`] Decide a steward task](../2_business/3_business-processes.md#business-processes). The batch is one staged decision, and the flush commits one chunk of it a pass ([decision 23](../decisions/23_batches-in-the-undo-tray.md)). Its first chunk commits in deadline order among the single decisions due, and each later chunk after them. Other stewards' decisions flush between its chunks. Every transaction on a batch takes the batch row first. Each chunk is its own change set, with its own commit version and an ID formed from the batch ID.
 
 What can fail, and what happens:
 
@@ -202,4 +202,6 @@ What can fail, and what happens:
 8. The quality breaker withdraws the pattern's bulk rights. A committing batch of that pattern stops before its next chunk, whatever the throttle.
 9. A second steward never confirms. The batch waits outside the tray, and holds no lock.
 10. A persona's batch meets a shared store. It never commits, since personas act only on a local store.
-11. A chunk fails in three passes in a row. The batch stops with `chunk_failed`. A chunk that commits starts the count again.
+11. A chunk fails in three passes in a row. The batch stops with `chunk_failed`. A chunk that commits, or an Undo, starts the count again.
+12. An Undo and a new staging overtake a chunk of the old entry. Its refusal ends only the staging it was committing, so the new entry waits out its window and commits.
+13. A review drawn for blind review fails alone. Its draw passes to the planned review with the next smallest hash, in the same transaction. A draw is lost only when no planned review is left.

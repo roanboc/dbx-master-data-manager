@@ -180,6 +180,10 @@ Every change set names an actor and an authority. [Component [`ACMP9`] Authority
 - The commit log names a role or the automated actor, never a person. The audit's change set names the person, the checker and whether a persona acted.
 - The workbench takes its actor per request. On a local store it is a persona from the header, the data steward unless `MDM_ROLE` names another. On the platform it is the user the Databricks App forwards, a consumer until initiative 4 maps workspace groups to roles ([decision 21](../decisions/21_workbench-actor.md)).
 - Two browser tabs with the same persona act as the same steward.
+- The local mode offers seven personas: every role once, and a second data steward, `data_steward_2` ([decision 24](../decisions/24_second-data-steward-persona.md)). The persona menu shows it as "Data steward 2", and switching between the two data-steward personas rebuilds the page on screen, as switching roles does.
+- `--as data_steward_2` or `MDM_ROLE=data_steward_2` chooses it. It acts as `persona:data_steward_2`, in the data steward's role, and is refused on a shared store like every persona.
+- It exists for batches. Above 250 decisions a batch takes one steward persona as maker and another as second steward, and neither may answer its blind reviews. A third steward answers them locally.
+- On a shared store no batch runs yet, because every person is a consumer until initiative 4 maps workspace groups to roles.
 - `mdm ui` listens on a loopback address unless a Databricks App runs it. It answers only its own host name, refuses posts from another site and cannot be framed.
 - A model or rule set is published before its entity holds any golden record, under a flagged bootstrap authority. Publication over existing golden records waits for the dry run of [initiative 4](../6_transition/2_sequence.md#sequence).
 
@@ -252,7 +256,7 @@ Blind review and the quality breaker are the checkpoint that [decision 1](../dec
 - Every automatic link, a record joining a new cluster included, and every link a source asserts: a `master_id=auto` hint, or a retired ID routed to its survivor.
 - Every golden record the matcher creates.
 - A steward's link, keep apart, and "Not a match" when it declined at least one golden record.
-- Exactly 2% of each batch's links, at least one ([blind review of a batch](#blind-review-of-a-batch)).
+- 2% of the links each batch stages, rounded up and at least one, drawn at staging ([blind review of a batch](#blind-review-of-a-batch)).
 - Approving or rejecting a held update, and keeping a golden record with no source record, are not sampled. Blind review cannot ask them again without showing the answer.
 
 ### The draw
@@ -354,7 +358,7 @@ flowchart LR
 - A review of a record that is already linked keeps its signature and is counted, but no batch takes it. A batch only links records that belong to no golden record, so it never moves a record or empties a golden record.
 - The stored signature is what arrival saw. Every batch step checks each review again, live, and a review whose live signature differs leaves the batch as `signature_changed`.
 - Only the entity's current match rule version is grouped. The Alike reviews page counts in one line the reviews scored under an earlier version.
-- The page groups the 1,000 open reviews due soonest, in one capped read, and lists the 25 largest groups of at least 2 reviews. Each count stops at 999. A group outside that window shows once its reviews come due sooner.
+- The page groups the open reviews due soonest, at most 1,000 per entity, in one capped read per entity, and lists the 25 largest groups of at least 2 reviews across them. Each count stops at 999. A group outside that window shows once its reviews come due sooner.
 - A group's count opens its reviews in the inbox, at `/?group=SIG-…`. The inbox then lists every open review of that group, snoozed or not, whatever the view.
 - The label history counts the latest label on each pair with the signature, under any rule version: "Linked in 136 of 140 labels (97%)". The agreement is the lifetime blind review of the signature's samples, by origin.
 - A backfill gives a signature to review tasks that have none, from the best stored pair between the record and a member of the task's first named golden record. It runs in `mdm init` and once when the workbench starts, and stores an empty signature when it finds no pair.
@@ -372,22 +376,28 @@ flowchart LR
 - The sample is decided one by one in the inbox filtered to the batch, `/?batch=BAT-…`, through the ordinary tray. Any steward may decide a sample review.
 - The decide pane says the task belongs to a forced sample. It shows every decision at equal weight, with none filled, as blind review does.
 - The decision's own commit records its outcome. A link to the golden record the case suggested agrees. "Not a match", or a link to another candidate, disagrees.
-- A sample review is void when its task closed without a steward's decision, its record moved to another event first, or its case was a close call. The next draw replaces it.
+- Only a decision staged while its review is in the sample counts: the staged decision names the batch. A decision staged before a top-up drew the review records no outcome.
+- A sample review is void when its task closed with no outcome, its record moved to another event first, or its case was a close call. The next draw replaces it.
 - The forced sample writes no blind-review agreement. Its decisions may be drawn for blind review like any steward's decision.
 
 ### The split
 
 - The rule is [the product owner's answer of 28 September 2026](../reference/2026-09-28-forced-sample-split-answer.md#the-answer). The reviews that share the disagreeing record's value on the comparison its steward names leave the batch, to be decided one by one.
-- The steward who decides a disagreeing sample review names the comparison that misled, with that decision. On a forced-sample review, N, or L on another candidate, first asks "Which comparison misled?".
+- The steward who decides a disagreeing sample review names the comparison that misled, with that decision. On a forced-sample review, N, or L on another candidate, first asks "Which comparison misled?". Once a comparison is chosen, the same key decides.
 - The choices are the pattern's comparisons in rule order, and "Every alike review in this batch", with no default. The choice waits with the staged decision, so undoing the decision splits nothing.
 - The hub refuses a disagreeing sample decision that names no comparison, `split_choice_needed`, or one that is not offered, `bad_split_choice`. An agreeing link names none, and so does a void link on a close call.
-- The flush applies the split right after the decision commits, in the same pass and outside the commit-order lock. It reads the records of every review still in the batch, with keyed reads.
+- The flush applies the split right after the decision commits, in the same pass and outside the commit-order lock. One transaction holds the batch first.
+- Inside it, the split reads the disagreeing review again, then the records of every review still in the batch, with keyed reads.
 - It compares each record's match form on the named comparison with the disagreeing record's. A missing form matches only a missing one, and the disagreeing review is always among those that leave.
 - The value is compared inside the hub only. The batch keeps the task IDs and the comparison's name, and the batch page shows a count.
-- One transaction, holding the batch first, moves those reviews out of the batch. When the comparison's attributes are personal, it writes one access-log row per record it split off, with the reason `batch_split`.
-- Each access row names the steward who named the comparison. Whoever later reveals the disagreeing record's value can infer the others', so each record the split read is logged.
+- The same transaction moves those reviews out of the batch. When the comparison's attributes are personal, it writes one access-log row per record it split off, with the reason `batch_split`.
+- Each access row names the steward who named the comparison. Whoever later reveals the disagreeing record's value can infer the values of the records that left, so each record split off is logged. A record compared and kept in the batch gets no row.
+- A split applies once. A refresh that saw it pending after another refresh applied it writes nothing: no review moves, and no access row or count is written.
 - "Every alike review in this batch" ends the batch as discarded, with the outcome `split_all`.
+- A disagreeing outcome that names no comparison is never read as every alike review. Its review turns void, `no_comparison`, and the next draw replaces it.
 - The sample must then hold 5 + ⌊n′/150⌋ of the n′ reviews left, and the next draws top it up, the strata that lack one first.
+- The top-up draws only a review whose task is open at the event the batch fixed, that no staged decision holds, and that no steward but the maker has claimed.
+- A review waiting outside the sample leaves the batch when its task closes, say when a steward decides it one by one in the inbox, or when its record moves to another event. It leaves as `task_closed` or `record_changed`, at the batch's next refresh, so n′ counts only the reviews that can still be decided. One that a staged decision or another steward's claim holds stays in n′, but is not drawn.
 - When that would take every review left, nothing could be linked together. The batch then ends with `too_few_left`, and its reviews stay in the inbox.
 - A split review stays out of every later batch of its group until its task changes with a new event, or is decided.
 - A split that has not applied after a crash applies at the batch's next refresh. The batch cannot become ready meanwhile.
@@ -415,38 +425,46 @@ flowchart LR
 ### Chunks and Stop
 
 - A batch is one tray entry. It locks every planned review's task and record, so nobody claims, snoozes, escalates or decides them while it waits or commits.
+- Staging holds the batch row first, then reads the planned reviews in the same transaction. So a preparation of the same batch either commits first or is refused, and never leaves a lock behind.
 - Staging checks every review's locks and claims again with keyed reads. A review another steward has claimed, or another entry holds, is left out with its reason.
-- The undo window runs 60 seconds from staging, or from the second steward's confirmation. U on any of its tasks, or the tray's Undo, undoes the whole batch, and nothing has committed.
-- The flush commits one chunk of a batch a pass, after the single decisions due. Other stewards' decisions flush between its chunks.
+- The undo window runs 60 seconds from staging, or from the second steward's confirmation. Its maker or its second steward undoes the whole batch with U on any of its tasks, or the tray's Undo, and nothing has committed.
+- U on a task of another steward's batch undoes nothing, and says the review is part of another steward's batch.
+- The flush commits one chunk of a batch a pass. The first chunk commits in deadline order among the single decisions due, and each later chunk after them.
+- Other stewards' decisions flush between its chunks.
 - A chunk holds at most 500 published rows and 500 decisions. A link counts its cross-reference, its target's golden row once a chunk, and one relationship per reference attribute, so the count is never low.
 - Each chunk is its own change set, with the action `batch_link` and its own commit version. Its ID, `CS-<the batch's 20 hexadecimal characters>-<n>`, is formed from the batch ID.
 - A chunk's authority is the maker's role, with the checker's when there is one. Its evidence holds the batch ID, the chunk number and the entry, and never the signature.
 - Before each chunk, the flush checks every review again with keyed reads. The task must be open, and the record at the planned event and linked to nothing.
 - The target must be active, at the planned row version or the one this batch last wrote. No cannot-link rule may hold against its current members, or an earlier review of the chunk that joins it.
 - A review that moved, or is now blocked, fails alone with its reason. Its lock is released, and its task returns to the queue.
-- One transaction commits the chunk with its published rows, its reviews' settlement, its closed tasks, its labels, its blind-review samples and the release of its locks.
+- One transaction commits the chunk with its published rows, its reviews' settlement, its closed tasks, its labels, its blind-review samples and the release of its locks. The last chunk frees every lock its entry still holds.
 - The first chunk settles the tray entry, so Undo ends there. The last chunk settles the batch. After a crash between chunks, the next pass resumes at the next chunk.
 - When no planned review is left before the first chunk, the batch fails with `nothing_left`. After a chunk, it ends committed, counting the reviews that failed alone.
 - Every transaction on a batch takes the batch row first. So an Undo, a Stop and a chunk wait for one another on Postgres, and never deadlock.
 - The throttle, `MDM_THROTTLE_ROWS_PER_HOUR`, paces the chunks. After a chunk of r rows, the next may commit r ÷ rate hours later, and the flush passes the batch by until then.
-- Any steward may stop a committing batch, and the batch records who stopped it and when. A chunk already holding the batch finishes, and the next chunk's transaction refuses.
+- Any steward may stop a committing batch, and the batch records who stopped it, in which role, and when. A chunk already holding the batch finishes, and the next chunk's transaction refuses.
 - A Stop clears the throttle's wait, so the next flush pass ends the batch as `stopped`. Its uncommitted reviews go back to the queue, unclaimed, and committed chunks stand.
 - A chunk that conflicts inside its transaction is planned again once in the pass. An unexpected failure leaves it for the next pass.
-- Three failed passes in a row stop the batch with `chunk_failed`. A chunk that commits starts the count again.
+- Three failed passes in a row stop the batch with `chunk_failed`. A chunk that commits, or an Undo, starts the count again.
+- A refusal inside a chunk ends only the staging that chunk was committing. A batch undone and staged again since, under another entry, is left as it is.
 - The flush checks the roles recorded at staging, and refuses a persona's batch on a shared store.
 
 ### The second steward
 
 - Above 250 decisions, set by `MDM_BATCH_CHECKER_ABOVE`, "Link all" becomes "Ask a second steward to confirm". The batch then waits outside the tray, holding no lock.
-- Any steward but the maker may confirm it, after seeing every row as it was prepared, or send it back. Locally that is the other steward persona.
+- Any steward but the maker may confirm it, after seeing every row as it was prepared, or send it back. Locally that is another steward persona.
 - Once confirmed, the batch enters the tray with its window. It shows in the maker's tray and in the second steward's, with its countdown, its Undo and its notices.
+- The tray entry keeps the second steward's name. So an undone batch stays in both trays with its outcome.
 - At commit, the authority check refuses any chunk of such a batch that does not name its recorded checker. The checker is a person other than the maker, whose role allows `confirm_batch`.
 - On a shared store the threshold cannot rise above 250. A data owner relaxing it per entity waits for the governance policy of [initiative 4](../6_transition/2_sequence.md#sequence).
 
 ### Blind review of a batch
 
-- Exactly ⌈2% × the batch's links⌉ go to blind review, at least one, under `MDM_SAMPLE_SHARE`. A share of 0, allowed on a local store only, draws none.
-- They are the smallest keyed hashes of the entity, the source key and the batch ID, chosen at staging. Each is written as a quality sample of origin `batch` in its review's chunk transaction.
+- Staging draws ⌈2% × the batch's links⌉ for blind review, at least one, under `MDM_SAMPLE_SHARE`. A share of 0, allowed on a local store only, draws none.
+- The drawn reviews are the smallest keyed hashes of the entity, the source key and the batch ID. Each is written as a quality sample of origin `batch` in its review's chunk transaction.
+- A drawn review that fails its pre-check passes its draw, in the same transaction, to the planned review with the next smallest hash.
+- A draw is lost only when no planned review is left to take it, because the rest of the batch failed, or when the batch stops before the drawn review's chunk.
+- Otherwise a batch sends ⌈2% × the links it staged⌉ to blind review, at least one.
 - A batch sample's occasion is its record's event and the batch ID. So a record linked again at the same event after a compensation never meets its old, answered sample.
 - Neither the maker nor the second steward may answer a batch sample, and the Quality samples view hides it from both.
 
@@ -472,6 +490,7 @@ flowchart LR
 - It withdraws the batch's match label where the label is still the batch's, so a later decision's label stays. The batch's change sets keep what it decided.
 - It voids the review's open batch sample.
 - A review whose cross-reference another commit moved, merged or detached since is kept, and reported.
+- So is a review whose record is no longer active, such as a delete taken in but not yet settled. It is kept alone, `record_changed`, and the rest commit.
 - A compensation stopped or failed after some chunks leaves those chunks undone, and clears its original's mark. The rest can then be compensated again within the 30 days.
 - A compensation, a batch with no committed chunk, a batch whose compensation is open or committed, and a batch past its 30 days cannot be compensated. Past 30 days its links are reversed one by one, which story 3.6 of initiative 3 puts on screen.
 
@@ -511,7 +530,7 @@ flowchart LR
 - G opens Alike reviews from the inbox. On a forced-sample review, N, or L on another candidate, first asks which comparison misled, as L waits for a choice in a close call.
 - The batch page's figures poll every 2 seconds while it waits in the tray or commits. A batch shows in its maker's tray and in its second steward's.
 - A task's case is kept per task version and role, masked, and the next task's case is prepared while the steward reads.
-- The key listener yields to fields, lists, menus, dialogs and focused buttons, and a switch turns single-key shortcuts off.
+- The key listener yields to fields, lists, menus, dialogs and focused buttons, with one exception, the product owner's choice of 29 September 2026 ([the answer](../reference/2026-09-29-persona-and-split-key-answers.md#the-answers)): on "Which comparison misled?", N, or L on another candidate, decides with the comparison chosen. A switch turns single-key shortcuts off.
 - A decision waits in the undo tray and commits through the commit path ([decision 19](../decisions/19_undo-tray.md)).
 - A revealed value is rendered once, and kept in no store of the page ([decision 20](../decisions/20_masking-and-reveal-on-screen.md)).
 - The relationships of a record are grouped by type and other end, naming every asserting source; the published table keeps one row per source assertion.

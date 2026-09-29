@@ -286,7 +286,7 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `DOBJ3.5` | `BOBJ9` | realizes | A change set while it waits out its undo window |
 | `DOBJ3.5` | `DOBJ3.4` | flows to | A declined record, or a compensated batch's record, queued again |
 | `DOBJ3.5` | `DOBJ3.6` | flows to | The match decision, in the same transaction; a compensation's chunk withdraws the labels its original wrote |
-| `DOBJ3.5` | `DOBJ3.7` | flows to | A blind answer, a sampled steward decision, and 2% of each batch, in the same transaction |
+| `DOBJ3.5` | `DOBJ3.7` | flows to | A blind answer, a sampled steward decision, and 2% of the links each batch stages, rounded up, in the same transaction |
 | `DOBJ3.5` | `DOBJ5.1` | flows to | After the deadline, through the commit path, a batch one chunk at a time; audited even when nothing is published |
 | `DOBJ3.6` | `DOBJ3.1` | flows to | A declined golden record's members leave the record's candidates |
 | `DOBJ3.6` | `RES5` | associated with | The hub's copy, kept as stewards decide |
@@ -353,7 +353,7 @@ under the source's document. Nothing above the first `##` names an identifier.
 | `ASVC8` | `BSVC3` | realizes | |
 | `ASVC8` | `CAP5.1` | realizes | |
 | `ASVC8` | `CAP3.1` | realizes | The decision view |
-| `ASVC8` | `DOBJ5.4` | accesses | One row per record a batch split read on a personal comparison, reason `batch_split` |
+| `ASVC8` | `DOBJ5.4` | accesses | One row per record a batch split takes out of the batch on a personal comparison, reason `batch_split` |
 | `ASVC9` | `BSVC4` | realizes | Undo before commit; a batch's second steward |
 | `ASVC9` | `CAP5.2` | realizes | |
 | `ASVC10` | `BSVC1` | realizes | |
