@@ -60,7 +60,9 @@ make demo           # a fresh local store with invented tasks to decide
 make ui             # then open http://127.0.0.1:8050
 ```
 
-The persona switcher in the header works on a local store only. Press `?` for
+The persona switcher in the header works on a local store only. It offers
+every role once, and a second data steward, so a batch's maker, its second
+steward and whoever answers its blind reviews are three people. Press `?` for
 the keys. `mdm ui` holds the DuckDB file while it runs, so stop it before other
 `mdm` commands on the same store.
 

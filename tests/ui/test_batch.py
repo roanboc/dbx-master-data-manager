@@ -181,7 +181,13 @@ def test_a_group_shows_its_pattern_and_figures_and_its_count_opens_its_reviews(p
     navigate(page, f"/?group={key}")
     expect(page.locator(f"#{ids.PAGE_LABEL}")).to_have_text(f"Alike reviews: 1–{shown}", timeout=WAIT_MS)
     expect(page.locator(f"#{ids.INBOX_FILTER}")).to_contain_text("Alike reviews: every open review with one")
-    assert page.evaluate("() => window.dash_ag_grid.getApi('inbox-grid').getDisplayedRowCount()") == shown
+    # the grid's own code loads after the page: wait for it, then for every review of the group in it
+    page.wait_for_function(
+        "(n) => { try { return window.dash_ag_grid.getApi('inbox-grid').getDisplayedRowCount() === n; }"
+        " catch (e) { return false; } }",
+        arg=shown,
+        timeout=WAIT_MS,
+    )
 
 
 def test_a_draw_opens_the_batch_and_its_sample_is_decided_in_the_inbox(page: Page, live) -> None:
@@ -231,11 +237,16 @@ def test_a_disagreement_names_its_comparison_first_and_splits_its_reviews_off(pa
     for _ in range(values.index("birth_date")):
         page.keyboard.press("ArrowDown")
     expect(pane.locator(".mdm-split-choice input[type=radio][value='birth_date']")).to_be_checked()
+    expect(pane.locator(".mdm-split-choice input[type=radio][value='birth_date']")).to_be_focused()
+    # every other key yields to the radios, as to any field: J neither moves nor decides
+    assert requests_during(page, lambda: press(page, "j", blur=False)) == []
+    expect(pane.locator(".mdm-split-choice input[type=radio][value='birth_date']")).to_be_focused()
     hub = live.state.hub
     kept = hub.tray.settings
     hub.tray.settings = kept.with_(undo_seconds=12)  # long enough to read its staged line
     try:
-        press(page, "n")
+        # the same key decides, focus still on the chosen comparison (finding 19): no blur first
+        press(page, "n", blur=False)
         expect(notification(page, re.compile(r"^In the tray"))).to_be_visible(timeout=WAIT_MS)
     finally:
         hub.tray.settings = kept
@@ -291,6 +302,48 @@ def test_every_change_lists_the_rows_masked_with_the_summary(page: Page, live) -
     assert axe(page) == []
 
 
+FOCUS_PROBE = """() => {
+    const el = document.activeElement;
+    if (!el || el === document.body) return null;
+    const box = el.getBoundingClientRect();
+    const x = Math.min(Math.max(box.left + box.width / 2, 0), innerWidth - 1);
+    const y = Math.min(Math.max(box.top + box.height / 2, 0), innerHeight - 1);
+    const top = document.elementFromPoint(x, y);
+    return {
+        seen: !!top && (top === el || el.contains(top)),
+        footer: !!el.closest('section.mdm-batch-actions'),
+        rows: !!el.closest('table.mdm-batch-rows'),
+        where: Math.round(box.top),
+    };
+}"""
+
+
+@pytest.mark.parametrize("height", [900, 640])
+def test_keyboard_focus_on_the_rows_is_never_hidden_under_the_actions(page: Page, live, height: int) -> None:
+    # finding 18 (WCAG 2.2 SC 2.4.11): tabbing down every row's links and disclosures, each focused control
+    # is what the browser paints at its middle, never the sticky actions footer, at a tall and a short window
+    page.set_viewport_size({"width": 1440, "height": height})
+    open_batch(page, f"/batch/{batch_id()}")
+    view = page.locator(f"#{ids.BATCH_VIEW}")
+    expect(view.locator("table.mdm-batch-rows tbody tr").first).to_be_visible(timeout=WAIT_MS)
+    expect(footer(page)).to_have_css("position", "sticky")
+    view.locator(".mdm-batch-summary").click()
+    seen_rows = 0
+    for _ in range(200):
+        page.keyboard.press("Tab")
+        page.evaluate("() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))")
+        probe = page.evaluate(FOCUS_PROBE)
+        if probe is None:
+            continue
+        if probe["footer"]:
+            break
+        assert probe["seen"], f"a focused control at y {probe['where']} is hidden at a height of {height}"
+        seen_rows += probe["rows"]
+    else:
+        raise AssertionError("Tab never reached the actions footer")
+    assert seen_rows >= 4  # the walk went through the rows, not round them
+
+
 def test_a_second_steward_confirms_above_the_threshold(page: Page, live) -> None:
     open_batch(page, f"/batch/{batch_id()}")
     ask = footer(page).get_by_role("button", name="Ask a second steward to confirm")
@@ -303,6 +356,14 @@ def test_a_second_steward_confirms_above_the_threshold(page: Page, live) -> None
         "You prepared this batch, so another steward confirms it."
     )
     assert confirm.get_attribute("aria-describedby") == ids.BATCH_ACTION_REASONS
+    settle(page)
+    # the second data-steward persona shares the maker's role but is another steward: the page is rebuilt for
+    # them, and Confirm is theirs (review 3.3)
+    choose(page, ids.PERSONA_SELECT, "Data steward 2")
+    confirm = footer(page).get_by_role("button", name="Confirm the batch")
+    expect(confirm).to_be_enabled(timeout=WAIT_MS)
+    expect(confirm).to_have_attribute("data-variant", "filled")
+    expect(page.locator(f"#{ids.BATCH_ACTION_REASONS}")).not_to_contain_text("You prepared this batch")
     settle(page)
     choose(page, ids.PERSONA_SELECT, "Coordinating steward")
     confirm = footer(page).get_by_role("button", name="Confirm the batch")
@@ -345,7 +406,8 @@ def test_the_maker_sees_it_commit_and_stops_it_before_the_next_chunk(page: Page,
     result = view.locator(".mdm-batch-result").first
     expect(result).to_have_text(
         re.compile(
-            r"^Stopped after chunk 1 of \d+: \d+ links? committed; \d+ reviews? (is|are) back in the queue\.$"
+            r"^Stopped by you after chunk 1 of \d+: \d+ links? committed; \d+ reviews? (is|are) back in the "
+            r"queue\.( \d+ went to blind review\.)?$"
         )
     )
     hub = live.state.hub

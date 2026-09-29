@@ -19,7 +19,7 @@ from typing import Any
 from mdm import capacity
 from mdm.backend.store import SqlStore
 from mdm.config import Settings
-from mdm.models.authority import Actor
+from mdm.models.authority import Actor, allowed
 from mdm.models.batch import BATCH_DECISIONS, BATCH_ID_RE, SIGNATURE_KEY_RE
 from mdm.models.canonical import iso, utcnow
 from mdm.models.entity_model import EntityModel
@@ -145,7 +145,10 @@ class TaskRows:
             entry = held.get(task_lock(task.task_id))
             if entry is not None:
                 batch = entry.task_id if entry.decision in BATCH_DECISIONS else None
-                mine = entry.actor == actor.name or (batch is not None and checkers.get(batch) == actor.name)
+                # the batch's second steward may undo it as its maker may; the entry keeps their name too
+                mine = entry.actor == actor.name or (
+                    batch is not None and actor.name in (checkers.get(batch), entry.checker)
+                )
                 out[task.task_id] = StagedRef(
                     entry_id=entry.entry_id,
                     decision=entry.decision,
@@ -326,7 +329,9 @@ class InboxService:
             # signature batches (story 3.3), each capped: the Alike reviews link, the batches waiting for this
             # actor as second steward, and the actor's live tray entries (theirs and the batches they confirmed)
             alike=self.store.task_count(TaskQuery(now, entity, "review", snoozed=None, grouped=True), cap),
-            batches_to_confirm=self.store.to_confirm_count(actor.name, entity, cap),
+            batches_to_confirm=(
+                self.store.to_confirm_count(actor.name, entity, cap) if allowed(actor, "confirm_batch") else 0
+            ),
             tray_live=self.store.tray_live_count(actor.name, now, cap),
         )
 

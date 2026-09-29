@@ -2214,6 +2214,7 @@ class SqlStore(ABC):
         "settled_at",
         "change_set_id",
         "outcome",
+        "checker",
     )
 
     def _tray_of(self, row: Sequence[Any]) -> TrayEntry:
@@ -2242,6 +2243,7 @@ class SqlStore(ABC):
             change_set_id=d["change_set_id"],
             commit_version=int(version) if version is not None else None,
             outcome=d["outcome"],
+            checker=d["checker"],
         )
 
     def _tray_select(self) -> str:
@@ -2292,6 +2294,7 @@ class SqlStore(ABC):
                         "settled_at": entry.settled_at,
                         "change_set_id": entry.change_set_id,
                         "outcome": entry.outcome,
+                        "checker": entry.checker,
                     }
                 ],
             )
@@ -2396,9 +2399,9 @@ class SqlStore(ABC):
         index stops there.
 
         It also lists the entries of the batches the actor confirmed as their second steward (story 3.3), in
-        a second branch walked on the batch table's (checker, staged_at) index; each branch is paged, and the
-        two are merged newest first under one limit. Each entry comes once: a maker never confirms their own
-        batch."""
+        a second branch walked on the entry's own (checker, staged_at) index, so an entry the maker undid stays
+        listed with its outcome, as in the maker's tray; each branch is paged, and the two are merged newest
+        first under one limit. Each entry comes once: a maker never confirms their own batch."""
         floor = staged_since if staged_since is not None else since - timedelta(days=1)
         live = f"({self._TRAY_LIVE} OR t.settled_at >= ?)"
         columns = ", ".join("t." + c for c in self._TRAY_COLUMNS)
@@ -2408,9 +2411,8 @@ class SqlStore(ABC):
             f"WHERE t.actor = ? AND t.staged_at >= ? AND {live} ORDER BY t.staged_at DESC, t.entry_id LIMIT ?"
         )
         confirmed = (
-            f"SELECT {columns}, c.commit_version FROM {self.t('work', 'batch')} AS b "
-            f"JOIN {self.t('work', 'tray_entry')} AS t ON t.entry_id = b.entry_id{audit} "
-            f"WHERE b.checker = ? AND b.staged_at >= ? AND {live} ORDER BY b.staged_at DESC, t.entry_id LIMIT ?"
+            f"SELECT {columns}, c.commit_version FROM {self.t('work', 'tray_entry')} AS t{audit} "
+            f"WHERE t.checker = ? AND t.staged_at >= ? AND {live} ORDER BY t.staged_at DESC, t.entry_id LIMIT ?"
         )
         names = ", ".join(f"u.{c}" for c in (*self._TRAY_COLUMNS, "commit_version"))
         rows = self._fetch_all(
@@ -2428,9 +2430,8 @@ class SqlStore(ABC):
         rows = self._fetch_all(
             f"/*mdm:paged*/ SELECT (SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'tray_entry')} AS t "
             f"WHERE t.actor = ? AND t.staged_at >= ? AND {self._TRAY_LIVE} LIMIT ?) AS mine), "
-            f"(SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'batch')} AS b "
-            f"JOIN {self.t('work', 'tray_entry')} AS t ON t.entry_id = b.entry_id "
-            f"WHERE b.checker = ? AND b.staged_at >= ? AND {self._TRAY_LIVE} LIMIT ?) AS theirs)",
+            f"(SELECT COUNT(*) FROM (SELECT 1 FROM {self.t('work', 'tray_entry')} AS t "
+            f"WHERE t.checker = ? AND t.staged_at >= ? AND {self._TRAY_LIVE} LIMIT ?) AS theirs)",
             [actor, floor, int(cap), actor, floor, int(cap)],
         )
         return min(int(cap), int(rows[0][0]) + int(rows[0][1]))
@@ -3423,7 +3424,7 @@ class SqlStore(ABC):
         self, batch_id: str, entry_id: str, at: datetime, *, after_hold: Callable[[], None] | None = None
     ) -> bool:
         """One transaction: first the conditional update that takes a `staged` batch with this entry back to
-        `ready` (its entry, stage time and checker cleared); no row changed returns False, having written
+        `ready` (its entry, stage time, checker and failed passes cleared); no row changed returns False, having written
         nothing (on Postgres it waits for a chunk that holds the batch, and then matches nothing, since the
         chunk left it `committing`). Then `after_hold()` when given (a test's fault point), the entry settled
         `undone` with its locks freed (`Conflict(already_settled)` when it is no longer staged, rolling back),
@@ -3431,8 +3432,8 @@ class SqlStore(ABC):
         with self.transaction():
             changed = self._execute(
                 f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch')} SET status = 'ready', entry_id = NULL, "
-                "staged_at = NULL, checker = NULL, checker_role = NULL, checked_at = NULL, updated_at = ? "
-                "WHERE batch_id = ? AND status = 'staged' AND entry_id = ?",
+                "staged_at = NULL, checker = NULL, checker_role = NULL, checked_at = NULL, attempts = 0, "
+                "updated_at = ? WHERE batch_id = ? AND status = 'staged' AND entry_id = ?",
                 [at, batch_id, entry_id],
             )
             if changed != 1:
@@ -3455,16 +3456,25 @@ class SqlStore(ABC):
         task_ids: Sequence[str],
         reason: str,
         accesses: Sequence[AccessRow],
-    ) -> int:
-        """One transaction, the batch held first (`sampling`; else nothing is written and 0 is returned): the
-        reviews moved to role `split` with `reason` (`split:<comparison>`) while they are still a sample or
-        bulk review, so a review split meanwhile stays; a bulk review's status becomes `split`, and a sample
-        review keeps its outcome. Then the disagreeing review's `split_applied` set, and the access rows
+    ) -> int | None:
+        """One transaction, the batch held first (`sampling`), then the gate: the disagreeing review's
+        `split_applied` set only while it is still false, so a split applies once however many refreshes reach
+        it. None when the batch is in no such status or the split applied already: nothing is written, no
+        review moves and no access row is appended. Then the reviews moved to role `split` with `reason`
+        (`split:<comparison>`) while they are still a sample or bulk review, so a review split meanwhile stays;
+        a bulk review's status becomes `split`, and a sample review keeps its outcome; and the access rows
         appended (one per split record on a personal comparison). Returns the reviews moved."""
         now = self.clock()
         with self.transaction():
             if self.hold_batch(batch_id, ("sampling",)) is None:
-                return 0
+                return None
+            gated = self._execute(
+                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch_item')} SET split_applied = true, updated_at = ? "
+                "WHERE batch_id = ? AND task_id = ? AND split_applied = false",
+                [now, batch_id, sample_task_id],
+            )
+            if gated != 1:
+                return None
             moved = self._update_keyed(
                 _T("work", "batch_item"),
                 ("reason", "updated_at"),
@@ -3473,24 +3483,19 @@ class SqlStore(ABC):
                 extra_set=f"role = 'split', status = CASE WHEN t.role = 'bulk' THEN '{SPLIT_STATUS}' ELSE t.status END",
                 where="t.role IN ('sample', 'bulk')",
             )
-            self._execute(
-                f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch_item')} SET split_applied = true, updated_at = ? "
-                "WHERE batch_id = ? AND task_id = ?",
-                [now, batch_id, sample_task_id],
-            )
             self.append_accesses(accesses)
             return moved
 
-    def request_stop(self, batch_id: str, actor: str, at: datetime) -> bool:
-        """Asks a committing batch to stop, once: it records who asked and when, and clears `not_before`, so a
-        stop never waits for the throttle. False when the batch is not committing or a stop was asked
-        already."""
+    def request_stop(self, batch_id: str, actor: str, at: datetime, role: str | None = None) -> bool:
+        """Asks a committing batch to stop, once: it records who asked, in which role, and when, and clears
+        `not_before`, so a stop never waits for the throttle. False when the batch is not committing or a stop
+        was asked already."""
         return (
             self._execute(
                 f"/*mdm:keyed*/ UPDATE {self.t('work', 'batch')} SET stop_requested_by = ?, stop_requested_at = ?, "
-                "not_before = NULL, updated_at = ? WHERE batch_id = ? AND status = 'committing' "
-                "AND stop_requested_at IS NULL",
-                [actor, at, at, batch_id],
+                "stop_requested_role = ?, not_before = NULL, updated_at = ? WHERE batch_id = ? "
+                "AND status = 'committing' AND stop_requested_at IS NULL",
+                [actor, at, safe(role), at, batch_id],
             )
             == 1
         )
@@ -3656,7 +3661,8 @@ class SqlStore(ABC):
         change set (a short count is `Conflict(item_settled)`); for a compensation, the original's reviews
         moved to `compensated` and the original chunk marked; the batch's counts, throttle and attempts (set
         back to 0), `committing` after the first chunk and `committed` after the last, which finishes its
-        entry and frees its group; last, the chunk's lock subjects released."""
+        entry, frees its group and deletes every lock the entry still holds; last, the chunk's lock subjects
+        released."""
         if chunk is None:
             return
         if chunk.change_set_id is None:
@@ -3737,6 +3743,11 @@ class SqlStore(ABC):
             self._execute(
                 f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'open_batch')} WHERE batch_id = ?",
                 [chunk.batch_id],
+            )
+            # every lock the entry still holds goes with its last chunk, as `finish_batch` frees them
+            self._execute(
+                f"/*mdm:keyed*/ DELETE FROM {self.t('work', 'tray_lock')} WHERE entry_id = ?",
+                [chunk.entry_id],
             )
         self.release_locks(chunk.subjects)
 

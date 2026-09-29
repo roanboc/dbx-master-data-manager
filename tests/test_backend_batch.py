@@ -49,7 +49,7 @@ NEW_INDEXES = (
     "batch_status_not_before_batch_id_ix",
     "batch_signature_key_status_batch_id_ix",
     "batch_maker_created_at_ix",
-    "batch_checker_staged_at_ix",
+    "tray_entry_checker_staged_at_ix",
     "batch_compensates_ix",
     "batch_item_task_id_status_ix",
     "batch_item_batch_id_role_status_position_ix",
@@ -197,10 +197,21 @@ def index_names(store: SqlStore) -> set[str]:
 def staged(store: SqlStore) -> SqlStore:
     """A link batch of four planned reviews staged in the tray as one entry, TR-B, holding every review's
     task and record; the store's clock stands at T0."""
+    return stage_four(store)
+
+
+@pytest.fixture
+def confirmed(store: SqlStore) -> SqlStore:
+    """`staged`, confirmed by a second steward: the batch and its entry record the checker."""
+    return stage_four(store, checker=CHECKER)
+
+
+def stage_four(store: SqlStore, *, checker: str | None = None) -> SqlStore:
     store.clock = lambda: T0
     store.put_source_states([state(f"C{n:04d}", system="crm", event=f"ev-{n}") for n in range(1, 5)])
     write(store, *(a_grouped_task(n) for n in range(1, 5)))
-    batch = a_batch(status="staged", entry_id="TR-B", staged_at=T0, decisions=4, chunks=2)
+    second = {"checker": checker, "checker_role": "coordinating_steward", "checked_at": T0} if checker else {}
+    batch = a_batch(status="staged", entry_id="TR-B", staged_at=T0, decisions=4, chunks=2, **second)
     store.insert_batch(batch, [an_item(batch.batch_id, n, status="planned") for n in range(1, 5)])
     entry = replace(
         an_entry("TR-B", batch.batch_id),
@@ -208,6 +219,7 @@ def staged(store: SqlStore) -> SqlStore:
         target=None,
         subject={"batch_id": batch.batch_id, "decisions": 4},
         signature=SIGNATURE,
+        checker=checker,
     )
     store.stage_tray(entry, locks(1, 2, 3, 4))
     return store
@@ -227,6 +239,7 @@ def test_the_batch_tables_exist_and_an_older_store_gains_them(
     store.drop_all()
     task, breaker = ddl.table("work", "task"), ddl.table("work", "breaker_state")
     sample, label = ddl.table("work", "quality_sample"), ddl.table("work", "match_label")
+    tray = ddl.table("work", "tray_entry")
     older = {
         task: replace(
             task,
@@ -240,6 +253,11 @@ def test_the_batch_tables_exist_and_an_older_store_gains_them(
             indexes=tuple(i for i in sample.indexes if "signature" not in i),
         ),
         label: replace(label, indexes=(("entity", "right_ref"),)),
+        tray: replace(
+            tray,
+            columns=tuple(c for c in tray.columns if c.name != "checker"),
+            indexes=tuple(i for i in tray.indexes if i[0] != "checker"),
+        ),
     }
     monkeypatch.setattr(
         ddl, "TABLES", tuple(older.get(t, t) for t in ddl.TABLES if t.name not in BATCH_TABLES)
@@ -269,7 +287,7 @@ def test_the_batch_tables_exist_and_an_older_store_gains_them(
     monkeypatch.undo()
 
     store.init_schema(create_landing=True)  # appends; drops nothing
-    for table in (task, breaker, sample, label, *(ddl.table("work", n) for n in BATCH_TABLES)):
+    for table in (task, breaker, sample, label, tray, *(ddl.table("work", n) for n in BATCH_TABLES)):
         assert store.table_columns("work", table.name) == list(table.column_names()), table.name
     assert set(NEW_INDEXES) <= index_names(store)
     kept = store.tasks_by_id(["TSK-0001"])["TSK-0001"]
@@ -584,15 +602,30 @@ def test_a_split_moves_its_reviews_and_appends_its_access_rows_in_one_transactio
     assert (second.role, second.status) == ("split", "agreed")  # a split sample review keeps its outcome
     assert (fourth.role, fourth.status) == ("split", "split")
     assert (item_of(store, "TSK-0003").role, item_of(store, "TSK-0007").role) == ("sample", "bulk")
+    # the split applies once: a second call for the same review, as a refresh that read it pending makes,
+    # moves nothing and logs nothing again
+    assert (
+        store.apply_split(
+            bid(1),
+            "TSK-0001",
+            [f"TSK-{n:04d}" for n in split],
+            "split:birth_date",
+            [access(n) for n in split],
+        )
+        is None
+    )
+    assert len(store.access_log(None, 100)) == 5
     # a review split meanwhile stays as it is
     assert store.apply_split(bid(1), "TSK-0003", ["TSK-0004"], "split:all", []) == 0
     assert item_of(store, "TSK-0004").reason == "split:birth_date"
+    assert item_of(store, "TSK-0003").split_applied
     # the reviews and the access rows commit together: a refused row rolls the move back
     bad = access(3)
     object.__setattr__(bad, "detail", {"note": "Ada Quill"})
     with pytest.raises(ValueError, match="free text"):
-        store.apply_split(bid(1), "TSK-0003", ["TSK-0003", "TSK-0007"], "split:email", [bad])
+        store.apply_split(bid(1), "TSK-0002", ["TSK-0003", "TSK-0007"], "split:email", [bad])
     assert (item_of(store, "TSK-0003").role, item_of(store, "TSK-0007").role) == ("sample", "bulk")
+    assert not item_of(store, "TSK-0002").split_applied  # the gate rolled back with the rest
     assert len(store.access_log(None, 100)) == 5
 
 
@@ -648,7 +681,9 @@ def test_failures_and_splits_write_nothing_for_a_batch_in_another_status(store: 
     )
     access = AccessRow(MAKER, "data_steward", "batch_split", "person", None, "birth_date", "batch_split")
     assert store.fail_items(bid(1), [("TSK-0001", "failed", "blocked")], []) == 0
-    assert store.apply_split(bid(1), "TSK-0002", ["TSK-0001", "TSK-0002"], "split:birth_date", [access]) == 0
+    assert (
+        store.apply_split(bid(1), "TSK-0002", ["TSK-0001", "TSK-0002"], "split:birth_date", [access]) is None
+    )
     assert item_of(store, "TSK-0001").status == "planned" and item_of(store, "TSK-0002").role == "sample"
     assert store.access_log(None, 10) == []
 
@@ -890,10 +925,22 @@ def test_finishing_a_stopped_batch_releases_its_reviews_and_one_that_never_began
     assert (item_of(staged, "TSK-0009", bid(2)).status, staged.staged_by_locks(locks(9))) == ("released", {})
 
 
-def test_the_tray_lists_a_batch_for_its_maker_and_its_second_steward_each_once(staged: SqlStore) -> None:
-    staged.set_batch(
-        bid(1), from_statuses=("staged",), checker=CHECKER, checker_role="coordinating_steward", checked_at=T0
+def test_the_last_chunk_frees_every_lock_its_entry_still_holds(staged: SqlStore) -> None:
+    """A review left out after staging, which no chunk commits or fails, loses its locks with the batch's last
+    chunk, so its task can be claimed and decided again (review 3.3)."""
+    staged.update_items(
+        bid(1), [{"task_id": "TSK-0004", "status": "excluded", "reason": "claimed"}], from_status="planned"
     )
+    staged.apply_work(chunk(1, (1, 2), first=True, last=False))
+    assert not staged.claim_task("TSK-0004", CHECKER, T0, T0)  # still locked while the batch commits
+    staged.apply_work(chunk(2, (3,), first=False, last=True))
+    assert batch_of(staged).status == "committed"
+    assert staged.claim_task("TSK-0004", CHECKER, T0, T0)
+
+
+def test_the_tray_lists_a_batch_for_its_maker_and_its_second_steward_each_once(confirmed: SqlStore) -> None:
+    staged = confirmed
+    assert staged.tray_entries(["TR-B"])["TR-B"].checker == CHECKER
     write(staged, a_task(9))
     staged.stage_tray(an_entry("TR-9", "TSK-0009", actor=CHECKER), ["task:TSK-0009"])
     assert [e.entry_id for e in staged.tray_of_actor(MAKER, T0, 10)] == ["TR-B"]
@@ -912,6 +959,19 @@ def test_the_tray_lists_a_batch_for_its_maker_and_its_second_steward_each_once(s
     staged.apply_work(chunk(2, (3, 4), first=False, last=True))
     assert (staged.tray_live_count(MAKER, later, 10), staged.tray_live_count(CHECKER, later, 10)) == (0, 1)
     assert [e.entry_id for e in staged.tray_of_actor(MAKER, T0, 10)] == ["TR-B"]  # settled since T0
+
+
+def test_an_undone_batch_stays_in_both_trays_with_its_outcome(confirmed: SqlStore) -> None:
+    """The maker undoes a batch a second steward confirmed: the batch is ready again with its checker cleared,
+    and the entry, which keeps its checker, stays listed as undone in both trays (review 3.3)."""
+    assert confirmed.undo_batch(bid(1), "TR-B", T0)
+    assert (batch_of(confirmed).status, batch_of(confirmed).checker) == ("ready", None)
+    for actor in (MAKER, CHECKER):
+        listed = confirmed.tray_of_actor(actor, T0, 10)
+        assert [(e.entry_id, e.status, e.outcome, e.checker) for e in listed] == [
+            ("TR-B", "undone", "undone", CHECKER)
+        ]
+        assert confirmed.tray_live_count(actor, T0, 10) == 0
 
 
 # ---------------------------------------------------------------------------------------------- compensation

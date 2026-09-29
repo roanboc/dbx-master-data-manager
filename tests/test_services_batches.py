@@ -29,7 +29,10 @@ from tests.helpers import (
     ALIKE_SIGNATURE,
     COORDINATOR,
     OWNER,
+    SECOND_STEWARD,
     STEWARD,
+    T0,
+    TECHNICAL,
     alike_reviews,
     arrive,
     decide_sample,
@@ -37,6 +40,7 @@ from tests.helpers import (
     land,
     master_of,
     open_tasks,
+    org_payload,
     person_payload,
     person_ref,
     row,
@@ -483,10 +487,15 @@ def test_a_link_to_the_default_agrees_and_not_a_match_disagrees(hub: Hub) -> Non
     fresh = draw_after_discard(hub, batch.batch_id)
     item = items(hub, fresh.batch_id, "sample")[0]
     other = replace(staged, task_id=item.task_id, target="PER-999999")
-    (write,) = hub.decisions._sample_outcome(other, {"default": "PER-000001", "split_on": "birth_date"})  # noqa: SLF001
+    context = {"sample_batch": fresh.batch_id}
+    outcome = hub.decisions._sample_outcome  # noqa: SLF001
+    (write,) = outcome(other, {**context, "default": "PER-000001", "split_on": "birth_date"})
     assert (write.status, write.split_on) == ("disagreed", "birth_date")
-    (void,) = hub.decisions._sample_outcome(other, {"default": None})  # noqa: SLF001
+    (void,) = outcome(other, {**context, "default": None})
     assert void.status == "void" and void.split_on is None
+    # a decision staged outside this batch's sample pane is no outcome of it
+    assert outcome(other, {"default": "PER-000001", "split_on": "birth_date"}) == ()
+    assert outcome(other, {"sample_batch": batch.batch_id, "default": "PER-000001"}) == ()
 
 
 def draw_after_discard(hub: Hub, batch_id: str) -> Batch:
@@ -511,6 +520,22 @@ def test_a_decision_still_in_the_tray_keeps_the_batch_sampling(hub: Hub) -> None
     group = hub.batches.group(batch.signature_key, actor=STEWARD, entity="person")
     assert group is not None and (group.labels.matched, group.labels.not_matched) == (5, 0)
     assert (group.batch_id, group.batch_words) == (batch.batch_id, "sample agreed")
+
+
+def test_only_a_role_that_decides_tasks_is_sent_to_decide_the_sample(hub: Hub) -> None:
+    """A data owner or a technical steward reads a sampling batch's page, but its "Decide the sample in the
+    inbox" is disabled for them, with why (review 3.3)."""
+    alike(hub, 12)
+    batch = draw(hub)
+    steward = hub.batches.batch(batch.batch_id, actor=STEWARD)
+    assert [(a.decision, a.enabled) for a in steward.actions][0] == ("decide_sample", True)
+    for reader, role in ((OWNER, "data owner"), (TECHNICAL, "technical steward")):
+        view = hub.batches.batch(batch.batch_id, actor=reader)
+        (decide,) = [a for a in view.actions if a.decision == "decide_sample"]
+        assert (decide.enabled, decide.why_not) == (
+            False,
+            f"Your role, {role}, can see tasks but not decide them.",
+        )
 
 
 def test_a_sample_review_closed_meanwhile_or_moved_is_void_and_replaced(hub: Hub) -> None:
@@ -664,7 +689,7 @@ def test_the_split_takes_the_reviews_that_share_the_flagged_value_and_logs_each_
     )
 
 
-def test_an_organisation_split_writes_no_access_row(hub: Hub) -> None:
+def test_an_email_split_takes_every_record_missing_one_and_logs_each(hub: Hub) -> None:
     alike(hub, 12)
     batch = draw(hub)
     flagged = items(hub, batch.batch_id, "sample")[0]
@@ -675,6 +700,47 @@ def test_an_organisation_split_writes_no_access_row(hub: Hub) -> None:
     logged = [a for a in hub.store.access_log(None, 5000)[before:] if a["action"] == "batch_split"]
     assert len(logged) == 12  # e-mail is personal: one row per record read
     assert hub.store.open_batches_of_groups([batch.signature_key]) == {}  # the group is free to draw again
+
+
+def test_an_organisation_split_on_a_comparison_that_is_not_personal_writes_no_access_row(hub: Hub) -> None:
+    """The product owner's answer: access rows only when the comparison's attributes are personal. An
+    Organisation batch split on its city moves the reviews that share the flagged record's city, and logs no
+    record (review 3.3)."""
+    workbench_world(hub, persons=4, organisations=10)
+    landed = {
+        f"C07{i:05d}": {
+            "name": org_payload(i)["name"],
+            "city": org_payload(i)["city"],
+            "country": "XB",
+            "postcode": f"XB9 {i % 5 + 1}ZZ",
+        }
+        for i in range(10)
+    }
+    land(
+        hub,
+        [
+            row("crm", key, "organisation", values, at=T0 + timedelta(hours=3, seconds=n))
+            for n, (key, values) in enumerate(landed.items())
+        ],
+    )
+    arrive(hub)
+    model = hub.registry.published("organisation")
+    assert not model.attribute("city").personal
+    (group,) = hub.batches.groups(actor=STEWARD, entity="organisation").groups
+    batch = hub.batches.draw(group.group_key, actor=STEWARD, entity="organisation")
+    flagged = items(hub, batch.batch_id, "sample")[0]
+    city = landed[flagged.source.key]["city"]
+    before = len(hub.store.access_log(None, 5000))
+    decide_sample(hub, batch.batch_id, actor=STEWARD, answers={flagged.task_id: ("not_a_match", "city")})
+    after = items(hub, batch.batch_id)
+    split = {i.source.key for i in after if i.role == "split"}
+    assert flagged.source.key in split
+    assert split == {i.source.key for i in after if landed[i.source.key]["city"] == city}
+    assert {i.reason for i in after if i.role == "split"} == {"split:city"}
+    logged = [a for a in hub.store.access_log(None, 5000)[before:] if a["action"] == "batch_split"]
+    assert logged == []  # the city of an organisation is not personal: nothing is logged
+    (line,) = hub.batches.batch(batch.batch_id, actor=STEWARD).splits
+    assert (line.on_label, line.count) == ("city", len(split))
 
 
 def test_a_disagreement_undone_in_its_window_splits_nothing(hub: Hub) -> None:
@@ -717,6 +783,244 @@ def test_a_split_interrupted_after_the_decision_applies_at_the_next_refresh_once
     hub.batches.refresh(batch.batch_id)
     assert len([i for i in items(hub, batch.batch_id) if i.role == "split"]) == 6
     assert len([a for a in hub.store.access_log(None, 5000)[before:] if a["action"] == "batch_split"]) == 6
+
+
+def pending_split(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> tuple[Batch, str]:
+    """18 alike reviews, 6 of them sharing one birth-date form, and a sample review among the 6 decided "Not a
+    match" on birth date, its split still pending (the flush's own refresh crashed): (the batch, its task)."""
+    alike(hub, 12)
+    shared = same_birth(hub, 6)
+    batch = draw(hub)
+    flagged = a_sample_review_among(hub, batch.batch_id, shared)
+    original = hub.batches._split  # noqa: SLF001
+
+    def crash(*args, **kwargs):
+        raise Crash("split")
+
+    monkeypatch.setattr(hub.batches, "_split", crash)
+    decide_sample(
+        hub, batch.batch_id, actor=STEWARD, answers={flagged.task_id: ("not_a_match", "birth_date")}
+    )
+    monkeypatch.setattr(hub.batches, "_split", original)
+    return fetch(hub, batch.batch_id), flagged.task_id
+
+
+def split_logged(hub: Hub) -> list[dict]:
+    return [a for a in hub.store.access_log(None, 5000) if a["action"] == "batch_split"]
+
+
+def test_two_refreshes_racing_one_pending_split_apply_it_once(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flush's refresh and a batch page's poll both read the split as pending, then meet: one applies it,
+    the other finds it applied under the batch row's lock and writes nothing (review 3.3, the split race)."""
+    batch, flagged = pending_split(hub, monkeypatch)
+    service = hub.batches
+    original = service._split  # noqa: SLF001
+    barrier = threading.Barrier(2, timeout=THREAD_TIMEOUT)
+    moved: list[int] = []
+    errors: list[BaseException] = []
+
+    def meet(batch_, item_):
+        barrier.wait()  # both refreshes have read the split as pending
+        found = original(batch_, item_)
+        moved.append(found)
+        return found
+
+    monkeypatch.setattr(service, "_split", meet)
+
+    def run() -> None:
+        try:
+            service.refresh(batch.batch_id)
+        except BaseException as error:  # noqa: BLE001 - reported below
+            errors.append(error)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    join_all(threads)
+    monkeypatch.setattr(service, "_split", original)
+    assert not errors, errors
+    assert sorted(moved) == [0, 6]  # applied once
+    assert len([i for i in items(hub, batch.batch_id) if i.role == "split"]) == 6
+    assert len(split_logged(hub)) == 6  # one access row per split record, never twice
+    assert fetch(hub, batch.batch_id).figures["splits"] == {flagged: 6}  # never overwritten with 0
+    view = service.batch(batch.batch_id, actor=STEWARD)
+    assert [line.count for line in view.splits] == [6]
+
+
+def test_a_refresh_that_read_the_split_before_another_applied_it_writes_nothing(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same race, interleaved step by step: a refresh read the batch and the review, another refresh
+    applied the split, and the first then reaches it; a second disagreement's split keeps the first count."""
+    batch, flagged = pending_split(hub, monkeypatch)
+    stale_batch = fetch(hub, batch.batch_id)
+    stale_item = next(i for i in items(hub, batch.batch_id) if i.task_id == flagged)
+    assert (stale_item.status, stale_item.split_applied) == ("disagreed", False)
+    hub.batches.refresh(batch.batch_id)  # another refresh applies it
+    assert fetch(hub, batch.batch_id).figures["splits"] == {flagged: 6}
+    assert hub.batches._split(stale_batch, stale_item) == 0  # noqa: SLF001
+    assert len(split_logged(hub)) == 6
+    assert fetch(hub, batch.batch_id).figures["splits"] == {flagged: 6}
+    # a second disagreement's split, reached with the batch read before the first split: both counts stay
+    second = next(i for i in items(hub, batch.batch_id, "sample") if i.status == "open")
+    hub.store.update_items(
+        batch.batch_id,
+        [{"task_id": second.task_id, "status": "disagreed", "split_on": "given_name"}],
+        from_status="open",
+    )
+    stale_second = next(i for i in items(hub, batch.batch_id) if i.task_id == second.task_id)
+    moved = hub.batches._split(stale_batch, stale_second)  # noqa: SLF001
+    assert moved >= 1
+    assert fetch(hub, batch.batch_id).figures["splits"] == {flagged: 6, second.task_id: moved}
+
+
+def test_a_disagreement_that_names_no_comparison_never_splits_the_whole_batch(hub: Hub) -> None:
+    """A disagreeing sample outcome without a comparison turns void and is replaced; it is never read as
+    "every alike review" (review 3.3)."""
+    alike(hub, 12)
+    batch = draw(hub)
+    item = items(hub, batch.batch_id, "sample")[0]
+    # what an outcome written without its comparison would leave
+    hub.store.update_items(
+        batch.batch_id, [{"task_id": item.task_id, "status": "disagreed"}], from_status="open"
+    )
+    refreshed = hub.batches.refresh(batch.batch_id)
+    assert (refreshed.status, refreshed.outcome) == ("sampling", None)
+    found = next(i for i in items(hub, batch.batch_id) if i.task_id == item.task_id)
+    assert (found.role, found.status, found.reason) == ("sample", "void", "no_comparison")
+    assert not [i for i in items(hub, batch.batch_id) if i.role == "split"]
+    assert len([i for i in items(hub, batch.batch_id, "sample") if i.status == "open"]) == 5  # replaced
+
+
+def next_top_up(hub: Hub, batch_id: str, leaving: str) -> str:
+    """The candidate the top-up would draw next once `leaving` leaves the sample."""
+    sample = items(hub, batch_id, "sample")
+    kept = [i for i in sample if i.task_id != leaving]
+    candidates = [i for i in items(hub, batch_id, "bulk") if i.status == "candidate"]
+    (found,) = pick(
+        [Member(i.task_id, i.stratum, i.draw) for i in candidates],
+        len(sample),
+        Counter(i.stratum for i in kept),
+    )
+    return found
+
+
+@pytest.mark.parametrize("decision", ["not_a_match", "link"])
+def test_the_top_up_never_draws_a_review_with_a_decision_staged_outside_the_sample(
+    hub: Hub, decision: str
+) -> None:
+    """A steward working the ordinary inbox stages a decision on the bulk candidate the top-up would draw next,
+    while a split in the same flush pass makes the sample top up: the top-up passes that review by, its
+    decision is no sample outcome, and the batch goes on sampling (review 3.3)."""
+    alike(hub, 12)
+    batch = draw(hub)
+    flagged = items(hub, batch.batch_id, "sample")[0]
+    following = next_top_up(hub, batch.batch_id, flagged.task_id)
+    hub.tray.stage(
+        flagged.task_id, "not_a_match", actor=STEWARD, split_on="birth_date", **seen(hub, flagged.task_id)
+    )
+    entry = hub.tray.stage(following, decision, actor=COORDINATOR, **seen(hub, following))
+    assert entry.subject.get("split_on") is None and entry.subject.get("sample_batch") is None
+    flush_past_window(hub)
+    ended = fetch(hub, batch.batch_id)
+    assert (ended.status, ended.outcome) == ("sampling", None)
+    row = next(i for i in items(hub, batch.batch_id) if i.task_id == following)
+    # never drawn; once its own decision commits, it leaves the batch
+    assert (row.role, row.status, row.reason) == ("bulk", "excluded", "task_closed")
+    assert len([i for i in items(hub, batch.batch_id, "sample") if i.status == "open"]) == 5
+
+
+def test_a_decision_staged_before_a_top_up_drew_its_review_is_no_sample_outcome(hub: Hub) -> None:
+    """A top-up that draws a review a steward staged a decision on meanwhile (outside the sample pane): the
+    decision commits but writes no outcome, so the review turns void and is replaced, never splitting the
+    batch (review 3.3)."""
+    alike(hub, 12)
+    batch = draw(hub)
+    candidate = items(hub, batch.batch_id, "bulk")[0]
+    entry = hub.tray.stage(
+        candidate.task_id, "not_a_match", actor=COORDINATOR, **seen(hub, candidate.task_id)
+    )
+    assert "sample_batch" not in entry.subject or entry.subject["sample_batch"] is None
+    # a top-up that checked the review just before the stage took its locks
+    hub.store.update_items(
+        batch.batch_id,
+        [{"task_id": candidate.task_id, "role": "sample", "status": "open"}],
+        from_status="candidate",
+    )
+    flush_past_window(hub)
+    ended = hub.batches.refresh(batch.batch_id)
+    assert (ended.status, ended.outcome) == ("sampling", None)
+    row = next(i for i in items(hub, batch.batch_id) if i.task_id == candidate.task_id)
+    assert (row.role, row.status, row.reason, row.split_on) == ("sample", "void", "task_closed", None)
+    # a decision staged on the sample pane carries the batch, and counts
+    sample = next(i for i in items(hub, batch.batch_id, "sample") if i.status == "open")
+    staged = hub.tray.stage(sample.task_id, "link", actor=STEWARD, **seen(hub, sample.task_id))
+    assert staged.subject["sample_batch"] == batch.batch_id
+
+
+def test_a_candidate_closed_or_moved_outside_the_batch_leaves_it_and_a_staged_one_waits(hub: Hub) -> None:
+    """A bulk candidate whose task closed, or whose record moved to another event, leaves a sampling batch at
+    its next refresh, so n′ counts only reviews that can still be decided; one with a decision staged in the
+    ordinary inbox stays, counted but never drawn, until that decision commits (review 3.3)."""
+    from mdm.models.changes import WorkWrites
+
+    alike(hub, 12)
+    batch = draw(hub)
+    closed, moved, staged = [i for i in items(hub, batch.batch_id, "bulk") if i.status == "candidate"][:3]
+    with hub.store.transaction():
+        hub.store.apply_work(WorkWrites("person", close_task_ids=(closed.task_id,)))
+    state = hub.store.source_states("person", [moved.source])[moved.source]
+    land(
+        hub,
+        [
+            row(
+                "crm",
+                moved.source.key,
+                "person",
+                dict(state.values),
+                at=state.occurred_at + timedelta(minutes=5),
+            )
+        ],
+    )
+    arrive(hub)
+    hub.tray.stage(staged.task_id, "link", actor=COORDINATOR, **seen(hub, staged.task_id))
+    assert hub.batches.refresh(batch.batch_id).status == "sampling"
+    by_task = {i.task_id: i for i in items(hub, batch.batch_id)}
+    assert (by_task[closed.task_id].status, by_task[closed.task_id].reason) == ("excluded", "task_closed")
+    assert (by_task[moved.task_id].status, by_task[moved.task_id].reason) == ("excluded", "record_changed")
+    assert by_task[staged.task_id].status == "candidate"  # counted, not drawn
+    assert hub.batches.batch(batch.batch_id, actor=STEWARD).counts["excluded"] == 2
+    flush_past_window(hub)  # the staged decision commits: its review leaves the batch in the same pass
+    after = next(i for i in items(hub, batch.batch_id) if i.task_id == staged.task_id)
+    assert (after.role, after.status, after.reason) == ("bulk", "excluded", "task_closed")
+    assert fetch(hub, batch.batch_id).status == "sampling"
+
+
+def test_a_batch_whose_candidates_were_decided_one_by_one_ends_too_few_left(hub: Hub) -> None:
+    """Stewards link a sampling batch's bulk candidates one by one in the ordinary inbox, then a sample review
+    disagrees: the sample is short, and with the decided candidates out of n′ the batch ends `too_few_left`
+    and frees its group, rather than sampling for ever (review 3.3)."""
+    alike(hub, 12)
+    batch = draw(hub)
+    candidates = [i for i in items(hub, batch.batch_id, "bulk") if i.status == "candidate"]
+    assert len(candidates) == 7
+    for item in candidates[:-1]:
+        hub.tray.stage(item.task_id, "link", actor=COORDINATOR, **seen(hub, item.task_id))
+        flush_past_window(hub)
+    assert fetch(hub, batch.batch_id).status == "sampling"  # n′ is 6, above the sample of 5
+    flagged = items(hub, batch.batch_id, "sample")[0]
+    decide_sample(
+        hub, batch.batch_id, actor=STEWARD, answers={flagged.task_id: ("not_a_match", "birth_date")}
+    )
+    ended = fetch(hub, batch.batch_id)
+    assert (ended.status, ended.outcome) == ("discarded", "too_few_left")
+    assert hub.store.open_batches_of_groups([batch.signature_key]) == {}
+    gone = {
+        i.task_id: i for i in items(hub, batch.batch_id) if i.task_id in {c.task_id for c in candidates[:-1]}
+    }
+    assert {(i.status, i.reason) for i in gone.values()} == {("excluded", "task_closed")}
 
 
 def test_every_alike_review_discards_the_batch(hub: Hub) -> None:
@@ -915,6 +1219,52 @@ def test_a_review_claimed_or_held_since_preparation_is_left_out_at_staging(hub: 
     assert staged.figures["left_out"] == {"claimed": 1, "staged": 1}
 
 
+def test_a_preparation_racing_the_stage_waits_and_leaves_no_lock_behind(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The maker's second tab prepares the batch again while it stages, just as another steward claims a planned
+    review: the stage holds the batch row before it reads its reviews, so the preparation cannot commit in
+    between, and no lock outlives the batch (review 3.3)."""
+    alike(hub, 12)
+    monkeypatch.setattr(capacity, "COMMIT_CHUNK_ROWS", 6)
+    batch = prepared(hub)
+    victim = next(i for i in items(hub, batch.batch_id, "bulk") if i.status == "planned")
+    real = hub.store.staged_by_locks
+    refused: list[str] = []
+
+    def second_tab() -> None:
+        try:
+            hub.batches.prepare(batch.batch_id, actor=STEWARD)
+        except Conflict as error:
+            refused.append(error.code)
+
+    tabs: list[threading.Thread] = []
+
+    def meanwhile(locks):
+        found = real(locks)
+        if not tabs:
+            tabs.append(threading.Thread(target=second_tab))
+            hub.inbox.claim(victim.task_id, actor=COORDINATOR)
+            tabs[0].start()
+            tabs[0].join(0.5)  # time enough to commit, were it not held back
+        return found
+
+    monkeypatch.setattr(hub.store, "staged_by_locks", meanwhile)
+    staged = hub.batches.stage(batch.batch_id, actor=STEWARD)
+    monkeypatch.setattr(hub.store, "staged_by_locks", real)
+    join_all(tabs)
+    assert refused and refused[0] in ("not_ready", "batch_changed")
+    assert staged.status == "staged"
+    for _ in range(6):
+        flush_past_window(hub)
+        if fetch(hub, batch.batch_id).status == "committed":
+            break
+    assert fetch(hub, batch.batch_id).status == "committed"
+    for item in items(hub, batch.batch_id, "bulk"):
+        if task(hub, item.task_id).status == "open":  # its task can be claimed again: no lock is left
+            assert hub.store.claim_task(item.task_id, COORDINATOR.name, hub.inbox.clock(), hub.inbox.clock())
+
+
 def test_undo_from_a_review_the_tray_or_the_page_returns_the_batch_to_ready(hub: Hub) -> None:
     alike(hub, 12)
     batch = prepared(hub)
@@ -929,11 +1279,31 @@ def test_undo_from_a_review_the_tray_or_the_page_returns_the_batch_to_ready(hub:
         again = fetch(hub, batch.batch_id)
         assert (again.status, again.entry_id, again.checker) == ("ready", None, None)
         assert not hub.store.staged_by_locks(locks_of(hub, batch.batch_id))
-    # another steward may not undo it; nothing commits after an undo
+    # another steward may not undo it, and U on one of its reviews undoes nothing of theirs instead: it is
+    # refused as another steward's batch (review 3.3); nothing commits after an undo
     staged = hub.batches.stage(batch.batch_id, actor=STEWARD)
     with pytest.raises(Forbidden):
         hub.tray.undo(staged.entry_id, actor=COORDINATOR)
-    assert hub.tray.undo_for_task(review.task_id, actor=COORDINATOR) is None
+    elsewhere = person_review_elsewhere(hub)
+    own = hub.tray.stage(elsewhere, "not_a_match", actor=COORDINATOR, **seen(hub, elsewhere))
+    with pytest.raises(Conflict) as other:
+        hub.tray.undo_for_task(review.task_id, actor=COORDINATOR)
+    assert (other.value.code, other.value.fields["mine"], other.value.fields["batch"]) == (
+        "already_staged",
+        False,
+        batch.batch_id,
+    )
+    assert hub.store.tray_entries([own.entry_id])[own.entry_id].status == "staged"  # theirs still waits
+    case = hub.decisions.case(review.task_id, actor=COORDINATOR)
+    assert case.staged is not None and case.staged.batch_id == batch.batch_id and not case.staged.mine
+    why = {a.decision: a.why_not for a in case.actions}
+    assert why["link"] == f"It is part of another steward's batch, {batch.batch_id}. Pick another task."
+    mine = hub.decisions.case(review.task_id, actor=STEWARD)
+    assert mine.staged is not None and mine.staged.mine
+    assert {a.decision: a.why_not for a in mine.actions}["link"] == (
+        f"It is part of batch {batch.batch_id}. Undo the batch to decide it on its own."
+    )
+    hub.tray.undo(own.entry_id, actor=COORDINATOR)
     hub.tray.undo(staged.entry_id, actor=STEWARD)
     version = hub.store.last_commit_version()
     report = flush_past_window(hub)
@@ -970,7 +1340,7 @@ def test_undo_last_undoes_the_makers_single_decision_not_a_batch_a_second_stewar
     assert local.store.tray_entries([confirmed.entry_id])[confirmed.entry_id].status == "staged"
     # the batch is theirs to undo, from one of its rows: its refusal says so; to anyone else it is another's
     review = next(i for i in items(local, batch.batch_id, "bulk") if i.status == "planned")
-    for actor, mine in ((COORDINATOR, True), (STEWARD, True), (OWNER_STEWARD, False)):
+    for actor, mine in ((COORDINATOR, True), (STEWARD, True), (SECOND_STEWARD, False)):
         with pytest.raises(Conflict) as held:
             local.inbox.claim(review.task_id, actor=actor)
         assert held.value.fields["mine"] is mine and held.value.fields["batch"] == batch.batch_id
@@ -1023,13 +1393,26 @@ def test_above_the_threshold_a_second_steward_confirms(hub: Hub) -> None:
     assert local.inbox.counts(actor=COORDINATOR).batches_to_confirm == 1
     listed = local.batches.groups(actor=COORDINATOR).to_confirm
     assert [b.batch_id for b in listed] == [batch.batch_id]
+    # a role that may not confirm hears of no batch waiting for it (review 3.3)
+    for reader in (OWNER, TECHNICAL):
+        assert local.inbox.counts(actor=reader).batches_to_confirm == 0
+        assert local.batches.groups(actor=reader).to_confirm == ()
     sent = local.batches.send_back(batch.batch_id, actor=COORDINATOR)
     assert sent.status == "ready" and sent.figures["sent_back"] == 1
     # the second steward may undo the batch they confirmed, from their tray: it is ready again
     local.batches.stage(batch.batch_id, actor=STEWARD)
     undone = local.batches.confirm(batch.batch_id, actor=COORDINATOR)
+    assert undone.entry_id is not None
     assert local.tray.undo(undone.entry_id, actor=COORDINATOR).status == "undone"
     assert fetch(local, batch.batch_id).status == "ready"
+    # the undone entry stays in both trays with its outcome, as the maker's always did (review 3.3)
+    for actor, mine in ((STEWARD, True), (COORDINATOR, False)):
+        line = next(e for e in local.tray.entries(actor=actor) if e.entry_id == undone.entry_id)
+        assert (line.status, line.batch_id, line.mine) == ("undone", batch.batch_id, mine)
+    # a stale Undo from the second steward's tray reads "already undone", never "not yours"
+    with pytest.raises(Conflict) as again:
+        local.tray.undo(undone.entry_id, actor=COORDINATOR)
+    assert (again.value.code, again.value.fields["status"]) == ("already_settled", "undone")
     local.batches.stage(batch.batch_id, actor=STEWARD)
     confirmed = local.batches.confirm(batch.batch_id, actor=COORDINATOR)
     assert (confirmed.status, confirmed.checker, confirmed.checker_role) == (
@@ -1272,6 +1655,75 @@ def test_three_failed_passes_in_a_row_stop_the_batch(hub: Hub, monkeypatch: pyte
     assert released and all(task(hub, i.task_id).status == "open" for i in released)
 
 
+def test_a_stale_first_chunk_refused_after_an_undo_ends_nothing_staged_since(hub: Hub) -> None:
+    """While the first chunk of entry E1 is on its way, the maker undoes E1, stages the batch again and another
+    steward confirms it (E2): the stale chunk is refused for its checker, and that refusal ends E1's staging
+    only, never E2 (review 3.3)."""
+    alike(hub, 12)
+    local = rehub(hub, batch_checker_above=3)
+    batch = prepared(local)
+    local.batches.stage(batch.batch_id, actor=STEWARD)
+    first = local.batches.confirm(batch.batch_id, actor=COORDINATOR).entry_id
+    assert first is not None
+    again: dict[str, str | None] = {}
+
+    def meanwhile(point: str) -> None:
+        if point == "before_write" and not again:
+            again["entry"] = None
+            local.tray.undo(first, actor=STEWARD)
+            local.batches.stage(batch.batch_id, actor=STEWARD)
+            again["entry"] = local.batches.confirm(batch.batch_id, actor=SECOND_STEWARD).entry_id
+
+    local.commit.fault = meanwhile
+    flush_past_window(local)
+    local.commit.fault = None
+    second = again["entry"]
+    assert second is not None
+    after = fetch(local, batch.batch_id)
+    assert (after.status, after.entry_id, after.checker, after.outcome) == (
+        "staged",
+        second,
+        SECOND_STEWARD.name,
+        None,
+    )
+    entries = local.store.tray_entries([first, second])
+    assert (entries[first].status, entries[second].status) == ("undone", "staged")
+    assert local.store.open_batches_of_groups([batch.signature_key])  # the group still holds the batch
+    flush_past_window(local)  # E2's own window passes: it commits
+    assert fetch(local, batch.batch_id).status == "committed"
+
+
+def test_an_undo_clears_the_failed_passes_of_its_staging(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Failed passes count against one staging only: after an undo, a new staging starts from none (review
+    3.3)."""
+    alike(hub, 12)
+    batch = prepared(hub)
+    first = hub.batches.stage(batch.batch_id, actor=STEWARD).entry_id
+    assert first is not None
+    original = hub.commit.apply
+    failing = {"passes": 2}
+
+    def flaky(cs, work=None, **kwargs):
+        if failing["passes"] > 0:
+            failing["passes"] -= 1
+            raise Crash("transient")
+        return original(cs, work, **kwargs)
+
+    monkeypatch.setattr(hub.commit, "apply", flaky)
+    flush_past_window(hub)
+    flush_past_window(hub)
+    assert fetch(hub, batch.batch_id).attempts == 2
+    hub.tray.undo(first, actor=STEWARD)
+    assert fetch(hub, batch.batch_id).attempts == 0
+    hub.batches.stage(batch.batch_id, actor=STEWARD)
+    failing["passes"] = 1
+    flush_past_window(hub)
+    after = fetch(hub, batch.batch_id)
+    assert (after.status, after.attempts) == ("staged", 1)
+    flush_past_window(hub)
+    assert fetch(hub, batch.batch_id).status == "committed"
+
+
 def test_a_personas_batch_is_refused_on_a_shared_store(hub: Hub) -> None:
     alike(hub, 12)
     batch = prepared(hub)
@@ -1385,6 +1837,57 @@ def test_a_share_of_a_batch_goes_to_blind_review_neither_steward_answers(hub: Hu
     for actor in (STEWARD, COORDINATOR):
         listed = local.inbox.page("samples", actor=actor)
         assert not {r.task_id for r in listed.rows} & {s.task_id for s in drawn}
+    # a third steward answers them on a local store: the second data-steward persona, as the workbench's persona
+    # menu and `--as data_steward_2` produce it (review 3.3)
+    third = local.authority.actor_for_request(persona="data_steward_2", forwarded_user=None)
+    assert third == SECOND_STEWARD
+    listed = local.inbox.page("samples", actor=third)
+    assert {s.task_id for s in drawn} <= {r.task_id for r in listed.rows}
+    answer_blind(local, sample, agree=True)
+    answered = local.store.samples_by_id([sample.sample_id])[sample.sample_id]
+    assert answered.status != "open"
+
+
+def test_a_review_drawn_for_blind_review_that_fails_passes_its_draw_on(hub: Hub) -> None:
+    """The one review of a small batch drawn for blind review moves before the flush: it fails alone, and the
+    planned review with the next smallest draw value goes to blind review instead (review 3.3)."""
+    alike(hub, 12)
+    local = rehub(hub, sample_share=0.02)
+    batch = prepared(local)
+    local.batches.stage(batch.batch_id, actor=STEWARD)
+    (flagged,) = [i for i in items(local, batch.batch_id, "bulk") if i.review]
+    planned = [i for i in items(local, batch.batch_id, "bulk") if i.status == "planned"]
+    key = local.settings.sample_key
+    heir = min(
+        (i for i in planned if i.task_id != flagged.task_id),
+        key=lambda i: (draw_value("person", i.source.text(), "batch_link", batch.batch_id, key), i.task_id),
+    )
+    state = local.store.source_states("person", [flagged.source])[flagged.source]
+    land(
+        local,
+        [
+            row(
+                "crm",
+                flagged.source.key,
+                "person",
+                dict(state.values),
+                at=state.occurred_at + timedelta(minutes=5),
+            )
+        ],
+    )
+    local.arrival.intake(local.store.landing_above(0, 100_000))
+    flush_past_window(local)
+    assert fetch(local, batch.batch_id).status == "committed"
+    after = {i.task_id: i for i in items(local, batch.batch_id, "bulk")}
+    assert (after[flagged.task_id].status, after[flagged.task_id].reason) == ("failed", "record_changed")
+    linked = [i for i in after.values() if i.status == "committed"]
+    assert len(linked) == len(planned) - 1
+    assert [i.task_id for i in linked if i.review] == [heir.task_id]
+    drawn = [
+        s for s in local.store.open_samples_for("person", [i.source for i in linked]) if s.origin == "batch"
+    ]
+    assert [s.source for s in drawn] == [heir.source]  # ⌈2% × 6⌉ = 1 of the committed links
+    assert local.batches.batch(batch.batch_id, actor=STEWARD).blind_reviews == 1
 
 
 # ---------------------------------------------------------------------------------------------- bulk rights
@@ -1393,14 +1896,8 @@ def test_a_share_of_a_batch_goes_to_blind_review_neither_steward_answers(hub: Hu
 def answer_blind(hub: Hub, sample, *, agree: bool) -> None:
     decision = "blind_link" if agree else "blind_none"
     target = sample.target if agree else None
-    hub.tray.stage(sample.task_id, decision, actor=OWNER_STEWARD, target=target, **seen(hub, sample.task_id))
+    hub.tray.stage(sample.task_id, decision, actor=SECOND_STEWARD, target=target, **seen(hub, sample.task_id))
     flush_past_window(hub)
-
-
-#: a third steward, neither the maker nor the checker, who answers blind reviews
-from mdm.models.authority import Actor  # noqa: E402
-
-OWNER_STEWARD = Actor("persona:data_steward_two", "person", "data_steward", persona=True)
 
 
 def test_two_disagreeing_blind_answers_in_five_withdraw_bulk_rights(hub: Hub) -> None:
@@ -1640,6 +2137,35 @@ def test_a_compensation_stopped_after_its_first_chunk_leaves_the_rest_to_another
     assert done.status == "committed"
     view = local.batches.batch(batch.batch_id, actor=STEWARD)
     assert set(view.undone_by) == {first.batch_id, second.batch_id} and view.counts["compensated"] == 7
+    # each compensation is credited with its own links, and the stopped one says who stopped it (review 3.3)
+    undid_first = len([i for i in items(local, first.batch_id, "bulk") if i.status == "committed"])
+    assert [(c.batch_id, c.status, c.undone) for c in view.compensations] == [
+        (first.batch_id, "stopped", undid_first),
+        (second.batch_id, "committed", 7 - undid_first),
+    ]
+    stopped_view = local.batches.batch(first.batch_id, actor=COORDINATOR)
+    assert stopped_view.stopped_by == "Data steward"
+    assert local.batches.batch(first.batch_id, actor=STEWARD).stopped_by == "you"
+    assert local.batches.batch(second.batch_id, actor=STEWARD).stopped_by is None
+
+
+def test_the_original_names_a_compensation_still_committing(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While a compensation's chunks still commit, the original's page names it with its status and the links
+    it has undone so far (review 3.3)."""
+    local, batch = committed(hub, monkeypatch)
+    compensation = local.batches.compensate(batch.batch_id, actor=COORDINATOR, reason="pattern_wrong")
+    view = local.batches.batch(batch.batch_id, actor=STEWARD)
+    assert [(c.batch_id, c.status, c.undone) for c in view.compensations] == [
+        (compensation.batch_id, "ready", 0)
+    ]
+    local.batches.stage(compensation.batch_id, actor=COORDINATOR)
+    flush_past_window(local)
+    view = local.batches.batch(batch.batch_id, actor=STEWARD)
+    (line,) = view.compensations
+    assert (line.status, line.undone) == ("committing", view.counts["compensated"])
+    assert 0 < line.undone < 7
 
 
 def test_a_review_touched_since_is_kept_and_reported(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1652,6 +2178,32 @@ def test_a_review_touched_since_is_kept_and_reported(hub: Hub, monkeypatch: pyte
     assert (kept.status, kept.reason) == ("kept", "moved_since")
     assert done.status == "committed"
     assert local.batches.batch(compensation.batch_id, actor=COORDINATOR).counts["kept"] == 1
+
+
+def test_a_record_deleted_but_not_yet_settled_is_kept_alone_by_a_compensation(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A linked record whose delete arrival took in but has not settled keeps its link a while: the compensation
+    keeps that one review, with its reason, and undoes the rest (review 3.3)."""
+    local, batch = committed(hub, monkeypatch)
+    linked = [i for i in items(local, batch.batch_id, "bulk") if i.status == "committed"]
+    gone = linked[0]
+    state = local.store.source_states("person", [gone.source])[gone.source]
+    land(
+        local,
+        [row("crm", gone.source.key, "person", {}, op="delete", at=state.occurred_at + timedelta(minutes=5))],
+    )
+    local.arrival.intake(local.store.landing_above(0, 100_000))  # taken in, not settled
+    assert local.store.source_states("person", [gone.source])[gone.source].status != "active"
+    compensation = local.batches.compensate(batch.batch_id, actor=COORDINATOR, reason="pattern_wrong")
+    local.batches.stage(compensation.batch_id, actor=COORDINATOR)
+    for _ in range(compensation.chunks + 1):
+        flush_past_window(local)
+    done = fetch(local, compensation.batch_id)
+    assert (done.status, done.outcome) == ("committed", "committed")
+    after = {i.task_id: (i.status, i.reason) for i in items(local, compensation.batch_id)}
+    assert after.pop(gone.task_id) == ("kept", "record_changed")
+    assert set(after.values()) == {("committed", None)} and len(after) == len(linked) - 1
 
 
 def test_a_large_compensation_needs_a_second_steward(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:

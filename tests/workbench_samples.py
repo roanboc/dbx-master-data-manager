@@ -28,6 +28,7 @@ from mdm.models.workbench import (
     Candidate,
     Choice,
     CompareRow,
+    CompensationLine,
     FlushReport,
     GroupList,
     GroupRow,
@@ -1794,6 +1795,7 @@ BATCH_COMMITTED = replace(
     counts={"committed": 566},
     undo_until=datetime(2026, 10, 28, 12, 0, tzinfo=UTC),
     actions=(),
+    blind_reviews=12,
 )
 #: four reviews failed alone at their chunk
 BATCH_FAILED_ALONE = replace(BATCH_COMMITTED, counts={"committed": 562, "failed": 4})
@@ -1805,6 +1807,8 @@ BATCH_STOPPED = replace(
     outcome="stopped",
     commits=(41, 42),
     counts={"committed": 500, "released": 66},
+    stopped_by="Data steward",
+    blind_reviews=10,
 )
 #: stopped after chunk 1 of 3 when the breaker withdrew the pattern's bulk decisions
 BATCH_BULK_STOPPED = replace(
@@ -1814,6 +1818,8 @@ BATCH_BULK_STOPPED = replace(
     commits=(41, 41),
     counts={"committed": 250, "released": 316},
     withdrawn=BULK_WITHDRAWN,
+    stopped_by=None,
+    blind_reviews=5,
 )
 #: stopped after chunk 1 of 3 when the next chunk failed three times
 BATCH_CHUNK_FAILED = replace(BATCH_BULK_STOPPED, outcome="chunk_failed", withdrawn=None)
@@ -1833,19 +1839,45 @@ BATCH_SPLIT_ALL = replace(
 )
 BATCH_TOO_FEW = replace(BATCH_SPLIT, status="discarded", outcome="too_few_left", actions=(), finished_at=NOW)
 #: a compensation of it is open (not committed yet)
-BATCH_BEING_UNDONE = replace(BATCH_COMMITTED, compensated_by=COMPENSATION_ID)
+BATCH_BEING_UNDONE = replace(
+    BATCH_COMMITTED,
+    compensated_by=COMPENSATION_ID,
+    compensations=(CompensationLine(COMPENSATION_ID, "ready", None, 0),),
+)
 #: a compensation undid it; 3 of its links were changed since, and stay
 BATCH_UNDONE = replace(
     BATCH_COMMITTED,
     compensated_by=COMPENSATION_ID,
     undone_by=(COMPENSATION_ID,),
     counts={"committed": 3, "compensated": 563},
+    compensations=(CompensationLine(COMPENSATION_ID, "committed", "committed", 563),),
 )
 #: a compensation undid its first chunk and stopped: the other 316 can still be undone
 BATCH_PARTLY_UNDONE = replace(
     BATCH_COMMITTED,
     undone_by=(COMPENSATION_STOPPED_ID,),
     counts={"committed": 316, "compensated": 250},
+    compensations=(CompensationLine(COMPENSATION_STOPPED_ID, "stopped", "stopped", 250),),
+)
+#: a compensation undid its first chunk and stopped, and a second is still undoing the rest, one chunk in
+BATCH_UNDOING_AFTER_A_STOP = replace(
+    BATCH_PARTLY_UNDONE,
+    compensated_by=COMPENSATION_ID,
+    undone_by=(COMPENSATION_ID, COMPENSATION_STOPPED_ID),
+    counts={"committed": 66, "compensated": 500},
+    compensations=(
+        CompensationLine(COMPENSATION_STOPPED_ID, "stopped", "stopped", 250),
+        CompensationLine(COMPENSATION_ID, "committing", None, 250),
+    ),
+)
+#: the stopped compensation first, then a second one that undid the other 313 (3 changed since, and stay)
+BATCH_UNDONE_AFTER_A_STOP = replace(
+    BATCH_UNDOING_AFTER_A_STOP,
+    counts={"committed": 3, "compensated": 563},
+    compensations=(
+        CompensationLine(COMPENSATION_STOPPED_ID, "stopped", "stopped", 250),
+        CompensationLine(COMPENSATION_ID, "committed", "committed", 313),
+    ),
 )
 #: the compensation that undid it: 563 of 566 links undone, 3 kept
 COMPENSATION = BatchView(
@@ -2031,7 +2063,16 @@ CASE_BATCH_COMMITTING = replace(
     CASE_BATCH_HELD,
     staged=replace(STAGED_BATCH, deadline=NOW - timedelta(minutes=1)),
 )
-SAMPLE_CASES = (CASE_SAMPLE, CASE_SAMPLE_STAGED, CASE_BATCH_HELD, CASE_BATCH_COMMITTING)
+#: the same review, opened by a steward who neither prepared nor confirmed the batch: U never reaches it
+HELD_BY_ANOTHERS_BATCH = f"It is part of another steward's batch, {BATCH_ID}. Pick another task."
+STAGED_ANOTHERS_BATCH = replace(STAGED_BATCH, mine=False)
+CASE_ANOTHERS_BATCH = replace(
+    CASE_BATCH_HELD,
+    row=replace(CASE_BATCH_HELD.row, staged=STAGED_ANOTHERS_BATCH),
+    staged=STAGED_ANOTHERS_BATCH,
+    actions=_sample_actions(why=HELD_BY_ANOTHERS_BATCH),
+)
+SAMPLE_CASES = (CASE_SAMPLE, CASE_SAMPLE_STAGED, CASE_BATCH_HELD, CASE_BATCH_COMMITTING, CASE_ANOTHERS_BATCH)
 
 #: the tray's batch entries: the maker's while it waits, confirmed; the second steward's; committing,
 #: committed, stopped and failed
@@ -2063,9 +2104,15 @@ TRAY_BATCH_WITHDRAWN = replace(
 TRAY_BATCH_FAILED = replace(
     TRAY_BATCH_STAGED, status="failed", outcome="nothing_left", progress=(0, 3), settled_at=NOW
 )
+#: the batch its second steward confirmed, undone in the window: it stays in their tray with its outcome, and the
+#: undo cleared the batch's second steward (finding 14)
+TRAY_BATCH_CONFIRMED_UNDONE = replace(
+    TRAY_BATCH_CONFIRMED, status="undone", outcome="undone", second_steward=None, settled_at=NOW
+)
 TRAY_BATCH_VIEWS = (
     TRAY_BATCH_STAGED,
     TRAY_BATCH_CONFIRMED,
+    TRAY_BATCH_CONFIRMED_UNDONE,
     TRAY_BATCH_COMMITTING,
     TRAY_BATCH_COMMITTED,
     TRAY_BATCH_STOPPED,
@@ -2147,6 +2194,9 @@ ALL = (
     SUMMARY,
     PROGRESS,
     *BATCH_VIEWS,
+    BATCH_UNDOING_AFTER_A_STOP,
+    BATCH_UNDONE_AFTER_A_STOP,
+    *BATCH_UNDONE_AFTER_A_STOP.compensations,
     BATCH_ROW,
     ROW_PAGE,
     SAMPLE_LINE,

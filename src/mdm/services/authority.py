@@ -1,8 +1,9 @@
 """Authority: who the actor is, what the role allows, and what allowed a change set (owner: SERVICES, B.10).
 
-Local mode (decision 13): the actor is a persona (`--as ROLE`, else
-`MDM_ROLE`, else `data_owner`), `Actor("persona:<role>", "person", role,
-persona=True)`. Otherwise a persona asked for raises `PlatformRefused`, and the
+Local mode (decision 13): the actor is a persona (`--as PERSONA`, else
+`MDM_ROLE`, else `data_owner`), `Actor("persona:<persona>", "person", role,
+persona=True)`, each persona acting in one role (`PERSONAS`: every role once, and
+`data_steward_2`, a second data steward). Otherwise a persona asked for raises `PlatformRefused`, and the
 actor is the SDK's current user as a consumer (groups: initiative 4), or the
 database user as a consumer without the SDK.
 
@@ -23,7 +24,7 @@ from mdm.models.authority import (
     AUTOMATIC_ITEMS,
     NEEDS_CHECKER,
     NEVER_AUTOMATIC,
-    ROLES,
+    PERSONAS,
     RULE1_CASES,
     Actor,
     Authority,
@@ -52,6 +53,15 @@ DEFAULT_PERSONA = "data_owner"
 #: the workbench's persona when none is asked for (adopted): the command line keeps the data owner
 WORKBENCH_PERSONA = "data_steward"
 CLAUSES_MARK = "; clauses "
+
+
+def persona_actor(code: str) -> Actor:
+    """The persona `code` names (`PERSONAS`): `Actor("persona:<code>", "person", <its role>, persona=True)`;
+    `Forbidden(unknown_role)` for any other code. Only the local mode calls it."""
+    role = PERSONAS.get(code)
+    if role is None:
+        raise Forbidden("unknown_role", role=token(code))
+    return Actor(f"{PERSONA_PREFIX}{code}", "person", role, persona=True)
 
 
 def require(actor: Actor, action: str) -> None:
@@ -120,10 +130,7 @@ class AuthorityService:
         """A persona in the local mode; otherwise the signed-in user as a consumer, never a persona."""
         asked = (as_role or "").strip() or self.settings.role.strip()
         if self.settings.local_mode:
-            role = asked or DEFAULT_PERSONA
-            if role not in ROLES:
-                raise Forbidden("unknown_role", role=token(role))
-            return Actor(f"{PERSONA_PREFIX}{role}", "person", role, persona=True)
+            return persona_actor(asked or DEFAULT_PERSONA)
         if asked:
             raise PlatformRefused("persona_refused", role=token(asked))
         return Actor(self._user_name(), "person", "consumer")
@@ -132,17 +139,14 @@ class AuthorityService:
         """The workbench's actor for one request (decision 21).
 
         On a local store: the persona asked for, else `MDM_ROLE`, else the data steward (the command line
-        keeps the data owner); an unknown role is `Forbidden(unknown_role)`. Two tabs with the same persona
-        are the same actor. Inside a Databricks App on a shared store: the user the platform forwards, as a
+        keeps the data owner); an unknown persona is `Forbidden(unknown_role)`. Two tabs with the same persona
+        are the same actor; the two data-steward personas are two. Inside a Databricks App on a shared store: the user the platform forwards, as a
         consumer until initiative 4 maps groups to roles, and `PlatformRefused(no_forwarded_user)` when it
         names nobody; a persona is never honoured there. On a shared
         store outside an App (a laptop pointed at Lakebase): the signed-in user as a consumer.
         """
         if self.settings.local_mode:
-            role = (persona or "").strip() or self.settings.role.strip() or WORKBENCH_PERSONA
-            if role not in ROLES:
-                raise Forbidden("unknown_role", role=token(role))
-            return Actor(f"{PERSONA_PREFIX}{role}", "person", role, persona=True)
+            return persona_actor((persona or "").strip() or self.settings.role.strip() or WORKBENCH_PERSONA)
         if self.settings.in_databricks_app:
             name = (forwarded_user or "").strip()
             if not name:

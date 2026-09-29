@@ -135,8 +135,9 @@ def render_route(
 
 
 def route_key(pathname: str | None, ctx: UiContext) -> dict[str, str]:
-    """What the page on screen was built for: its path and the actor's role (ROUTE)."""
-    return {"path": pathname or "/", "persona": ctx.actor.role}
+    """What the page on screen was built for: its path and who it was built for (ROUTE), a persona's code or
+    a forwarded user's role (`UiContext.route_persona`)."""
+    return {"path": pathname or "/", "persona": ctx.route_persona}
 
 
 def navbar_class(ctx: UiContext) -> str:
@@ -148,8 +149,8 @@ def route_outputs(
     ctx: UiContext, pathname: str | None, search: str | None, on_screen: object, entity: str | None
 ) -> tuple:
     """S5's outputs without Dash: (page, note, inbox active, navbar class, route), or `no_update` on every
-    output when the page on screen was built for this path and role (a change of `?…`, a tray poll or a
-    restored store never rebuilds a page)."""
+    output when the page on screen was built for this path and persona, or role (a change of `?…`, a tray
+    poll or a restored store never rebuilds a page; a switch between the two data-steward personas does)."""
     key = route_key(pathname, ctx)
     if on_screen == key:
         return (no_update,) * 5

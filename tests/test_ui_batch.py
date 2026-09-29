@@ -24,7 +24,7 @@ from dash.development.base_component import Component
 from mdm import capacity
 from mdm.backend.factory import open_store
 from mdm.models.batch import PAGE_ACTIONS
-from mdm.models.workbench import BatchView
+from mdm.models.workbench import BatchView, CompensationLine
 from mdm.services.context import Hub
 from mdm.ui import app as app_module
 from mdm.ui import context, ids
@@ -230,6 +230,8 @@ def test_the_splits_say_what_left_and_what_the_sample_needs_now() -> None:
     assert batch.still_in(samples.BATCH_SPLIT) == 574
     voided = replace(samples.BATCH_SPLIT, sample=(*samples.BATCH_SPLIT.sample, samples.SAMPLE_VOID))
     assert batch.still_in(voided) == 573  # a void review left too; the top-up replaced it
+    decided_elsewhere = replace(samples.BATCH_SPLIT, counts={"excluded": 4})
+    assert batch.still_in(decided_elsewhere) == 570  # decided one by one in the inbox: they left the batch
     one = batch.split_text(samples.BATCH_SPLIT, replace(samples.SPLIT_APPLIED, count=1), last=False)
     assert "1 review left the batch" in one and "The sample now needs" not in one
 
@@ -437,6 +439,28 @@ def test_a_committing_batch_shows_its_chunks_and_the_throttle() -> None:
 # ---------------------------------------------------------------------------------------------- the result
 
 
+def test_a_role_that_decides_no_task_is_never_sent_to_decide_the_sample(alike: Hub) -> None:
+    # finding 12: a data owner or a technical steward reads the batch; its "Decide the sample in the inbox" is
+    # disabled with the decide pane's own reason, and the footer fills no disabled action
+    batch_id = drawn(alike)
+    for role, words in (("data_owner", "data owner"), ("technical_steward", "technical steward")):
+        ctx = context.for_test(alike, role=role)
+        view = alike.batches.batch(batch_id, actor=ctx.actor)
+        [decide] = [a for a in view.actions if a.decision == "decide_sample"]
+        assert not decide.enabled
+        tree = batch.render(view)
+        [link] = [c for c in of_type(tree, "A") if text_of(c) == "Decide the sample in the inbox"]
+        assert "mdm-link-button-filled" not in classes(link)
+        assert prop(link, "aria-describedby") == ids.BATCH_ACTION_REASONS
+        [reasons] = [c for c in walk(tree) if getattr(c, "id", None) == ids.BATCH_ACTION_REASONS]
+        assert f"Your role, {words}, can see tasks but not decide them." in text_of(reasons)
+        assert not [c for c in walk(tree) if "mdm-link-button-filled" in classes(c)]
+        assert not [c for c in of_type(tree, "Button") if getattr(c, "variant", None) == "filled"]
+    steward = batch.render(alike.batches.batch(batch_id, actor=context.for_test(alike).actor))
+    [link] = [c for c in of_type(steward, "A") if text_of(c) == "Decide the sample in the inbox"]
+    assert "mdm-link-button-filled" in classes(link)
+
+
 @pytest.mark.parametrize(
     ("view", "wanted"),
     [
@@ -446,17 +470,22 @@ def test_a_committing_batch_shows_its_chunks_and_the_throttle() -> None:
         ),
         (
             samples.BATCH_STOPPED,
-            "Stopped after chunk 2 of 3: 500 links committed; 66 reviews are back in the queue.",
+            "Stopped by a data steward after chunk 2 of 3: 500 links committed; 66 reviews are back in the "
+            "queue. 10 went to blind review.",
+        ),
+        (
+            replace(samples.BATCH_STOPPED, stopped_by="you", blind_reviews=0),
+            "Stopped by you after chunk 2 of 3: 500 links committed; 66 reviews are back in the queue.",
         ),
         (
             samples.BATCH_BULK_STOPPED,
             "Stopped after chunk 1 of 3: the quality breaker withdrew bulk decisions for this pattern. 250 links "
-            "committed; 316 reviews are back in the queue.",
+            "committed; 316 reviews are back in the queue. 5 went to blind review.",
         ),
         (
             samples.BATCH_CHUNK_FAILED,
             "Stopped after chunk 1 of 3: the next chunk failed three times. 250 links committed; 316 reviews are "
-            "back in the queue.",
+            "back in the queue. 5 went to blind review.",
         ),
         (
             samples.BATCH_NOTHING,
@@ -473,11 +502,27 @@ def test_a_committing_batch_shows_its_chunks_and_the_throttle() -> None:
             "Too few alike reviews are left to link together. Decide them one by one in the inbox.",
         ),
         (samples.COMPENSATION, "Undid 563 of 566 links. 3 were changed after the batch, so they are kept."),
+        (
+            replace(samples.COMPENSATION, status="stopped", stopped_by="Coordinating steward"),
+            "Stopped by a coordinating steward after chunk 3 of 3. Undid 563 of 566 links. 3 were changed after "
+            "the batch, so they are kept.",
+        ),
     ],
 )
 def test_the_result_says_how_the_batch_ended(view: BatchView, wanted: str) -> None:
     result = section(page(view), "Result")
     assert result is not None and wanted in paragraphs(result)
+
+
+def test_blind_review_counts_the_samples_written_not_those_planned() -> None:
+    # the summary planned 12; the chunks wrote 11 (a drawn review failed alone and no planned one was left)
+    fewer = replace(samples.BATCH_COMMITTED, blind_reviews=11)
+    assert (
+        "Committed in 3 chunks: 566 links, commits 41 to 43. 11 went to blind review."
+        in batch.outcome_lines(fewer)
+    )
+    none = batch.outcome_lines(replace(samples.BATCH_COMMITTED, blind_reviews=0))
+    assert none == ["Committed in 3 chunks: 566 links, commits 41 to 43."]
 
 
 def test_reviews_that_failed_alone_are_counted_and_back_in_the_queue() -> None:
@@ -517,7 +562,7 @@ def test_a_compensation_open_done_or_stopped_is_named_and_linked() -> None:
     assert f"Being undone by batch {samples.COMPENSATION_ID}." in paragraphs(being)
     assert [c.href for c in of_type(being, "Anchor")] == [f"/batch/{samples.COMPENSATION_ID}"]
     undone = section(page(samples.BATCH_UNDONE), "Result")
-    assert f"Undone by batch {samples.COMPENSATION_ID}." in paragraphs(undone)
+    assert f"Undone by batch {samples.COMPENSATION_ID}: 563 of its 566 links." in paragraphs(undone)
     assert not of_type(undone, "Code")
     partly = paragraphs(section(page(samples.BATCH_PARTLY_UNDONE), "Result"))
     assert (
@@ -527,6 +572,40 @@ def test_a_compensation_open_done_or_stopped_is_named_and_linked() -> None:
     assert (
         f"The other 316 can be undone until 28 October 2026: mdm batch compensate {BATCH_ID} --reason "
         "pattern_wrong|source_defect|sample_missed" in partly
+    )
+
+
+def test_each_compensation_is_credited_with_the_links_it_undid_itself() -> None:
+    # finding 17: a compensation stopped after 250 links, and a second undid the rest; the first is never
+    # credited with the second's links, and the second reads by its own status
+    stopped, second = samples.COMPENSATION_STOPPED_ID, samples.COMPENSATION_ID
+    undoing = [p for p in paragraphs(section(page(samples.BATCH_UNDOING_AFTER_A_STOP), "Result"))]
+    assert undoing[-2:] == [
+        f"250 of its 566 links were undone by batch {stopped}, which stopped.",
+        f"Being undone by batch {second}: 250 of its 566 links so far.",
+    ]
+    assert not [p for p in undoing if "can be undone until" in p]  # one is open: no other may start
+    done = section(page(samples.BATCH_UNDONE_AFTER_A_STOP), "Result")
+    assert paragraphs(done)[-2:] == [
+        f"250 of its 566 links were undone by batch {stopped}, which stopped.",
+        f"Undone by batch {second}: 313 of its 566 links.",
+    ]
+    assert [c.href for c in of_type(done, "Anchor")] == [f"/batch/{stopped}", f"/batch/{second}"]
+    assert not of_type(done, "Code")
+    one_link = CompensationLine(stopped, "stopped", "stopped", 1)
+    none = CompensationLine(stopped, "failed", "nothing_left", 0)
+    assert text_of(batch.compensation_line(samples.BATCH_PARTLY_UNDONE, one_link)) == (
+        f"1 of its 566 links was undone by batch {stopped}, which stopped."
+    )
+    assert text_of(batch.compensation_line(samples.BATCH_PARTLY_UNDONE, none)) == (
+        f"None of its 566 links were undone by batch {stopped}, which stopped."
+    )
+    staged = CompensationLine(second, "staged", None, 0)
+    assert text_of(batch.compensation_line(samples.BATCH_PARTLY_UNDONE, staged)) == (
+        f"Being undone by batch {second}."
+    )
+    assert batch.stamp_of(samples.BATCH_UNDONE_AFTER_A_STOP) != batch.stamp_of(
+        samples.BATCH_UNDOING_AFTER_A_STOP
     )
 
 
@@ -747,8 +826,60 @@ def test_b2_stops_a_committing_batch_before_its_next_chunk(
     done = alike.batches.batch(batch_id, actor=ctx.actor)
     assert done.status == "stopped"
     assert any(
-        p.startswith("Stopped after chunk 1 of ") for p in paragraphs(batch_page.body(ctx, done, None))
+        p.startswith("Stopped by you after chunk 1 of ") for p in paragraphs(batch_page.body(ctx, done, None))
     )
+    other = context.for_test(alike, role="coordinating_steward")
+    theirs = alike.batches.batch(batch_id, actor=other.actor)
+    assert any(
+        p.startswith("Stopped by a data steward after chunk 1 of ")
+        for p in paragraphs(batch_page.body(other, theirs, None))
+    )
+
+
+def test_the_result_credits_a_stopped_compensation_and_the_one_after_it_with_their_own_links(
+    alike: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # finding 17, on a hub: a compensation stopped after its first chunk, and a second undid the rest; the
+    # original's result credits each with its own links, while the second commits and once it has
+    monkeypatch.setattr(capacity, "COMMIT_CHUNK_ROWS", 6)  # a few links a chunk, so it commits in parts
+    batch_id = drawn(alike)
+    ctx = context.for_test(alike)
+    sample_agreed(alike, batch_id)
+    alike.batches.prepare(batch_id, actor=ctx.actor)
+    alike.batches.stage(batch_id, actor=ctx.actor)
+    while alike.batches.batch(batch_id, actor=ctx.actor).status != "committed":
+        helpers.flush_past_window(alike)
+    links = alike.batches.batch(batch_id, actor=ctx.actor).counts["committed"]
+    first = alike.batches.compensate(batch_id, actor=helpers.COORDINATOR, reason="pattern_wrong")
+    assert first.chunks > 1
+    alike.batches.stage(first.batch_id, actor=helpers.COORDINATOR)
+    helpers.flush_past_window(alike)
+    alike.batches.stop(first.batch_id, actor=helpers.STEWARD)
+    helpers.flush_past_window(alike)
+    stopped = alike.batches.batch(first.batch_id, actor=ctx.actor)
+    assert stopped.status == "stopped"
+    by_first = stopped.counts["committed"]
+    assert 0 < by_first < links
+
+    def result() -> list[str]:
+        return paragraphs(batch.result_section(alike.batches.batch(batch_id, actor=ctx.actor)))
+
+    credit = f"{by_first} of its {links} links {'was' if by_first == 1 else 'were'} undone by batch "
+    assert f"{credit}{first.batch_id}, which stopped." in result()
+    second = alike.batches.compensate(batch_id, actor=helpers.COORDINATOR, reason="pattern_wrong")
+    alike.batches.stage(second.batch_id, actor=helpers.COORDINATOR)
+    helpers.flush_past_window(alike)
+    midway = result()
+    assert f"{credit}{first.batch_id}, which stopped." in midway
+    assert [p for p in midway if p.startswith(f"Being undone by batch {second.batch_id}: ")], midway
+    while alike.batches.batch(second.batch_id, actor=ctx.actor).status not in ("committed", "stopped"):
+        helpers.flush_past_window(alike)
+    by_second = alike.batches.batch(second.batch_id, actor=ctx.actor).counts["committed"]
+    assert by_first + by_second == links
+    final = result()
+    assert f"{credit}{first.batch_id}, which stopped." in final
+    assert f"Undone by batch {second.batch_id}: {by_second} of its {links} links." in final
+    assert not [p for p in final if p.startswith(f"{links} of its")]
 
 
 def test_b3_pages_the_rows_by_position_and_keeps_a_stack_of_cursors(

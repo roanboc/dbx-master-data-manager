@@ -1,7 +1,9 @@
 // Single-key shortcuts for the inbox (decision 18), and the shell's clientside callbacks (namespace
 // mdm_shell). Moving and choosing happen here, in the browser; a decision goes to Dash through the
-// key-event store, one at a time, and only once the case of the selected task is on screen. The listener yields to fields, lists, menus, dialogs, grid editors and
-// focused buttons and links; it is off when the steward turns shortcuts off (WCAG 2.2 success criterion
+// key-event store, one at a time, and only once the case of the selected task is on screen. The listener
+// yields to fields, lists, menus, dialogs, grid editors and focused buttons and links, except N, and L on
+// another candidate, on the forced sample's "Which comparison misled?", which decide with the comparison
+// chosen (naming, below); it is off when the steward turns shortcuts off (WCAG 2.2 success criterion
 // 2.1.4), and it acts only on a page that carries data-mdm-keys="on" (the inbox). It reads row and
 // candidate IDs only, never a value on the page, and writes no markup.
 //
@@ -187,6 +189,41 @@
     attributeFilter: ["aria-haspopup", "aria-expanded"],
   });
 
+  // ------------------------------------------------------------------ focus clear of a sticky footer
+  // The decide pane's footer and the batch page's actions stay at the foot of their scroller, which keeps
+  // room for them (--mdm-foot-room, styles.css), so the browser scrolls a focused control clear of them.
+  // A footer taller than that room could still cover one entirely (WCAG 2.2 success criterion 2.4.11): a
+  // control focused under a footer is scrolled to the middle of its scroller.
+  var FOOTERS = ".mdm-decide-footer, .mdm-batch-actions";
+  // whether a footer is what is painted at the middle of the control (a menu drawn over a footer is not)
+  function covered(el) {
+    var box = el.getBoundingClientRect();
+    if (!box.width && !box.height) {
+      return false;
+    }
+    var x = Math.min(Math.max(box.left + box.width / 2, 0), window.innerWidth - 1);
+    var y = Math.min(Math.max(box.top + box.height / 2, 0), window.innerHeight - 1);
+    var top = document.elementFromPoint(x, y);
+    var footer = top && top.closest ? top.closest(FOOTERS) : null;
+    return !!(footer && !footer.contains(el) && !el.contains(footer));
+  }
+  document.addEventListener(
+    "focusin",
+    function (e) {
+      var el = e.target;
+      if (!el || el === document.body || !el.getBoundingClientRect) {
+        return;
+      }
+      // after the browser's own scroll to the focused control
+      window.requestAnimationFrame(function () {
+        if (document.activeElement === el && covered(el)) {
+          el.scrollIntoView({block: "center", inline: "nearest"});
+        }
+      });
+    },
+    true
+  );
+
   // ------------------------------------------------------------------ the key listener
   var DECIDE = {l: "link", n: "not_a_match", a: "approve", r: "reject", c: "claim", u: "undo"};
   var BUSY_MS = 10000; // a decision that never answers frees the listener after this
@@ -209,6 +246,20 @@
       '[role="dialog"], [role="listbox"], [role="combobox"], [role="menu"], [role="alertdialog"], ' +
         ".mantine-Popover-dropdown, .mantine-Menu-dropdown, " +
         ".ag-cell-inline-editing, .ag-popup, .ag-popup-editor"
+    );
+  }
+  // "Which comparison misled?" (story 3.3): N, or L on another candidate, moves focus onto its radios, where
+  // the arrow keys choose; the same key then decides with the comparison chosen (the key help says so), so N
+  // and L pass through there, and every other key yields to the radios as to any field
+  var NAMING_KEYS = {l: true, n: true};
+  function naming(el, key) {
+    return !!(
+      NAMING_KEYS[key] &&
+      el &&
+      el.closest &&
+      el.tagName === "INPUT" &&
+      el.type === "radio" &&
+      el.closest("#decide-pane .mdm-split-choice")
     );
   }
   function onControl(el) {
@@ -255,13 +306,13 @@
     if (!document.querySelector('[data-mdm-keys="on"]:not(body)')) {
       return;
     }
-    if (typing(e.target)) {
+    var key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (typing(e.target) && !naming(e.target, key)) {
       return;
     }
     if ((e.key === "Enter" || e.key === " ") && onControl(e.target)) {
       return;
     }
-    var key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if (key === "j" || key === "k") {
       e.preventDefault();
       call("move", key === "j" ? 1 : -1);

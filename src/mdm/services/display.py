@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from mdm.models.authority import ROLE_LABELS, Actor
+from mdm.models.authority import PERSONA_LABELS, ROLE_LABELS, Actor
 from mdm.models.batch import SPLIT_ALL, SPLIT_REASON_PREFIX
 from mdm.models.changes import (
     ChangeItem,
@@ -261,8 +261,14 @@ def claimant_text(claimed_by: str | None, actor: Actor) -> str | None:
     if claimed_by == actor.name:
         return "you"
     if claimed_by.startswith("persona:"):
-        return role_label(claimed_by.partition(":")[2], persona=True)
+        return persona_label(claimed_by)
     return claimed_by
+
+
+def persona_label(name: str) -> str:
+    """A persona's name as a person reads it: "Data steward (persona)", "Data steward 2 (persona)"."""
+    code = name.partition(":")[2]
+    return f"{PERSONA_LABELS[code]} (persona)" if code in PERSONA_LABELS else role_label(code, persona=True)
 
 
 def _source_of(subject: Mapping[str, Any]) -> str:

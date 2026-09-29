@@ -22,9 +22,10 @@ from typing import Any
 
 from mdm import capacity
 from mdm.config import Settings
-from mdm.models.authority import ROLES, Actor, allowed
+from mdm.models.authority import PERSONAS, Actor, allowed
 from mdm.models.errors import MdmError
 from mdm.models.workbench import HubBadges
+from mdm.services.authority import PERSONA_PREFIX
 from mdm.services.context import Hub
 from mdm.services.tray import TrayWorker
 from mdm.ui import messages
@@ -89,8 +90,12 @@ class UiContext:
         return allowed(self.actor, action)
 
     @property
-    def persona_role(self) -> str:
-        """The actor's role: what the route store and the persona switch compare."""
+    def route_persona(self) -> str:
+        """Who the page on screen was built for, as the route store keys it: a persona's code, so switching
+        between the two data-steward personas rebuilds the page as it does between roles; for anyone else
+        (a user a Databricks App forwards) the role, so no user name lands in the browser."""
+        if self.actor.persona and self.actor.name.startswith(PERSONA_PREFIX):
+            return self.actor.name.removeprefix(PERSONA_PREFIX)
         return self.actor.role
 
 
@@ -102,8 +107,9 @@ def state() -> UiState:
 
 
 def persona_of(value: Any) -> str | None:
-    """The persona a tab asked for, when it names a role; anything else is no persona (the default)."""
-    return value if isinstance(value, str) and value in ROLES else None
+    """The persona a tab asked for, when it names one (`PERSONAS`: every role, and a second data steward);
+    anything else is no persona (the default)."""
+    return value if isinstance(value, str) and value in PERSONAS else None
 
 
 def forwarded_user() -> str | None:

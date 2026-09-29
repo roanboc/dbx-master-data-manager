@@ -222,9 +222,12 @@ def default_of(offered: Sequence[GoldenCandidate], close_points: float) -> tuple
     return default, close
 
 
-def batch_held_sentence(batch_id: str) -> str:
-    """Why a review a batch holds takes no decision of its own."""
-    return f"It is part of batch {batch_id}. Undo the batch to decide it on its own."
+def batch_held_sentence(batch_id: str, mine: bool = True) -> str:
+    """Why a review a batch holds takes no decision of its own: its maker or second steward (`mine`) may undo
+    the batch; anyone else picks another task, as the `already_staged` refusal says."""
+    if mine:
+        return f"It is part of batch {batch_id}. Undo the batch to decide it on its own."
+    return f"It is part of another steward's batch, {batch_id}. Pick another task."
 
 
 def shape_of(task: Task) -> str:
@@ -1191,7 +1194,7 @@ class DecisionService:
         elif checked:
             blocked = NOTICE_OWN_BATCH
         elif staged is not None and staged.batch_id is not None:
-            blocked = batch_held_sentence(staged.batch_id)
+            blocked = batch_held_sentence(staged.batch_id, staged.mine)
         elif staged is not None:
             blocked = (
                 "Your decision on this task is in the tray. Undo it there to change it."
@@ -1402,7 +1405,7 @@ class DecisionService:
         comparison that misled in `split_on` (a comparison of the batch's pattern, or `all`):
         `Forbidden(split_choice_needed)` without one, `Forbidden(bad_split_choice)` for any other code. An
         agreeing link, a link on a close call (void), or a task that is no sample review takes none. The
-        stage subject keeps the case's default and `split_on`."""
+        stage subject keeps the case's default, `split_on` and, on a sample review, its batch (`sample_batch`)."""
         require(actor, "work_tasks")
         if decision not in DECISIONS:
             raise Forbidden("decision_not_offered", decision=token(decision))
@@ -1509,7 +1512,7 @@ class DecisionService:
             if row is None or row.status != "active":
                 raise Conflict([token(master)], code="target_changed")
         default = prepared.default_candidate if decision in ("link", "not_a_match") else None
-        self._check_split(task, decision, target, default, split_on)
+        sample_batch = self._check_split(task, decision, target, default, split_on)
         subject = safe_detail(
             source=source_token(task.source) if task.source else None,
             candidates=candidates if decision == "not_a_match" or decision == "link" else [],
@@ -1522,6 +1525,7 @@ class DecisionService:
             row_versions={master: rows[master].row_version for master in named},
             default=default,
             split_on=split_on,
+            sample_batch=sample_batch,
         )
         return Staging(
             task_id=task_id,
@@ -1536,9 +1540,11 @@ class DecisionService:
 
     def _check_split(
         self, task: Task, decision: str, target: str | None, default: str | None, split_on: str | None
-    ) -> None:
+    ) -> str | None:
         """On an open forced-sample review of a `sampling` batch, a disagreeing decision names the comparison
-        that misled; nothing else names one (reading 5)."""
+        that misled; nothing else names one (reading 5). Returns the batch whose sample the decision is part
+        of, which the stage subject keeps (`sample_batch`): only a decision staged on the sample pane counts
+        as a sample outcome."""
         found = self._open_sample(task.task_id) if decision in ("link", "not_a_match") else None
         disagrees = found is not None and (
             decision == "not_a_match" or (default is not None and target is not None and target != default)
@@ -1546,12 +1552,13 @@ class DecisionService:
         if not disagrees:
             if split_on is not None:
                 raise Forbidden("bad_split_choice")
-            return
+            return found[0].batch_id if found is not None else None
         if split_on is None:
             raise Forbidden("split_choice_needed")
         batch, _ = found
         if split_on != SPLIT_ALL and split_on not in display.signature_comparisons(batch.signature):
             raise Forbidden("bad_split_choice")
+        return batch.batch_id
 
     @staticmethod
     def _locks(task: Task) -> list[str]:
@@ -1747,13 +1754,18 @@ class DecisionService:
     def _sample_outcome(self, entry: TrayEntry, subject: Mapping[str, Any]) -> tuple[BatchSampleWrite, ...]:
         """A forced-sample review's outcome, written in the decision's own transaction (reading 4): `agreed`
         for a link to the case's default when it was staged, `disagreed` for another link or "not a match",
-        with the comparison it named, and `void` for a link staged on a close call, which suggested nothing."""
+        with the comparison it named, and `void` for a link staged on a close call, which suggested nothing.
+        Only a decision staged while the review was that batch's open sample review counts (its subject's
+        `sample_batch`): one staged on a bulk candidate that a top-up drew later writes nothing, so its task
+        closes, the refresh voids the review and the next draw replaces it."""
         if entry.decision not in ("link", "not_a_match"):
             return ()
         found = self._open_sample(entry.task_id)
         if found is None:
             return ()
         batch, _ = found
+        if subject.get("sample_batch") != batch.batch_id:
+            return ()
         default = subject.get("default") if isinstance(subject.get("default"), str) else None
         if entry.decision == "not_a_match":
             status = "disagreed"

@@ -251,9 +251,10 @@ def groups_table(rows: Sequence[GroupRow], *, can_draw: bool, sample_base: int =
 
 
 def grouped_line(view: GroupList) -> str:
-    """What was grouped: "Grouped from the 1,000 open reviews due soonest." and, when any waits under an
-    earlier rule version, "12 reviews scored under an earlier rule version are not grouped."."""
-    text = f"Grouped from the {number(view.window)} open reviews due soonest."
+    """What was grouped: "Grouped from the open reviews due soonest, at most 1,000 per entity." (the window is
+    the most the page reads of each entity, not a count of what it read) and, when any waits under an earlier
+    rule version, "12 reviews scored under an earlier rule version are not grouped."."""
+    text = f"Grouped from the open reviews due soonest, at most {number(view.window)} per entity."
     if view.older_rules > 0:
         older = count_text(view.older_rules)
         noun = "review" if view.older_rules == 1 else "reviews"

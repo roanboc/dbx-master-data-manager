@@ -50,7 +50,8 @@ SAMPLE_OUTCOMES = ("open", "agreed", "disagreed", "void")
 BULK_STATUSES = (
     "candidate",  # drawn into the population, waiting for the sample
     "planned",  # prepared: its target, the target's row version and its event are frozen
-    "excluded",  # left out at preparation or staging, with its reason
+    "excluded",  # left out with its reason: while the sample is decided (its task closed or moved), or at
+    # preparation or staging
     "committed",  # linked in a chunk
     "failed",  # failed alone at its chunk's pre-check, with its reason; its task is back in the queue
     "released",  # the batch ended before its chunk; its task is back in the queue
@@ -169,6 +170,7 @@ class Batch:
     planning_version: int = 0  # the last commit version its plan read
     staged_at: datetime | None = None
     finished_at: datetime | None = None
+    stop_requested_role: str | None = None  # the role of the steward who asked it to stop
 
 
 @dataclass(frozen=True, slots=True)

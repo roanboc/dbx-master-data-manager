@@ -105,7 +105,7 @@ SPLIT_LABEL = "Which comparison misled?"
 SPLIT_EVERY = "Every alike review in this batch"
 SPLIT_NOTE = (
     "The reviews whose record holds the same value on it leave the batch, to be decided one by one. Values "
-    "stay hidden: the hub compares them, and logs each record it reads."
+    "stay hidden: the hub compares them and, when they are personal, logs each record that leaves."
 )
 OPEN_BATCH = "Open the batch"
 
@@ -773,16 +773,24 @@ def split_choice(case: TaskCase, split: str | None = None) -> Component | None:
 
 
 def _batch_line(case: TaskCase, now: datetime) -> Component:
-    """A review a batch holds: in the tray with the batch, or committing with it; "Open the batch"."""
+    """A review a batch holds: in the tray with the batch, or committing with it; "Open the batch". Only the
+    batch's maker and its second steward (`staged.mine`) are told that U undoes the whole batch: for anyone
+    else the batch is another steward's, and U never reaches it."""
     staged = case.staged
     assert staged is not None and staged.batch_id is not None
-    if staged.deadline > now:
+    if staged.deadline <= now:
+        text = f"Part of batch {staged.batch_id}, which is committing. "
+    elif staged.mine:
         text = (
             f"Part of batch {staged.batch_id} in the tray: it commits at {staged.deadline:%H:%M:%S} UTC unless "
             "the batch is undone. U undoes the whole batch. "
         )
     else:
-        text = f"Part of batch {staged.batch_id}, which is committing. "
+        # the decisions' reason ("…another steward's batch, BAT-…. Pick another task.") says what to do
+        text = (
+            f"Part of another steward's batch, {staged.batch_id}, in the tray: it commits at "
+            f"{staged.deadline:%H:%M:%S} UTC unless its steward undoes it. "
+        )
     return notice("warning", [text, dmc.Anchor(OPEN_BATCH, href=batch_href(staged.batch_id), inherit=True)])
 
 

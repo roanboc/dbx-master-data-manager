@@ -271,6 +271,9 @@ STEWARD = Actor("persona:data_steward", "person", "data_steward", persona=True)
 COORDINATOR = Actor("persona:coordinating_steward", "person", "coordinating_steward", persona=True)
 OWNER = Actor("persona:data_owner", "person", "data_owner", persona=True)
 CONSUMER = Actor("persona:consumer", "person", "consumer", persona=True)
+TECHNICAL = Actor("persona:technical_steward", "person", "technical_steward", persona=True)
+#: the second data-steward persona (story 3.3): a third steward, besides a batch's maker and its second steward
+SECOND_STEWARD = Actor("persona:data_steward_2", "person", "data_steward", persona=True)
 NAMESAKE = "Ossiver Instruments Ltd"
 
 

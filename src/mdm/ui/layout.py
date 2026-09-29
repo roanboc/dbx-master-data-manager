@@ -30,7 +30,7 @@ from dash.development.base_component import Component
 
 from mdm import capacity
 from mdm.config import Settings
-from mdm.models.authority import ROLE_LABELS, ROLES, Actor
+from mdm.models.authority import PERSONA_LABELS, PERSONAS, ROLE_LABELS, Actor
 from mdm.models.batch import BATCH_ID_RE, SIGNATURE_KEY_RE
 from mdm.models.tasks import TASK_KINDS
 from mdm.models.workbench import ALL_VIEWS, SAMPLES_VIEW, HubBadges
@@ -59,15 +59,18 @@ def entity_label(entity: str) -> str:
 
 
 def role_text(actor: Actor) -> str:
-    """ "Data steward", or "Data steward (persona)" for a persona."""
-    label = ROLE_LABELS.get(actor.role, actor.role)
-    return f"{label} (persona)" if actor.persona else label
+    """ "Data steward", or "Data steward (persona)" for a persona ("Data steward 2 (persona)" for the second
+    data steward)."""
+    if actor.persona:
+        code = actor.name.partition(":")[2]
+        return f"{PERSONA_LABELS.get(code, ROLE_LABELS.get(actor.role, actor.role))} (persona)"
+    return ROLE_LABELS.get(actor.role, actor.role)
 
 
 def default_persona(settings: Settings) -> str:
-    """The role a local workbench acts as before the tab chooses one: MDM_ROLE, else the data steward."""
+    """The persona a local workbench acts as before the tab chooses one: MDM_ROLE, else the data steward."""
     role = (settings.role or "").strip()
-    return role if role in ROLES else DEFAULT_PERSONA
+    return role if role in PERSONAS else DEFAULT_PERSONA
 
 
 def fallback_badges(settings: Settings) -> HubBadges:
@@ -113,10 +116,13 @@ def header(settings: Settings, badges: HubBadges) -> list[Component]:
         persona_part = [
             dmc.Select(
                 id=ids.PERSONA_SELECT,
-                data=[{"value": role, "label": ROLE_LABELS[role]} for role in ROLES],
+                data=[{"value": code, "label": label} for code, label in PERSONA_LABELS.items()],
                 value=persona,
                 allowDeselect=False,
                 size="sm",
+                # every persona in view at once: a list that scrolls would be a scroll region no key reaches
+                # (axe: scrollable-region-focusable), since the arrows move through the options, not the list
+                maxDropdownHeight=360,
                 w=232,
                 leftSection=html.Span("Act as", className="mdm-act-as"),
                 leftSectionWidth=58,
@@ -125,7 +131,7 @@ def header(settings: Settings, badges: HubBadges) -> list[Component]:
                 **{"aria-label": "Act as"},
             )
         ]
-    role = Actor(f"persona:{persona}", "person", persona, persona=True) if badges.local else None
+    role = Actor(f"persona:{persona}", "person", PERSONAS[persona], persona=True) if badges.local else None
     right = dmc.Group(
         [
             html.Div(tray.popover(), id=ids.TRAY_WRAP),

@@ -37,6 +37,7 @@ from mdm.models.workbench import (
     BatchRowPage,
     BatchSummary,
     BatchView,
+    CompensationLine,
     Preview,
     SampleReview,
     SplitLine,
@@ -71,7 +72,7 @@ EVERY = "every alike review"
 SAMPLE_NOTE = (
     "Each review is decided on its own, with its full case. If one disagrees, the steward who decides it "
     "names the comparison that misled, and the reviews that share the record's value on it leave the batch. "
-    "Values stay hidden: the hub compares them, and logs each record it reads."
+    "Values stay hidden: the hub compares them and, when they are personal, logs each record that leaves."
 )
 BEFORE_PREPARED = "Nothing is linked until you have seen every row's change."
 BEFORE_PREPARED_UNDO = "Nothing is undone until you have seen every row's change."
@@ -276,11 +277,12 @@ def sample_item(view: BatchView, review: SampleReview) -> Component:
 
 
 def still_in(view: BatchView) -> int:
-    """n′, the reviews still in the batch: the population drawn, less the reviews its applied splits took and
-    the void sample reviews, which the top-up replaced."""
+    """n′, the reviews still in the batch while its sample is decided: the population drawn, less the reviews
+    its applied splits took, the void sample reviews, which the top-up replaced, and the reviews that left
+    because their task closed or their record moved outside the batch."""
     split = sum(line.count for line in view.splits if line.count is not None)
     void = sum(1 for review in view.sample if review.status == "void")
-    return max(view.population - split - void, 0)
+    return max(view.population - split - void - view.counts.get("excluded", 0), 0)
 
 
 def split_text(view: BatchView, line: SplitLine, *, last: bool) -> str:
@@ -707,8 +709,24 @@ def _commits(view: BatchView) -> str:
     return f", commit {first}" if first == last else f", commits {first} to {last}"
 
 
+def _stopped_after(view: BatchView, done: int, planned: int) -> str:
+    """ "Stopped after chunk 2 of 3", or "Stopped by a data steward after chunk 2 of 3" when a person asked
+    (`stopped_by`: "you", or a role)."""
+    by = f" by {a_person(view.stopped_by)}" if view.stopped_by else ""
+    return f"Stopped{by} after chunk {done} of {planned}"
+
+
+def _blind(view: BatchView) -> str:
+    """ " 12 went to blind review.": the samples its chunks wrote, not those planned; nothing when none."""
+    count = view.blind_reviews
+    if count <= 0:
+        return ""
+    return f" {number(count)} went to blind review."
+
+
 def outcome_lines(view: BatchView) -> list[str]:
-    """How the batch ended, from its outcome and its counts."""
+    """How the batch ended, from its outcome and its counts: who stopped it, when a person did, and how many
+    of its links went to blind review."""
     counts = view.counts
     done, planned = _chunks_of(view)
     back = counts.get("released", 0)
@@ -716,24 +734,21 @@ def outcome_lines(view: BatchView) -> list[str]:
         undone = counts.get("committed", 0)
         kept = counts.get("kept", 0)
         total = undone + kept + counts.get("failed", 0) + back
-        lead = f"Stopped after chunk {done} of {planned}. " if view.status == "stopped" else ""
+        lead = f"{_stopped_after(view, done, planned)}. " if view.status == "stopped" else ""
         text = f"{lead}Undid {number(undone)} of {plural(total, 'link')}."
         if kept:
             text += f" {number(kept)} {'was' if kept == 1 else 'were'} changed after the batch, so {'it is' if kept == 1 else 'they are'} kept."
         return [text]
     if view.status == "committed":
-        reviews = view.summary.reviews if view.summary is not None else 0
         text = f"Committed in {plural(done, 'chunk')}: {plural(links_ever(view), 'link')}{_commits(view)}."
-        if reviews:
-            text += f" {number(reviews)} went to blind review."
-        return [text]
+        return [text + _blind(view)]
     if view.status == "stopped":
         why = STOPPED_WHY.get(view.outcome or "")
         if why is None and view.outcome and view.outcome != "stopped":
             why = _sentence_clause(messages.sentence_for(view.outcome))
-        lead = f"Stopped after chunk {done} of {planned}" + (f": {why}." if why else ":")
+        lead = _stopped_after(view, done, planned) + (f": {why}." if why else ":")
         queue = f"{plural(back, 'review')} {'is' if back == 1 else 'are'} back in the queue."
-        return [f"{lead} {plural(links_ever(view), 'link')} committed; {queue}"]
+        return [f"{lead} {plural(links_ever(view), 'link')} committed; {queue}{_blind(view)}"]
     if view.status == "failed":
         sentence = messages.sentence_for(view.outcome or "internal")
         return [f"Nothing was linked: {_sentence_clause(sentence)}. Every review is back in the queue."]
@@ -765,44 +780,45 @@ def failed_alone_line(view: BatchView) -> str | None:
     )
 
 
+#: a compensation's statuses once it has ended without undoing everything it planned
+ENDED_EARLY = ("stopped", "failed")
+
+
+def compensation_line(view: BatchView, line: CompensationLine) -> Component:
+    """One compensation of the batch, credited with the links it undid itself (`line.undone`), in words by its
+    own status: "Undone by batch BAT-…: 563 of its 566 links."; "Being undone by batch BAT-…." (with "250 of
+    its 566 links so far" once a chunk is undone); "250 of its 566 links were undone by batch BAT-…, which
+    stopped."."""
+    links = plural(links_ever(view), "link")
+    anchor = dmc.Anchor(line.batch_id, href=batch_href(line.batch_id), inherit=True)
+    if line.status == "committed":
+        text: list = ["Undone by batch ", anchor, f": {number(line.undone)} of its {links}."]
+    elif line.status in ENDED_EARLY:
+        count = "None" if line.undone <= 0 else number(line.undone)
+        verb = "was" if line.undone == 1 else "were"
+        text = [f"{count} of its {links} {verb} undone by batch ", anchor, ", which stopped."]
+    elif line.undone > 0:
+        text = ["Being undone by batch ", anchor, f": {number(line.undone)} of its {links} so far."]
+    else:
+        text = ["Being undone by batch ", anchor, "."]
+    return html.P(text, className="mdm-batch-note")
+
+
 def compensation_lines(view: BatchView, now: datetime) -> list[Component]:
-    """What undoing the batch's links looks like: being undone, undone, undone in part by a compensation
-    that stopped, or still possible until a date, with the full command (no button: undoing a batch is on
+    """What undoing the batch's links looks like: each compensation, oldest first, with the links it undid
+    itself (being undone, undone, or undone in part by one that stopped); or, while none is open or done,
+    that its links can still be undone until a date, with the full command (no button: undoing a batch is on
     the command line until the audit screen)."""
     if view.kind != "link" or view.status not in ("committed", "stopped"):
         return []
-    lines: list[Component] = []
+    lines: list[Component] = [compensation_line(view, line) for line in view.compensations]
+    if view.compensated_by or any(line.status not in ENDED_EARLY for line in view.compensations):
+        return lines  # one is open, or has undone the batch: no other may start
     left = view.counts.get("committed", 0)
-    undone = view.counts.get("compensated", 0)
-    open_until = view.undo_until is not None and now <= view.undo_until
-    stopped = [batch for batch in view.undone_by if batch != view.compensated_by]
-    for index, batch in enumerate(stopped):
-        text = [
-            f"{number(undone)} of its {plural(links_ever(view), 'link')} were undone by batch "
-            if index == 0
-            else "Batch ",
-            dmc.Anchor(batch, href=batch_href(batch), inherit=True),
-            ", which stopped." if index == 0 else " stopped too.",
-        ]
-        lines.append(html.P(text, className="mdm-batch-note"))
-    if view.compensated_by:
-        words = "Undone by batch " if view.compensated_by in view.undone_by else "Being undone by batch "
-        lines.append(
-            html.P(
-                [
-                    words,
-                    dmc.Anchor(view.compensated_by, href=batch_href(view.compensated_by), inherit=True),
-                    ".",
-                ],
-                className="mdm-batch-note",
-            )
-        )
-        return lines
-    if left > 0 and open_until:
-        assert view.undo_until is not None
+    if left > 0 and view.undo_until is not None and now <= view.undo_until:
         lead = (
             f"The other {number(left)} can be undone until {day(view.undo_until)}: "
-            if stopped
+            if view.compensations
             else f"Its committed links can be undone until {day(view.undo_until)}, on the command line: "
         )
         lines.append(html.P([lead, html.Code(compensate_command(view.batch_id))], className="mdm-batch-note"))
@@ -868,6 +884,7 @@ def stamp_of(view: BatchView) -> dict:
         "checker": view.checker_label,
         "withdrawn": view.withdrawn.key if view.withdrawn is not None else None,
         "compensated_by": view.compensated_by,
+        "compensations": [[line.batch_id, line.status, line.undone] for line in view.compensations],
     }
 
 

@@ -239,16 +239,22 @@ def test_the_batches_to_confirm_name_their_maker_by_role() -> None:
 
 
 def test_the_page_says_what_it_grouped_and_when_nothing_is_alike() -> None:
+    # finding 20: the window is a limit per entity, never a count of open reviews
     assert groups.grouped_line(samples.GROUP_LIST) == (
-        "Grouped from the 1,000 open reviews due soonest. 12 reviews scored under an earlier rule version are "
-        "not grouped."
+        "Grouped from the open reviews due soonest, at most 1,000 per entity. 12 reviews scored under an earlier "
+        "rule version are not grouped."
+    )
+    assert groups.grouped_line(replace(samples.GROUP_LIST, window=250, older_rules=0)) == (
+        "Grouped from the open reviews due soonest, at most 250 per entity."
     )
     one = replace(samples.GROUP_LIST, older_rules=1)
     assert groups.grouped_line(one).endswith("1 review scored under an earlier rule version is not grouped.")
     empty = groups.render(samples.GROUP_LIST_EMPTY, can_draw=True, role="data_steward")
     assert "No two open reviews share a pattern yet." in [text_of(c) for c in of_type(empty, "P")]
     assert not of_type(empty, "Table")
-    assert groups.grouped_line(samples.GROUP_LIST_EMPTY) == "Grouped from the 1,000 open reviews due soonest."
+    assert groups.grouped_line(samples.GROUP_LIST_EMPTY) == (
+        "Grouped from the open reviews due soonest, at most 1,000 per entity."
+    )
     assert capacity.GROUP_WINDOW == capacity.COUNT_CAP
 
 
@@ -333,6 +339,24 @@ def test_a_draw_opens_the_batch_and_says_how_many_it_drew(alike: Hub) -> None:
     assert unknown.path is None and unknown.note["title"] == "Group gone"
     garbled = groups_page.draw(ctx, "given_name= · family_name=", "person")
     assert garbled.path is None and garbled.note["color"] == "yellow"
+
+
+def test_a_draw_refused_as_too_small_names_the_reviews_it_found_never_a_setting(alike: Hub) -> None:
+    # finding 21: with a forced sample of at least 11 (a setting), a group of 12 offers a draw; two of its
+    # reviews claimed by another steward leave 10, which the refusal names, never a fixed base of 5
+    local = Hub.open(alike.settings.with_(forced_sample_base=11), store=alike.store, as_role="data_owner")
+    ctx = context.for_test(local)
+    key = prop(the_group(groups_page.view(ctx, "person")), "data-group")
+    other = context.for_test(local, role="coordinating_steward")
+    rows = local.inbox.page("team", actor=other.actor, group=key).rows
+    for row in rows[:2]:
+        local.inbox.claim(row.task_id, actor=other.actor)
+    refused = groups_page.draw(ctx, key, "person")
+    assert refused.path is None and refused.note["title"] == "Too few"
+    assert refused.note["message"] == (
+        "Too few alike reviews are free to draw: a forced sample would take all 10 of them. Decide them one by one."
+    )
+    assert "5" not in refused.note["message"]
 
 
 def test_a_data_owner_sees_the_groups_but_every_draw_waits_and_a_consumer_sees_none(alike: Hub) -> None:

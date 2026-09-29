@@ -43,6 +43,7 @@ from mdm.models.workbench import (
     ESCALATION_REASONS,
     SAMPLES_VIEW,
     SNOOZE_HOURS,
+    BatchView,
     TaskPage,
     TaskRow,
     TrayEntry,
@@ -162,6 +163,10 @@ ALIKE_REVIEWS = "Alike reviews"
 FORCED_SAMPLE = "Forced sample"
 #: what an empty group's list says in the pane
 EMPTY_GROUP = "No review with this pattern is open."
+#: what an empty forced sample's list says in the pane: every review decided, or (a void review not replaced
+#: yet, a batch whose sample ended early) none open, which the list proves
+SAMPLE_DECIDED = "Every review of this sample is decided. "
+SAMPLE_NONE_OPEN = "No review of this sample is open. "
 #: refusals of a forced-sample decision that named no comparison, or one not offered: the choice takes focus
 SPLIT_CODES = frozenset({"split_choice_needed", "bad_split_choice"})
 
@@ -201,20 +206,23 @@ def _filters(query: Mapping[str, Any]) -> dict[str, str]:
 def parse_query(query: Mapping[str, str | None], entities: Sequence[str] = ()) -> dict[str, str | None]:
     """The inbox's query as codes: a known view (default My queue), a known kind (none in Quality samples,
     which holds one kind), a published entity ("" for all) and a task ID of a safe shape; and, when the
-    address names one, a signature group's key or a batch's ID, which set the view aside."""
+    address names one, a signature group's key or a batch's ID, which set the view and the header's entity
+    aside: a group's key and a batch's ID fix their entity, so the list holds every review of it whatever
+    entity the header names."""
     view = query.get("view")
     view = view if view in ALL_VIEWS else "mine"
     kind = query.get("kind")
     entity = query.get("entity")
     task = query.get("task")
+    filters = _filters(query)
     return {
         "view": view,
         "kind": kind if kind in TASK_KINDS and view != SAMPLES_VIEW else None,
-        "entity": entity if isinstance(entity, str) and entity in entities else "",
+        "entity": entity if isinstance(entity, str) and entity in entities and not filters else "",
         "task": task
         if isinstance(task, str) and SAFE_TEXT_RE.match(task) and task.startswith("TSK-")
         else None,
-        **_filters(query),
+        **filters,
     }
 
 
@@ -295,13 +303,31 @@ def filter_line(query: Mapping[str, Any] | None) -> Component | None:
     return html.P([words, link], className="mdm-inbox-filter")
 
 
-def filtered_empty(query: Mapping[str, Any] | None) -> Component | None:
-    """What the pane says when a group's or a batch's list is empty; None for a plain view."""
+def sample_decided(view: BatchView | None) -> bool:
+    """Whether every review of a batch's forced sample is decided: none waits, and as many are decided as
+    the sample takes. False for a compensation, which has no sample, or a batch the page could not read."""
+    return view is not None and view.kind == "link" and view.waiting == 0 and view.decided >= view.sample_size
+
+
+def filtered_empty(
+    query: Mapping[str, Any] | None, batch: BatchView | None = None, failure: Mapping[str, Any] | None = None
+) -> Component | None:
+    """What the pane says when a group's or a batch's list is empty; None for a plain view. The list holds
+    every open review of the group, or every open review of the batch's forced sample, so an empty one
+    proves that none is open; it says every sample review is decided only when the batch (`batch`, its
+    view) says so. A batch the page could not read says why (`failure`, its notification)."""
     filters = _filters(query or {})
     if "batch" in filters:
+        if batch is None and failure is not None:
+            return decide.empty_pane(
+                [
+                    f"{failure.get('message') or messages.sentence_for('unknown_batch')} ",
+                    dmc.Anchor("Open Alike reviews", href="/groups", inherit=True),
+                ]
+            )
         return decide.empty_pane(
             [
-                "Every review of this sample is decided. ",
+                SAMPLE_DECIDED if sample_decided(batch) else SAMPLE_NONE_OPEN,
                 dmc.Anchor("Back to the batch", href=f"/batch/{filters['batch']}", inherit=True),
                 " to go on.",
             ]
@@ -332,13 +358,15 @@ def load_page(ctx: UiContext, query: Mapping[str, str], after: tuple[str, str] |
     tasks (it has no inbox)."""
     if not ctx.can("view_tasks"):
         return TaskPage(rows=(), after=None)
+    filters = _filters(query)  # a group's reviews or a batch's forced sample (story 3.3), whatever the view
     return ctx.hub.inbox.page(
         str(query.get("view") or "mine"),
         actor=ctx.actor,
-        entity=query.get("entity") or None,
+        # a group's key or a batch's ID fixes the entity, so the header's is set aside
+        entity=None if filters else (query.get("entity") or None),
         kind=query.get("kind") or None,
         after=after,
-        **_filters(query),  # a group's reviews or a batch's forced sample (story 3.3), whatever the view
+        **filters,
     )
 
 
@@ -754,6 +782,11 @@ def empty_view(ctx: UiContext, query: Mapping[str, Any] | None) -> Component:
     """The pane of a view with nothing in it: "Nothing is breaching. Team has 67 open tasks." with a link
     to Team; the plain line when the view is not empty (no task selected yet)."""
     query = query or {}
+    batch_id = _filters(query).get("batch")
+    if batch_id is not None:
+        # an empty forced sample reads its batch, so it says every review is decided only when it is
+        view, failure = context.guarded(ctx.hub.batches.batch, batch_id, actor=ctx.actor)
+        return filtered_empty(query, view, failure) or decide.empty_pane()
     filtered = filtered_empty(query)
     if filtered is not None:
         return filtered

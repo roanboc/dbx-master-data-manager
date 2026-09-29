@@ -2,7 +2,8 @@
 
 Exit codes: 0 ok; 1 refused, invalid or a contract error (one sentence on
 stderr, built from the error's code and safe fields, never a value); 2 usage.
-Global options: `--as ROLE` (a persona; refused unless the store is local) and
+Global options: `--as PERSONA` (a role, or `data_steward_2`, a second data steward;
+refused unless the store is local) and
 `--json` (machine output: `canonical_json` of the dataclasses). Each command
 opens `Hub.open(...)`. A record to match is read from a file or standard input,
 never from an argument, so personal values stay out of shell history and the
@@ -119,7 +120,11 @@ def _global(
     ctx: typer.Context,
     as_role: Annotated[
         str | None,
-        typer.Option("--as", help="Act as a persona role (local store only).", callback=_checked_name),
+        typer.Option(
+            "--as",
+            help="Act as a persona: a role, or data_steward_2, a second data steward (local store only).",
+            callback=_checked_name,
+        ),
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Machine output (canonical JSON).")] = False,
 ) -> None:

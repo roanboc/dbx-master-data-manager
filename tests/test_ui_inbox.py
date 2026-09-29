@@ -1512,6 +1512,29 @@ def test_a_review_a_batch_holds_says_so_and_its_decisions_wait() -> None:
     assert prop(pane, "data-sample") is None  # held by the batch: no longer a sample to decide
 
 
+def test_a_review_another_stewards_batch_holds_offers_no_u() -> None:
+    # finding 15: only the batch's maker and its second steward are told that U undoes the whole batch
+    at = samples.STAGED_BATCH.deadline.strftime("%H:%M:%S")
+    line = decide.staged_line(samples.CASE_ANOTHERS_BATCH, now=NOW)
+    assert text_of(line) == (
+        f"Part of another steward's batch, {samples.BATCH_ID}, in the tray: it commits at {at} UTC unless its "
+        "steward undoes it. Open the batch"
+    )
+    pane = decide.render(samples.CASE_ANOTHERS_BATCH, now=NOW)
+    assert "U undoes" not in text_of(pane) and "Undo the batch" not in text_of(pane)
+    assert samples.HELD_BY_ANOTHERS_BATCH in text_of(one(pane, ids.ACTION_REASONS))
+    assert not [
+        c for c in walk(pane) if isinstance(getattr(c, "id", None), dict) and c.id.get("decision") == "undo"
+    ]
+    committing = replace(
+        samples.CASE_ANOTHERS_BATCH,
+        staged=replace(samples.STAGED_ANOTHERS_BATCH, deadline=NOW - timedelta(minutes=1)),
+    )
+    assert text_of(decide.staged_line(committing, now=NOW)) == (
+        f"Part of batch {samples.BATCH_ID}, which is committing. Open the batch"
+    )
+
+
 def test_the_keys_name_the_comparison_before_a_disagreeing_decision() -> None:
     source = (Path(__file__).resolve().parents[1] / "src" / "mdm" / "ui" / "assets" / "inbox.js").read_text(
         "utf-8"
@@ -1550,6 +1573,19 @@ def test_a_group_or_a_batch_filters_the_inbox_and_names_its_list() -> None:
     assert inbox.page_label({"view": "mine", "batch": batch}, 0, 9) == "Forced sample: 1–9"
     assert not inbox.mixed_kinds({"view": "team", "group": group})
     assert not inbox.mixed_kinds({"view": "team", "batch": batch})
+    # finding 16: a group's key or a batch's ID fixes the entity, so the header's is set aside, and changing
+    # the header on the filtered inbox leaves its list as it is
+    assert inbox.parse_query({"batch": batch, "entity": "organisation"}, entities)["entity"] == ""
+    assert inbox.parse_query({"group": group, "entity": "organisation"}, entities)["entity"] == ""
+    assert inbox.parse_query({"view": "team", "entity": "organisation"}, entities)["entity"] == "organisation"
+    on_batch = inbox.address_query(
+        {"search": f"?batch={batch}", "entity": "organisation", "path": "/"}, entities
+    )
+    assert on_batch == {"view": "mine", "kind": None, "entity": "", "batch": batch}
+    assert (
+        inbox.new_query({"search": f"?batch={batch}", "entity": "person", "path": "/"}, on_batch, entities)
+        is None
+    )
 
 
 def test_the_filter_line_names_the_group_or_the_batch_and_links_back() -> None:
@@ -1570,8 +1606,18 @@ def test_an_empty_group_or_sample_says_so_in_the_pane() -> None:
     assert text_of(inbox.filtered_empty({"group": samples.GROUP_KEY_PERSON})) == (
         "No review with this pattern is open."
     )
-    sample = inbox.filtered_empty({"batch": samples.BATCH_ID})
-    assert text_of(sample) == "Every review of this sample is decided. Back to the batch to go on."
+    query = {"batch": samples.BATCH_ID}
+    # every review decided only when the batch says so (finding 16); otherwise what the empty list proves
+    decided = replace(samples.BATCH_SAMPLING, decided=9, agreed=9, waiting=0)
+    assert text_of(inbox.filtered_empty(query, decided)) == (
+        "Every review of this sample is decided. Back to the batch to go on."
+    )
+    for view in (None, samples.BATCH_SAMPLING, replace(decided, decided=8), samples.COMPENSATION):
+        assert text_of(inbox.filtered_empty(query, view)) == (
+            "No review of this sample is open. Back to the batch to go on."
+        )
+    gone = inbox.filtered_empty(query, None, {"message": f"No batch has the ID {samples.BATCH_ID}."})
+    assert text_of(gone) == f"No batch has the ID {samples.BATCH_ID}. Open Alike reviews"
     assert inbox.filtered_empty({"view": "mine"}) is None
 
 
@@ -1621,6 +1667,36 @@ def test_a_group_or_a_batch_in_the_address_lists_its_reviews_whatever_the_view(a
     assert one(shown, ids.INBOX_QUERY).data == {"view": "mine", "kind": None, "entity": "", "batch": batch_id}
     grouped = inbox.layout(ctx, {"group": group})
     assert one(grouped, ids.PAGE_LABEL).children == "Alike reviews: 1–12"
+
+
+def test_a_batch_or_group_lists_its_own_reviews_whatever_entity_the_header_names(alike: Hub) -> None:
+    # finding 16: a Person batch opened with the header on Organisation lists its sample, never nothing, and
+    # its pane says every sample review is decided only once they are
+    from mdm.ui import app as ui_app
+
+    group, batch_id = drawn(alike)
+    ctx = context.for_test(alike)
+    assert "organisation" in ctx.badges.entities
+    for entity in ("", "person", "organisation"):
+        page, _note, on_inbox = ui_app.render_route(ctx, "/", f"?batch={batch_id}", entity)
+        assert on_inbox and one(page, ids.PAGE_LABEL).children == "Forced sample: 1–5", entity
+        assert one(page, ids.INBOX_QUERY).data == {
+            "view": "mine",
+            "kind": None,
+            "entity": "",
+            "batch": batch_id,
+        }
+        grouped, _note, _ = ui_app.render_route(ctx, "/", f"?group={group}", entity)
+        assert one(grouped, ids.PAGE_LABEL).children == "Alike reviews: 1–12", entity
+    query = inbox.parse_query({"batch": batch_id, "entity": "organisation"}, ctx.badges.entities)
+    assert len(inbox.load_page(ctx, query, None).rows) == 5
+    assert len(inbox.load_page(ctx, {"batch": batch_id, "entity": "organisation"}, None).rows) == 5
+    helpers.decide_sample(alike, batch_id, actor=ctx.actor)
+    assert inbox.load_page(ctx, query, None).rows == ()
+    pane, _ = inbox.case_view(ctx, None, query=query)
+    assert text_of(pane) == "Every review of this sample is decided. Back to the batch to go on."
+    unknown = inbox.case_view(ctx, None, query={"batch": "BAT-00000000000000000000"})[0]
+    assert text_of(unknown) == "No batch has the ID BAT-00000000000000000000. Open Alike reviews"
 
 
 def test_a_disagreeing_sample_decision_names_its_comparison_or_is_refused_and_focuses_the_choice(
@@ -1686,6 +1762,53 @@ def test_u_on_a_review_a_batch_holds_undoes_the_batch_and_u_elsewhere_never_does
     assert undone.notices[0]["message"] == f"Undone: batch {batch_id} is ready again, and nothing was linked."
     assert undone.bump_case and undone.bump_tray and undone.row is None and not undone.remove
     assert alike.batches.batch(batch_id, actor=ctx.actor).status == "ready"
+
+
+@pytest.fixture
+def alike_and_more() -> Iterator[Hub]:
+    """The 12 alike Person reviews of `alike`, in a world with two persons more for reviews landed later."""
+    settings = base_settings()
+    store = open_store(settings)
+    store.init_schema(create_landing=True)
+    hub = open_hub(settings, store, "duckdb")
+    try:
+        helpers.workbench_world(hub, persons=34)
+        helpers.alike_reviews(hub, 12, first=20)
+        yield hub
+    finally:
+        hub.close()
+        store.close()
+
+
+def test_u_on_another_stewards_batch_is_refused_and_undoes_nothing_of_yours(alike_and_more: Hub) -> None:
+    # finding 15: a coordinating steward who neither prepared nor confirmed the batch opens a review it holds;
+    # the pane offers no U, and U there is refused rather than undoing the steward's own last decision
+    alike = alike_and_more
+    _, batch_id = drawn(alike)
+    maker = context.for_test(alike)
+    helpers.decide_sample(alike, batch_id, actor=maker.actor)
+    alike.batches.refresh(batch_id)
+    alike.batches.prepare(batch_id, actor=maker.actor)
+    alike.batches.stage(batch_id, actor=maker.actor)
+    held = [i.task_id for i in alike.store.batch_items(batch_id, ("bulk",), ("planned",), None, 1000)]
+    other = context.for_test(alike, role="coordinating_steward")
+    helpers.alike_reviews(alike, 1, first=33)  # a review of the steward's own, outside the batch
+    rows = alike.inbox.page("team", actor=other.actor).rows
+    own = next(r.task_id for r in rows if r.task_id not in held and r.staged is None and r.kind == "review")
+    _, own_stamp = inbox.case_view(other, own)
+    staged = inbox.act(other, "not_a_match", task_id=own, stamp=own_stamp)
+    assert staged.advance, staged.notices
+    pane, _ = inbox.case_view(other, held[0])
+    words = text_of(pane)
+    assert f"Part of another steward's batch, {batch_id}, in the tray" in words
+    assert "U undoes" not in words and f"another steward's batch, {batch_id}. Pick another task." in words
+    refused = inbox.act(other, "undo", task_id=held[0])
+    assert (
+        refused.notices[0]["message"] == "This review is part of another steward's batch. Pick another task."
+    )
+    assert not refused.bump_case and refused.row is None
+    assert alike.batches.batch(batch_id, actor=maker.actor).status == "staged"
+    assert [e.task_id for e in alike.tray.entries(actor=other.actor) if e.status == "staged"] == [own]
 
 
 def test_a_batch_settlement_reads_the_page_on_screen_again() -> None:

@@ -260,6 +260,24 @@ def test_the_route_rebuilds_nothing_for_the_same_path_and_role(hub: Hub) -> None
     }
 
 
+def test_switching_between_the_two_data_steward_personas_rebuilds_the_page(hub: Hub) -> None:
+    """The two data-steward personas share a role but are two stewards: the route is keyed on the persona,
+    so a switch rebuilds the page (a batch the first prepared is the second's to confirm); a user a
+    Databricks App forwards is keyed on the role, so no user name lands in the browser (review 3.3)."""
+    first = context.for_test(hub, role="data_steward")
+    second = context.for_test(hub, role="data_steward_2")
+    assert first.actor.role == second.actor.role == "data_steward"
+    on_screen = app_module.route_key("/batch/BAT-00000000000000000001", first)
+    rebuilt = app_module.route_outputs(second, "/batch/BAT-00000000000000000001", "", on_screen, "")
+    assert rebuilt[4] == {"path": "/batch/BAT-00000000000000000001", "persona": "data_steward_2"}
+    assert rebuilt[0] is not no_update
+    assert app_module.route_outputs(first, "/batch/BAT-00000000000000000001", "", on_screen, "") == (
+        (no_update,) * 5
+    )
+    forwarded = replace(first, actor=Actor(name="user-7", kind="person", role="data_steward"))
+    assert app_module.route_key("/", forwarded) == {"path": "/", "persona": "data_steward"}
+
+
 def test_a_page_that_fails_becomes_a_notice(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
     def broken(*args: Any, **kwargs: Any) -> None:
         raise KeyError("Tamsin Quorrel")
@@ -307,6 +325,32 @@ def test_every_header_control_has_a_name() -> None:
     for component in walk(header):
         if getattr(component, "id", None) in named:
             assert getattr(component, "aria-label") == named[component.id]
+
+
+def test_the_persona_menu_offers_every_role_and_a_second_data_steward(hub: Hub) -> None:
+    select = next(
+        c
+        for c in walk(layout.header(Settings(), samples.HUB_BADGES))
+        if getattr(c, "id", None) == ids.PERSONA_SELECT
+    )
+    assert [(o["value"], o["label"]) for o in select.data] == [
+        ("data_owner", "Data owner"),
+        ("data_steward", "Data steward"),
+        ("data_steward_2", "Data steward 2"),
+        ("coordinating_steward", "Coordinating steward"),
+        ("technical_steward", "Technical steward"),
+        ("consumer", "Consumer"),
+        ("administrator", "Administrator"),
+    ]
+    assert layout.default_persona(Settings(role="data_steward_2")) == "data_steward_2"
+    assert (
+        context.persona_of("data_steward_2") == "data_steward_2" and context.persona_of("steward_3") is None
+    )
+    second = context.for_test(hub, role="data_steward_2")
+    assert second.actor == Actor("persona:data_steward_2", "person", "data_steward", persona=True)
+    role, *_ = layout.header_state(second, "", "/", "")
+    assert role == "Data steward 2 (persona)"
+    assert layout.role_text(context.for_test(hub).actor) == "Data steward (persona)"
 
 
 def test_the_persona_select_starts_as_mdm_role() -> None:
@@ -544,6 +588,57 @@ def test_the_key_help_lists_every_key_and_the_switch() -> None:
             assert single in shown
     switch = next(c for c in walk(modal) if getattr(c, "id", None) == ids.KEYS_SWITCH)
     assert switch.label == "Use single-key shortcuts" and switch.checked is True
+
+
+def test_refusals_name_no_figure_that_is_a_setting() -> None:
+    # finding 21: the forced sample's base, the second steward's threshold and the undo window are settings;
+    # a refusal names the figure the service found, or none
+    assert messages.sentence_for("group_too_small", {"reviews": 8}) == (
+        "Too few alike reviews are free to draw: a forced sample would take all 8 of them. Decide them one by one."
+    )
+    assert messages.sentence_for("group_too_small", {"reviews": 1}) == (
+        "Only 1 alike review is free to draw, so a forced sample would take it. Decide it on its own."
+    )
+    assert messages.sentence_for("group_too_small", {"reviews": 0}).startswith(
+        "No alike review of this pattern"
+    )
+    assert messages.sentence_for("group_too_small", {"reviews": "8"}) == (
+        "Too few alike reviews are free to draw: a forced sample would take all of them. Decide them one by one."
+    )
+    assert messages.sentence_for("checker_required") == (
+        "This change needs a second steward to confirm it before it commits."
+    )
+    assert (
+        messages.sentence_for("undo_window_passed")
+        == "This batch committed too long ago to be undone as a batch."
+    )
+    for code in ("group_too_small", "checker_required", "undo_window_passed"):
+        for figure in ("5", "250", "30"):
+            assert figure not in messages.sentence_for(code), (code, figure)
+
+
+def test_n_and_l_decide_from_the_comparison_choice_and_the_help_says_so() -> None:
+    # finding 19: N (or L) moves focus onto "Which comparison misled?"; there the same key decides, every
+    # other key yields to the radios as to any field, and the key help says so
+    assert keys.NAMING in texts_in(keys.help_modal())
+    assert "press the same key again to decide" in keys.NAMING
+    script = (SRC / "ui" / "assets" / "keys.js").read_text(encoding="utf-8")
+    assert "var NAMING_KEYS = {l: true, n: true};" in script
+    naming = script[script.index("function naming(") : script.index("function onControl(")]
+    assert '"#decide-pane .mdm-split-choice"' in naming and 'el.type === "radio"' in naming
+    assert "if (typing(e.target) && !naming(e.target, key)) {" in script
+
+
+def test_focus_is_kept_clear_of_the_sticky_footers() -> None:
+    # finding 18 (WCAG 2.2 SC 2.4.11): each sticky footer's scroller keeps room for it, and a control a footer
+    # still paints over is scrolled to the middle; the browser check walks the batch rows by Tab
+    styles = (SRC / "ui" / "assets" / "styles.css").read_text(encoding="utf-8")
+    assert "--mdm-foot-room: 10rem;" in styles
+    assert styles.count("scroll-padding-bottom: var(--mdm-foot-room);") == 2
+    assert "html:has(.mdm-batch-actions) {" in styles
+    script = (SRC / "ui" / "assets" / "keys.js").read_text(encoding="utf-8")
+    assert 'var FOOTERS = ".mdm-decide-footer, .mdm-batch-actions";' in script
+    assert 'el.scrollIntoView({block: "center", inline: "nearest"});' in script
 
 
 def test_the_reveal_modal_asks_one_of_four_reasons_with_none_chosen() -> None:
@@ -874,6 +969,36 @@ def test_the_second_stewards_tray_lists_the_batch_they_confirmed_with_its_undo()
     assert f"Link 566 alike reviews ({samples.BATCH_ID}), which you confirmed" in texts_in(items)
     assert ids.tray_undo(confirmed.entry_id) in ids_in(items)
     assert tray.label_of(samples.TRAY_BATCH_STAGED) == samples.TRAY_BATCH_STAGED.label
+
+
+def test_an_undone_batch_stays_in_its_second_stewards_tray_with_its_outcome() -> None:
+    # finding 14: the batch a second steward confirmed and its maker undid stays listed in the second steward's
+    # tray as undone, which you confirmed, with no Undo; the inbox reads its page again, and no notice
+    # repeats what the Undo said
+    views = [samples.TRAY_BATCH_CONFIRMED]
+    ctx = fake_ctx(tray=SimpleNamespace(entries=lambda **kwargs: tuple(views)))
+    first = tray.refresh(ctx, None)
+    assert first is not None and first.live == 1
+    views[0] = samples.TRAY_BATCH_CONFIRMED_UNDONE
+    undone = tray.refresh(ctx, first.state)
+    assert undone is not None and undone.live == 0 and undone.notices == []
+    assert undone.settled == [
+        {
+            "entry_id": samples.TRAY_BATCH_CONFIRMED.entry_id,
+            "task_id": samples.BATCH_ID,
+            "status": "undone",
+            "outcome": "undone",
+            "batch_id": samples.BATCH_ID,
+        }
+    ]
+    shown = texts_in(undone.children)
+    assert f"Link 566 alike reviews ({samples.BATCH_ID}), which you confirmed" in shown
+    assert tray.DONE_HEADING in shown and "Waiting (1)" not in shown
+    assert any(text.startswith("Undone") for text in shown)
+    assert ids.tray_undo(samples.TRAY_BATCH_CONFIRMED.entry_id) not in ids_in(undone.children)
+    links = [c for c in walk(undone.children) if type(c).__name__ == "Anchor"]
+    assert [c.href for c in links] == [f"/batch/{samples.BATCH_ID}"]
+    assert tray.refresh(ctx, undone.state) is None  # said once
 
 
 def test_the_tray_polls_while_a_batch_commits_and_settles_each_chunk() -> None:

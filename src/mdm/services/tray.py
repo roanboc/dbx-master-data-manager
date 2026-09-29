@@ -7,8 +7,8 @@ settles it `committed` or `failed` with an outcome code. `TrayWorker` runs `flus
 process on a local store; on the platform a job runs `mdm tray flush`.
 
 A signature batch (story 3.3, decision 23) is one entry, its task ID the batch ID: its first chunk commits when
-its window passes, and each later chunk in a later pass, one chunk of a batch per pass, after the single
-decisions due (`BatchService.commit_first`, `commit_next`). Undo sends a batch's entry to `BatchService.undo`;
+its window passes, in deadline order among the single decisions due, and each later chunk in a later pass, one
+chunk of a batch per pass, after them (`BatchService.commit_first`, `commit_next`). Undo sends a batch's entry to `BatchService.undo`;
 U on a task where nothing is staged (`undo_last`) never reaches a batch. After a forced-sample decision commits,
 the batch is refreshed, so the split it named applies in the same pass; after a blind answer on a batch sample
 commits, the quality breaker checks the signature's bulk rights.
@@ -157,15 +157,17 @@ class TrayService:
     def undo_for_task(self, task_id: str, *, actor: Actor) -> TrayEntry | None:
         """Undoes the actor's staged entry on this task; None when there is none. A task a batch holds, staged
         or still committing, undoes the whole batch when the actor is its maker or its second steward (refused
-        `already_settled` once a chunk committed)."""
+        `already_settled` once a chunk committed); for anyone else it is another steward's batch,
+        `Conflict(already_staged, mine=False, batch=…)`, and nothing of theirs is undone instead."""
         require(actor, "work_tasks")
         held = self.store.staged_by_locks([task_lock(task_id)]).get(task_lock(task_id))
         if held is None:
             return None
         if held.decision in BATCH_DECISIONS:
             batch = self.store.batches([held.task_id]).get(held.task_id)
-            if batch is None or self.batches is None or actor.name not in (batch.maker, batch.checker):
-                return None
+            theirs = batch is not None and actor.name in (batch.maker, batch.checker, held.checker)
+            if not theirs or self.batches is None:
+                raise Conflict([token(task_id)], code="already_staged", mine=False, batch=token(held.task_id))
             return self.batches.undo(held, actor=actor)
         if held.actor != actor.name:
             return None
@@ -281,13 +283,14 @@ class TrayService:
 
     def _refresh_sample(self, entry: TrayEntry) -> None:
         """After a decision on a forced-sample review commits, its batch is refreshed, so the split the decision
-        named applies in this pass (reading 5); any failure is logged by its type, and the next refresh tries
-        it again."""
+        named applies in this pass (reading 5); after one on a review a sampling batch holds as a bulk
+        candidate, decided one by one in the inbox, the batch is refreshed too, so the review leaves it at
+        once. Any failure is logged by its type, and the next refresh tries it again."""
         if self.batches is None:
             return
         try:
             items = self.store.items_by_task([entry.task_id]).get(entry.task_id, [])
-            for batch_id in sorted({i.batch_id for i in items if i.role in ("sample", "split")}):
+            for batch_id in sorted({i.batch_id for i in items if i.role in ("sample", "split", "bulk")}):
                 self.batches.refresh(batch_id)
         except Exception as error:  # noqa: BLE001 - the decision has committed; the batch page refreshes it
             logger.warning("tray_batch_refresh_failed type=%s", type(error).__name__)

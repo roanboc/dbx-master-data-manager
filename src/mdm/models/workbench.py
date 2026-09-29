@@ -402,6 +402,9 @@ class TrayEntry:
     commit_version: int | None = None  # read-time join through mdm_audit.change_set; never stored here
     # a code: committed | undone | record_changed | task_closed | target_changed | not_settled | internal | …
     outcome: str | None = None
+    # a batch's entry that a second steward confirmed: that steward's name, kept with the entry, so the batch
+    # stays in their tray with its outcome whatever becomes of the batch (story 3.3)
+    checker: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,6 +595,17 @@ class BatchProgress:
 
 
 @dataclass(frozen=True, slots=True)
+class CompensationLine:
+    """A compensation of a batch, as the original's page names it: its ID, its own status and outcome, and how
+    many of the original's links it undid, so each compensation is credited with its own links."""
+
+    batch_id: str
+    status: str  # BATCH_STATUSES: `committing` (or before) while it is still being undone
+    outcome: str | None
+    undone: int  # the original's links its committed chunks reversed
+
+
+@dataclass(frozen=True, slots=True)
 class BatchView:
     """The batch page: its stage, its forced sample, its splits, its summary and progress, and its actions
     (codes of `models.batch.PAGE_ACTIONS`)."""
@@ -629,6 +643,12 @@ class BatchView:
     counts: Mapping[str, int] = field(default_factory=dict)
     undo_until: datetime | None = None  # the last moment its committed links can be compensated
     undone_by: tuple[str, ...] = ()  # the compensations that undid any of its chunks
+    # who asked it to stop: "you", or the role ("Data steward"); None when nobody asked (a withdrawal of bulk
+    # rights or failed passes stop it too, as `outcome` says)
+    stopped_by: str | None = None
+    # its compensations, oldest first: every one that undid a chunk, and the one open on it
+    compensations: tuple[CompensationLine, ...] = ()
+    blind_reviews: int = 0  # its links that went to blind review: the samples its chunks wrote
 
 
 @dataclass(frozen=True, slots=True)

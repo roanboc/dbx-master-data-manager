@@ -54,6 +54,8 @@
   --mdm-space-2: 8px;
   --mdm-space-3: 16px;
   --mdm-space-4: 24px;
+  /* the room a scroller keeps at its foot for a sticky footer, so a focused control scrolls clear of it */
+  --mdm-foot-room: 10rem;
   --mdm-text-xs: 0.75rem;
   --mdm-text-sm: 0.8125rem;
   --mdm-text-md: 0.875rem;
@@ -861,6 +863,8 @@
   max-height: calc(100vh - 88px);
   overflow-y: auto;
   padding-right: 4px;
+  /* room for the sticky footer, so a control focused in the pane scrolls clear of it (WCAG 2.2 SC 2.4.11) */
+  scroll-padding-bottom: var(--mdm-foot-room);
 }
 .mdm-decide {
   display: flex;
@@ -1586,6 +1590,12 @@ body[data-mdm-keys="off"] .mdm-decide-actions .mdm-kbd {
     z-index: 2;
     background: var(--mdm-surface);
     padding-bottom: var(--mdm-space-2);
+  }
+  /* keyboard focus is never hidden under the footer (WCAG 2.2 success criterion 2.4.11, technique C43): the
+     page keeps room for it at the foot, so the browser scrolls a focused row clear of it; keys.js scrolls
+     one that a taller footer still covers to the middle */
+  html:has(.mdm-batch-actions) {
+    scroll-padding-bottom: var(--mdm-foot-room);
   }
 }
 .mdm-link-button {

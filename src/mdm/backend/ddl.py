@@ -340,9 +340,11 @@ TABLES: tuple[Table, ...] = (
             _c("settled_at", "timestamptz"),
             _c("change_set_id", "text"),
             _c("outcome", "text"),
+            # a batch's second steward (story 3.3): the entry stays in their tray, whatever becomes of the batch
+            _c("checker", "text"),
         ),
         ("entry_id",),
-        indexes=(("status", "deadline"), ("actor", "staged_at")),
+        indexes=(("status", "deadline"), ("actor", "staged_at"), ("checker", "staged_at")),
     ),
     # one row per subject a staged decision holds ("task:<id>", "source:<entity>:<system>:<key>",
     # "golden:<master ID>"): a second decision on the same subject is refused while the first waits
@@ -511,13 +513,14 @@ TABLES: tuple[Table, ...] = (
             _n("updated_at", "timestamptz"),
             _c("staged_at", "timestamptz"),
             _c("finished_at", "timestamptz"),
+            # the role of the steward who asked a committing batch to stop, so the page says who, by role
+            _c("stop_requested_role", "text"),
         ),
         ("batch_id",),
         indexes=(
             ("status", "not_before", "batch_id"),  # the flush's walk
             ("signature_key", "status", "batch_id"),  # a group's batches
             ("maker", "created_at"),
-            ("checker", "staged_at"),  # the batches a second steward confirmed, for their tray
             ("compensates",),
         ),
     ),

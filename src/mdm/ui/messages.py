@@ -138,10 +138,6 @@ _FIXED: Mapping[str, str] = {
     "bad_filter": "That address names no group or batch. Open Alike reviews and choose one.",
     "unknown_group": "No open reviews share that pattern any more. The list has been refreshed.",
     "batch_open": "This pattern already has an open batch. Open it from Alike reviews.",
-    "group_too_small": (
-        "Too few alike reviews: a forced sample takes at least 5, and would take all of them. "
-        "Decide them one by one."
-    ),
     "bulk_withdrawn": (
         "The quality breaker withdrew bulk decisions for this pattern. Decide its reviews one by one; only a "
         "data owner restores bulk decisions."
@@ -151,7 +147,8 @@ _FIXED: Mapping[str, str] = {
     "batch_empty": "Nothing is left to link: every review was left out or decided.",
     "not_the_maker": "Only the steward who drew this batch prepares and stages it.",
     "checker_is_maker": "A second steward, not the one who prepared it, confirms this.",
-    "checker_required": "Above 250 decisions, a second steward confirms a batch before it commits.",
+    # a batch above MDM_BATCH_CHECKER_ABOVE, or a merge: the figure is a setting, so the sentence names none
+    "checker_required": "This change needs a second steward to confirm it before it commits.",
     "checker_not_recorded": (
         "The second steward recorded for this batch did not match. It stopped; draw it again."
     ),
@@ -169,9 +166,8 @@ _FIXED: Mapping[str, str] = {
     "nothing_left": "Every review moved before the batch could commit, so nothing was linked.",
     "own_batch": ("You confirmed the batch this record's link came from, so another steward reviews it."),
     "not_compensable": "Only a committed batch of links can be undone.",
-    "undo_window_passed": (
-        "This batch committed more than 30 days ago, so it can no longer be undone as a batch."
-    ),
+    # MDM_BATCH_UNDO_DAYS is a setting, so the sentence names no figure; the batch page gives the last day
+    "undo_window_passed": "This batch committed too long ago to be undone as a batch.",
     "already_compensated": "This batch is already undone, or its undo is waiting.",
     "bad_compensate_reason": "Choose one of the offered reasons.",
 }
@@ -258,6 +254,24 @@ def _already_settled(fields: Mapping[str, Any], now: datetime) -> str:
     return "It was not committed, so there is nothing to undo."
 
 
+def _group_too_small(fields: Mapping[str, Any], now: datetime) -> str:
+    """A group whose reviews free to draw (`reviews`, those no other steward holds and still eligible) do not
+    exceed its forced sample: the figure the draw found, never the sample's base, which is a setting."""
+    reviews = fields.get("reviews")
+    if isinstance(reviews, int) and not isinstance(reviews, bool):
+        if reviews <= 0:
+            return "No alike review of this pattern is free to draw now. Decide them one by one."
+        if reviews == 1:
+            return (
+                "Only 1 alike review is free to draw, so a forced sample would take it. Decide it on its own."
+            )
+        return (
+            f"Too few alike reviews are free to draw: a forced sample would take all {reviews:,} of them. "
+            "Decide them one by one."
+        )
+    return "Too few alike reviews are free to draw: a forced sample would take all of them. Decide them one by one."
+
+
 def _forbidden(fields: Mapping[str, Any], now: datetime) -> str:
     return f"Your role, {role_words(fields.get('role'))}, cannot {action_words(fields.get('action'))}."
 
@@ -285,6 +299,7 @@ _BUILT: Mapping[str, Callable[[Mapping[str, Any], datetime], str]] = {
     "already_staged": _already_staged,
     "already_settled": _already_settled,
     "forbidden": _forbidden,
+    "group_too_small": _group_too_small,
     **{code: _unknown_record for code in _UNKNOWN_RECORD},
     **{code: _unknown_batch for code in _UNKNOWN_BATCH},
 }

@@ -52,7 +52,9 @@ method here writes `mdm_core`. The readings of the plan, as built:
 12. Any steward may stop a committing batch: before the next chunk, whatever the throttle. Committed chunks
     stand; the rest are released.
 13. ⌈2% × the batch's links⌉ (at least one) go to blind review, drawn at staging, written in their chunk, their
-    occasion `<event>/<batch ID>`. Neither the maker nor the second steward answers them.
+    occasion `<event>/<batch ID>`; a drawn review that fails its pre-check passes its draw to the planned review
+    with the next smallest draw value, in the same transaction. Neither the maker nor the second steward
+    answers them.
 14. A signature's bulk rights live in `breaker_state` under a `bulk:` band. Only blind review of its batches
     withdraws them; while withdrawn, drawing and staging are refused and a committing batch stops at its next
     chunk. Only a data owner restores them, on the command line.
@@ -128,6 +130,7 @@ from mdm.models.workbench import (
     BatchRowPage,
     BatchSummary,
     BatchView,
+    CompensationLine,
     GroupList,
     GroupRow,
     Impact,
@@ -195,6 +198,8 @@ _SAMPLE_WORDS = {
 #: a sample review another review's split took out of the batch
 _SPLIT_OFF_WORDS = "Left the batch with a split: decided one by one"
 NOTICE_ROLE = "Your role, {role}, cannot decide alike reviews together."
+#: a role that sees tasks without deciding them, as the decide pane says it
+NOTICE_READS = "Your role, {role}, can see tasks but not decide them."
 WHY_DECIDED = "Every sample review is decided."
 WHY_PREPARE = "Only the steward who drew this batch prepares it."
 WHY_STAGE = "Only the steward who drew this batch stages it."
@@ -735,8 +740,9 @@ class BatchService:
 
     def refresh(self, batch_id: str) -> Batch:
         """Moves a `sampling` batch on, writing only when something changed: a sample review whose task closed
-        with no outcome, or whose record moved to another event, turns void; each disagreeing review's named
-        split applies, oldest decision first; with n′ the reviews still in the batch, the batch ends
+        with no outcome, or whose record moved to another event, turns void, and a bulk candidate whose task
+        closed or moved leaves the batch (`excluded`, `task_closed` or `record_changed`); each disagreeing
+        review's named split applies, oldest decision first; with n′ the reviews still in the batch, the batch ends
         (`too_few_left`) when n′ does not exceed its sample, the sample is topped up when it holds too few, and
         the batch becomes `ready` once every split applied, every kept sample review agreed, the sample holds
         5 + ⌊n′/150⌋ and the signature's bulk rights are held. Any other batch is returned as it is."""
@@ -744,22 +750,30 @@ class BatchService:
         if batch.status != "sampling":
             return batch
         items = self._items(batch_id, ("sample", "bulk", "split"))
-        # 1. void sample reviews
+        # 1. void sample reviews, and the bulk candidates decided or moved outside the batch leave it, so n′ counts
+        # only reviews that can still be decided; a staged or claimed candidate stays, counted but never drawn,
+        # until its decision commits or the claim ends
         open_samples = [i for i in items if i.role == "sample" and i.status == "open"]
-        if open_samples:
-            tasks = self.store.tasks_by_id([i.task_id for i in open_samples])
+        unsampled = [i for i in items if i.role == "bulk" and i.status == "candidate"]
+        if open_samples or unsampled:
+            tasks = self.store.tasks_by_id([i.task_id for i in (*open_samples, *unsampled)])
             voids: list[dict[str, Any]] = []
-            for item in open_samples:
+            gone: list[dict[str, Any]] = []
+            for item in (*open_samples, *unsampled):
                 task = tasks.get(item.task_id)
+                into, status = (voids, "void") if item.role == "sample" else (gone, "excluded")
                 if task is None or task.status != "open":
-                    voids.append({"task_id": item.task_id, "status": "void", "reason": "task_closed"})
+                    into.append({"task_id": item.task_id, "status": status, "reason": "task_closed"})
                 elif task.event_id != item.event_id:
-                    voids.append({"task_id": item.task_id, "status": "void", "reason": "record_changed"})
-            if voids:
+                    into.append({"task_id": item.task_id, "status": status, "reason": "record_changed"})
+            if voids or gone:
                 with self.store.transaction():
                     if self.store.hold_batch(batch_id, ("sampling",)) is None:
                         return self._get(batch_id)
-                    self.store.update_items(batch_id, voids, from_status="open")
+                    if voids:
+                        self.store.update_items(batch_id, voids, from_status="open")
+                    if gone:
+                        self.store.update_items(batch_id, gone, from_status="candidate")
                 items = self._items(batch_id, ("sample", "bulk", "split"))
         # 2. the splits the disagreeing decisions named
         pending = sorted(
@@ -792,7 +806,8 @@ class BatchService:
         # 4. the top-up: the next draws, the strata that lack a member first
         if len(kept) < required:
             held = Counter(i.stratum for i in kept)
-            picked = pick([Member(i.task_id, i.stratum, i.draw) for i in candidates], required, held)
+            members = self._top_up_members(batch, candidates)
+            picked = pick([Member(i.task_id, i.stratum, i.draw) for i in members], required, held)
             if picked:
                 with self.store.transaction():
                     if self.store.hold_batch(batch_id, ("sampling",)) is None:
@@ -815,12 +830,70 @@ class BatchService:
         self.store.set_batch(batch_id, from_statuses=("sampling",), status="ready", sample_size=required)
         return self._get(batch_id)
 
+    def _top_up_members(self, batch: Batch, candidates: Sequence[BatchItem]) -> list[BatchItem]:
+        """The bulk candidates a top-up may draw, checked as the draw checks them (keyed reads): one whose task
+        or record a staged decision holds, or that a steward other than the maker claimed, stays a candidate,
+        counted in n′ but not drawn, and one whose task closed or moved to another event since the refresh read
+        it is passed by too (the next refresh takes it out of the batch). So a decision staged outside the
+        sample pane never becomes a sample outcome by a later top-up."""
+        if not candidates:
+            return []
+        now = self.clock()
+        tasks = self.store.tasks_by_id([i.task_id for i in candidates])
+        subjects = {i.task_id: _lock_subjects(batch.entity, i) for i in candidates}
+        held = self.store.staged_by_locks([s for ss in subjects.values() for s in ss])
+        out: list[BatchItem] = []
+        for item in candidates:
+            task = tasks.get(item.task_id)
+            if task is None or task.status != "open" or task.event_id != item.event_id:
+                continue
+            if any(s in held for s in subjects[item.task_id]):
+                continue
+            holder = self.rows_helper.claim_holder(task, now)
+            if holder is not None and holder != batch.maker:
+                continue
+            out.append(item)
+        return out
+
     def _split(self, batch: Batch, item: BatchItem) -> int:
         """The split one disagreeing sample review names (the product owner's answer): with a comparison, the
         reviews still in the batch whose record holds the same match form on it as the disagreeing record's
         move to role `split`, with one access row per split record on a personal comparison, under the name
         and role of the steward who named it; with "every alike review", every review moves and the batch ends
-        (`split_all`). One transaction, the batch row first. Returns the reviews moved."""
+        (`split_all`). A disagreement that names no comparison splits nothing: it turns void (`no_comparison`)
+        and the sample is topped up, as for a review decided outside the sample pane.
+
+        One transaction, the batch row first; the review, the reviews still in the batch, their records and the
+        batch's figures are all read after the hold, and `apply_split` applies the split only while it is not
+        applied yet. So two refreshes that both saw the split pending apply it once: the second finds it
+        applied, writes nothing, and never overwrites the split's count. Returns the reviews moved (0 when the
+        split applied meanwhile, or the batch no longer samples)."""
+        with self.store.transaction():
+            held = self.store.hold_batch(batch.batch_id, ("sampling",))
+            if held is None:
+                return 0
+            current = next(
+                (
+                    i
+                    for i in self.store.items_by_task([item.task_id]).get(item.task_id, [])
+                    if i.batch_id == batch.batch_id
+                ),
+                None,
+            )
+            if current is None or current.status != "disagreed" or current.split_applied:
+                return 0  # applied meanwhile by another refresh, or nothing to apply
+            if current.split_on is None:
+                self.store.update_items(
+                    batch.batch_id,
+                    [{"task_id": current.task_id, "status": "void", "reason": "no_comparison"}],
+                    from_status="disagreed",
+                )
+                return 0
+            return self._split_held(held, current)
+
+    def _split_held(self, batch: Batch, item: BatchItem) -> int:
+        """`_split`'s work, inside its transaction, with the batch row held and `batch` and `item` read after
+        the hold."""
         now = self.clock()
         batch_id = batch.batch_id
         model = self._model(batch.entity)
@@ -842,17 +915,18 @@ class BatchService:
         splits = dict(batch.figures.get("splits") or {})
         if comparison == SPLIT_ALL or spec is None:
             ids = sorted({*(i.task_id for i in in_batch), item.task_id})
-            with self.store.transaction():
-                moved = self.store.apply_split(
-                    batch_id, item.task_id, ids, f"{SPLIT_REASON_PREFIX}{SPLIT_ALL}", ()
+            moved = self.store.apply_split(
+                batch_id, item.task_id, ids, f"{SPLIT_REASON_PREFIX}{SPLIT_ALL}", ()
+            )
+            if moved is None:
+                return 0
+            if self.store.end_batch(batch_id, outcome="split_all", at=now, from_statuses=("sampling",)):
+                splits[item.task_id] = moved
+                self.store.set_batch(
+                    batch_id,
+                    from_statuses=("discarded",),
+                    figures=safe_detail(**{**batch.figures, "splits": splits}),
                 )
-                if self.store.end_batch(batch_id, outcome="split_all", at=now, from_statuses=("sampling",)):
-                    splits[item.task_id] = moved
-                    self.store.set_batch(
-                        batch_id,
-                        from_statuses=("discarded",),
-                        figures=safe_detail(**{**batch.figures, "splits": splits}),
-                    )
             return moved
         sources = {i.task_id: i.source for i in in_batch}
         sources[item.task_id] = item.source
@@ -867,7 +941,7 @@ class BatchService:
         try:
             personal = model.attribute(spec.attribute).personal
         except NotFound:
-            personal = True  # an attribute the model no longer names: log what was read
+            personal = True  # an attribute the model no longer names: log each record split off
         if personal:
             entry = self.store.tray_entries([item.entry_id]).get(item.entry_id) if item.entry_id else None
             who, role = (
@@ -888,16 +962,17 @@ class BatchService:
                 )
                 for task_id in sorted(split)
             ]
-        with self.store.transaction():
-            moved = self.store.apply_split(
-                batch_id, item.task_id, sorted(split), f"{SPLIT_REASON_PREFIX}{comparison}", accesses
-            )
-            splits[item.task_id] = moved
-            self.store.set_batch(
-                batch_id,
-                from_statuses=("sampling",),
-                figures=safe_detail(**{**batch.figures, "splits": splits}),
-            )
+        moved = self.store.apply_split(
+            batch_id, item.task_id, sorted(split), f"{SPLIT_REASON_PREFIX}{comparison}", accesses
+        )
+        if moved is None:
+            return 0
+        splits[item.task_id] = moved
+        self.store.set_batch(
+            batch_id,
+            from_statuses=("sampling",),
+            figures=safe_detail(**{**batch.figures, "splits": splits}),
+        )
         log.info(safe_message("batch_split", batch=batch_id, comparison=comparison, reviews=moved))
         return moved
 
@@ -1083,44 +1158,53 @@ class BatchService:
         return self._get(batch_id)
 
     def _stage(self, batch: Batch, checker: Actor | None) -> Batch:
-        """Checks the planned reviews' locks and claims again (keyed), leaves out any another entry holds or
-        another steward claimed, then in one transaction, the batch row first: the batch `staged`, the reviews
-        drawn for blind review, and the tray entry with a lock on every planned review's task and record."""
+        """One transaction, the batch row held first (`ready`, or `awaiting_checker` for a confirmation), so a
+        preparation of the same batch either commits before it or waits and then finds the batch staged: the
+        planned reviews read after the hold, their locks and claims checked again (keyed), any another entry
+        holds or another steward claimed left out with its reason, then the batch `staged`, the reviews drawn
+        for blind review, and the tray entry, with its second steward, locking every planned review's task and
+        record. `Conflict(batch_empty)` when no planned review is left, the exclusions kept."""
         batch_id = batch.batch_id
         entity = batch.entity
-        now = self.clock()
-        planned = self._items(batch_id, ("bulk",), ("planned",))
-        tasks = self.store.tasks_by_id([i.task_id for i in planned])
-        subjects = {i.task_id: _lock_subjects(entity, i) for i in planned}
-        held = self.store.staged_by_locks([s for ss in subjects.values() for s in ss])
-        excluded: list[tuple[str, str]] = []
-        for item in planned:
-            task = tasks.get(item.task_id)
-            holder = self.rows_helper.claim_holder(task, now) if task is not None else None
-            if batch.kind == "link" and (task is None or task.status != "open"):
-                excluded.append((item.task_id, "task_closed"))
-            elif any(s in held for s in subjects[item.task_id]):
-                excluded.append((item.task_id, "staged"))
-            elif batch.kind == "link" and holder is not None and holder != batch.maker:
-                excluded.append((item.task_id, "claimed"))
-        if excluded:
-            gone = {t for t, _ in excluded}
-            planned = [i for i in planned if i.task_id not in gone]
-            left_out = Counter(dict(batch.figures.get("left_out") or {}))
-            left_out.update(reason for _, reason in excluded)
-            figures = {**batch.figures, "left_out": dict(sorted(left_out.items()))}
-            if batch.kind == "link":
-                chunks, rows = self._pack(self._model(entity), [(i.task_id, i.target or "") for i in planned])
-                figures.update(
-                    xrefs=len(planned),
-                    golden=len({i.target for i in planned}),
-                    chunks=len(chunks),
-                    rows=rows,
-                    reviews=review_count(len(planned), self.settings.sample_share),
-                )
-            with self.store.transaction():
-                if self.store.hold_batch(batch_id, ("ready", "awaiting_checker")) is None:
-                    raise Conflict([batch_id], code="batch_changed")
+        from_statuses = ("awaiting_checker",) if checker is not None else ("ready",)
+        empty = False
+        with self.store.transaction():
+            held_batch = self.store.hold_batch(batch_id, from_statuses)
+            if held_batch is None:
+                raise Conflict([batch_id], code="batch_changed")
+            batch = held_batch
+            now = self.clock()
+            planned = self._items(batch_id, ("bulk",), ("planned",))
+            tasks = self.store.tasks_by_id([i.task_id for i in planned])
+            subjects = {i.task_id: _lock_subjects(entity, i) for i in planned}
+            held = self.store.staged_by_locks([s for ss in subjects.values() for s in ss])
+            excluded: list[tuple[str, str]] = []
+            for item in planned:
+                task = tasks.get(item.task_id)
+                holder = self.rows_helper.claim_holder(task, now) if task is not None else None
+                if batch.kind == "link" and (task is None or task.status != "open"):
+                    excluded.append((item.task_id, "task_closed"))
+                elif any(s in held for s in subjects[item.task_id]):
+                    excluded.append((item.task_id, "staged"))
+                elif batch.kind == "link" and holder is not None and holder != batch.maker:
+                    excluded.append((item.task_id, "claimed"))
+            if excluded:
+                gone = {t for t, _ in excluded}
+                planned = [i for i in planned if i.task_id not in gone]
+                left_out = Counter(dict(batch.figures.get("left_out") or {}))
+                left_out.update(reason for _, reason in excluded)
+                figures = {**batch.figures, "left_out": dict(sorted(left_out.items()))}
+                if batch.kind == "link":
+                    chunks, rows = self._pack(
+                        self._model(entity), [(i.task_id, i.target or "") for i in planned]
+                    )
+                    figures.update(
+                        xrefs=len(planned),
+                        golden=len({i.target for i in planned}),
+                        chunks=len(chunks),
+                        rows=rows,
+                        reviews=review_count(len(planned), self.settings.sample_share),
+                    )
                 self.store.update_items(
                     batch_id,
                     [{"task_id": t, "status": "excluded", "reason": r} for t, r in excluded],
@@ -1128,14 +1212,31 @@ class BatchService:
                 )
                 self.store.set_batch(
                     batch_id,
-                    from_statuses=("ready", "awaiting_checker"),
+                    from_statuses=from_statuses,
                     decisions=len(planned),
                     chunks=_whole(figures.get("chunks")) or batch.chunks,
                     figures=safe_detail(**figures),
                 )
-            batch = self._get(batch_id)
-        if not planned:
+            if not planned:
+                empty = True
+            else:
+                self._stage_held(batch, planned, checker, now, from_statuses)
+        if empty:
             raise Conflict([batch_id], code="batch_empty")
+        return self._get(batch_id)
+
+    def _stage_held(
+        self,
+        batch: Batch,
+        planned: Sequence[BatchItem],
+        checker: Actor | None,
+        now: datetime,
+        from_statuses: Sequence[str],
+    ) -> None:
+        """`_stage`'s writes, inside its transaction with the batch row held: the batch `staged`, the reviews
+        drawn for blind review, and the tray entry with its locks."""
+        batch_id = batch.batch_id
+        entity = batch.entity
         entry_id = "TR-" + secrets.token_hex(10)
         decision = "batch_compensate" if batch.kind == "compensate" else "batch_link"
         entry = TrayEntry(
@@ -1160,6 +1261,7 @@ class BatchService:
             staged_at=now,
             deadline=now + timedelta(seconds=self.settings.undo_seconds),
             status="staged",
+            checker=checker.name if checker is not None else None,
         )
         reviews: frozenset[str] = frozenset()
         if batch.kind == "link":
@@ -1174,16 +1276,13 @@ class BatchService:
         fields: dict[str, Any] = {"status": "staged", "entry_id": entry_id, "staged_at": now}
         if checker is not None:
             fields.update(checker=checker.name, checker_role=checker.role, checked_at=now)
-        from_statuses = ("awaiting_checker",) if checker is not None else ("ready",)
-        with self.store.transaction():
-            if not self.store.set_batch(batch_id, from_statuses=from_statuses, **fields):
-                raise Conflict([batch_id], code="batch_changed")
-            if reviews:
-                self.store.update_items(
-                    batch_id, [{"task_id": t, "review": True} for t in sorted(reviews)], from_status="planned"
-                )
-            self.store.stage_tray(entry, [s for i in planned for s in _lock_subjects(entity, i)])
-        return self._get(batch_id)
+        if not self.store.set_batch(batch_id, from_statuses=from_statuses, **fields):
+            raise Conflict([batch_id], code="batch_changed")
+        if reviews:
+            self.store.update_items(
+                batch_id, [{"task_id": t, "review": True} for t in sorted(reviews)], from_status="planned"
+            )
+        self.store.stage_tray(entry, [s for i in planned for s in _lock_subjects(entity, i)])
 
     def undo(self, entry: TrayEntry, *, actor: Actor) -> TrayEntry:
         """Takes a batch's entry back while it waits (`TrayService.undo`): the maker or the batch's second steward
@@ -1192,7 +1291,8 @@ class BatchService:
         `Conflict(already_settled, batch=…)`."""
         self._allow(actor, "work_tasks")
         batch = self._get(entry.task_id)
-        if actor.name not in (batch.maker, batch.checker):
+        # the entry keeps its second steward, so a stale Undo of theirs reads "already undone", not "not yours"
+        if actor.name not in (batch.maker, batch.checker, entry.checker):
             raise Forbidden("not_yours")
         now = self.clock()
         undone = self.store.undo_batch(
@@ -1237,7 +1337,7 @@ class BatchService:
             raise Conflict([batch_id], code="still_in_tray")
         if batch.status != "committing":
             raise Conflict([batch_id], code="not_committing")
-        self.store.request_stop(batch_id, actor.name, self.clock())
+        self.store.request_stop(batch_id, actor.name, self.clock(), actor.role)
         return self._get(batch_id)
 
     # ------------------------------------------------------------------ compensation (reading 15)
@@ -1394,12 +1494,14 @@ class BatchService:
             counts["finished"] += result.finished
         return counts
 
-    def _finish(self, batch: Batch, status: str, outcome: str) -> ChunkPass:
+    def _finish(self, batch: Batch, status: str, outcome: str, entry_id: str | None = None) -> ChunkPass:
         """Ends a staged or committing batch (`finish_batch`): `committed`, else `stopped` after at least one
-        chunk and `failed` when nothing committed. Its planned reviews are released and their locks go."""
+        chunk and `failed` when nothing committed. Its planned reviews are released and their locks go. With
+        `entry_id`, the entry the pass was committing, only that staging ends: a batch undone meanwhile and
+        staged again under another entry is left as it is."""
         self._fault("before_finish")
         current = self.store.batches([batch.batch_id]).get(batch.batch_id) or batch
-        if current.entry_id is None:
+        if current.entry_id is None or (entry_id is not None and current.entry_id != entry_id):
             return ChunkPass()
         final = status if status == "committed" else ("stopped" if current.chunks_committed > 0 else "failed")
         done = self.store.finish_batch(
@@ -1410,13 +1512,16 @@ class BatchService:
         log.info(safe_message("batch_finished", batch=current.batch_id, status=final, outcome=outcome))
         return ChunkPass(finished=1, outcome=outcome if current.chunks_committed == 0 else None)
 
-    def _failed_pass(self, batch: Batch) -> ChunkPass:
-        """A chunk that could not commit in this pass: one more failed pass in a row, and at `FLUSH_ATTEMPTS` the
-        batch stops (`chunk_failed`). A chunk that commits sets the count back to 0."""
+    def _failed_pass(self, batch: Batch, entry_id: str) -> ChunkPass:
+        """A chunk of the entry `entry_id` that could not commit in this pass: one more failed pass in a row, and
+        at `FLUSH_ATTEMPTS` the batch stops (`chunk_failed`). A chunk that commits, or an undo, sets the count
+        back to 0; a batch staged again under another entry meanwhile is left as it is."""
         current = self.store.batches([batch.batch_id]).get(batch.batch_id) or batch
+        if current.entry_id != entry_id:
+            return ChunkPass()
         attempts = current.attempts + 1
         if attempts >= capacity.FLUSH_ATTEMPTS:
-            return self._finish(current, "stopped", "chunk_failed")
+            return self._finish(current, "stopped", "chunk_failed", entry_id)
         self.store.set_batch(current.batch_id, from_statuses=("staged", "committing"), attempts=attempts)
         return ChunkPass()
 
@@ -1424,8 +1529,9 @@ class BatchService:
         """The next chunk of a batch, with its failures handled (A.5 step 8): a conflict of a moved row is
         planned again once in the pass; an undo that won the batch row finishes nothing; a stop, a withdrawal
         or any other refusal ends the batch; an unexpected failure counts as a failed pass."""
+        own = entry.entry_id
         if batch.persona and not self.settings.local_mode:
-            return self._finish(batch, "stopped", "persona_refused")
+            return self._finish(batch, "stopped", "persona_refused", own)
         result: ChunkPass | None = None
         for attempt in (1, 2):
             try:
@@ -1437,19 +1543,20 @@ class BatchService:
                     batch = self.store.batches([batch.batch_id]).get(batch.batch_id) or batch
                     continue
                 if code in _RETRY:
-                    return self._failed_pass(batch)
+                    return self._failed_pass(batch, own)
                 if code in ("batch_changed", "tray_entry_settled"):
                     return ChunkPass()  # undone, or ended, meanwhile: nothing to finish
                 if code == "batch_stopped":
-                    return self._finish(batch, "stopped", "stopped")
+                    return self._finish(batch, "stopped", "stopped", own)
                 if code == "bulk_withdrawn":
-                    return self._finish(batch, "stopped", "bulk_withdrawn")
-                return self._finish(batch, "stopped", token(code))
+                    return self._finish(batch, "stopped", "bulk_withdrawn", own)
+                return self._finish(batch, "stopped", token(code), own)
             except MdmError as error:
-                return self._finish(batch, "stopped", token(error.code))
+                # a refusal ends only the staging this pass was committing, never one staged since
+                return self._finish(batch, "stopped", token(error.code), own)
             except Exception as error:  # noqa: BLE001 - one batch must never stop the flush
                 log.warning("batch_chunk_failed type=%s", type(error).__name__)
-                return self._failed_pass(batch)
+                return self._failed_pass(batch, own)
         if result is not None and result.chunks:
             self._fault("after_chunk")
         return result or ChunkPass()
@@ -1466,18 +1573,26 @@ class BatchService:
             )
             if not page:
                 if batch.chunks_committed == 0:
-                    return self._finish(batch, "failed", "nothing_left")
-                return self._finish(batch, "committed", "committed")
+                    return self._finish(batch, "failed", "nothing_left", entry.entry_id)
+                return self._finish(batch, "committed", "committed", entry.entry_id)
             survivors, failures = self._precheck(batch, page)
             if failures:
                 subjects = [s for i in failures for s in _lock_subjects(entity, i[0])]
-                moved = self.store.fail_items(
-                    batch.batch_id,
-                    [(i.task_id, "failed" if link else "kept", reason) for i, reason in failures],
-                    subjects,
-                )
+                with self.store.transaction():
+                    moved = self.store.fail_items(
+                        batch.batch_id,
+                        [(i.task_id, "failed" if link else "kept", reason) for i, reason in failures],
+                        subjects,
+                    )
+                    passed = (
+                        self._pass_flags(batch, [i for i, _ in failures if i.review])
+                        if moved == len(failures)
+                        else frozenset()
+                    )
                 if moved < len(failures):
                     return ChunkPass()  # the batch changed meanwhile
+                if passed:
+                    survivors = [replace(i, review=True) if i.task_id in passed else i for i in survivors]
             if survivors:
                 break
             batch = self.store.batches([batch.batch_id]).get(batch.batch_id) or batch
@@ -1615,6 +1730,30 @@ class BatchService:
                 log.warning("batch_settle_records_failed type=%s", type(error).__name__)
         return ChunkPass(chunks=1, finished=1 if last else 0, outcome="committed")
 
+    def _pass_flags(self, batch: Batch, failed: Sequence[BatchItem]) -> frozenset[str]:
+        """Inside `fail_items`' transaction, the batch row held: each review drawn for blind review that failed
+        its pre-check passes its draw to the planned review not drawn yet with the next smallest draw value
+        (the draw of staging, `draw_value(entity, record, "batch_link", batch ID, key)`), so the batch still
+        sends ⌈2% × its links⌉ to blind review, at least one. Returns the reviews drawn now; a draw is lost only
+        when no planned review is left to take it."""
+        if not failed:
+            return frozenset()
+        gone = {i.task_id for i in failed}
+        key = self.settings.sample_key
+        others = [
+            (i.task_id, draw_value(batch.entity, i.source.text(), "batch_link", batch.batch_id, key))
+            for i in self._items(batch.batch_id, ("bulk",), ("planned",))
+            if not i.review and i.task_id not in gone
+        ]
+        chosen = pick_reviews(others, len(failed))
+        if chosen:
+            self.store.update_items(
+                batch.batch_id,
+                [{"task_id": t, "review": True} for t in sorted(chosen)],
+                from_status="planned",
+            )
+        return chosen
+
     @staticmethod
     def _label(batch: Batch, entry: TrayEntry, item: BatchItem, now: datetime) -> MatchLabel:
         """The match label a batch's link writes: its planned score, band and rule version, the batch's
@@ -1648,8 +1787,12 @@ class BatchService:
             original = batch.compensates or ""
             versions = {c.chunk_no: c.commit_version for c in self.store.batch_chunks(original)}
             rows = self.store.xref_rows(entity, sources)
+            # the record's own state too, as `plan_batch_detaches` checks it: a record whose delete was taken
+            # in but not yet settled keeps its link a while, and must be kept alone, not fail the chunk
+            records = self.store.source_states(entity, sources)
             for item in page:
                 row = rows.get(item.source)
+                state = records.get(item.source)
                 if (
                     row is None
                     or row.status != "active"
@@ -1657,6 +1800,8 @@ class BatchService:
                     or row.commit_version != versions.get(item.chunk_no or 0)
                 ):
                     failures.append((item, "moved_since"))
+                elif state is None or state.status != "active":
+                    failures.append((item, "record_changed"))
                 else:
                     survivors.append(item)
             return survivors, failures
@@ -1795,6 +1940,7 @@ class BatchService:
         )
         versions = [c.commit_version for c in chunks if c.commit_version is not None]
         undone_by = tuple(sorted({c.compensated_by for c in chunks if c.compensated_by}))
+        compensations = self._compensations(batch, undone_by)
         undo_until = (
             batch.finished_at + timedelta(days=self.settings.batch_undo_days)
             if batch.kind == "link"
@@ -1847,7 +1993,41 @@ class BatchService:
             },
             undo_until=undo_until,
             undone_by=undone_by,
+            stopped_by=(
+                (
+                    "you"
+                    if actor.name == batch.stop_requested_by
+                    else display.role_label(batch.stop_requested_role or "")
+                )
+                if batch.stop_requested_at is not None
+                else None
+            ),
+            compensations=compensations,
+            blind_reviews=sum(
+                1 for i in items if i.role == "bulk" and i.review and i.status in ("committed", "compensated")
+            ),
         )
+
+    def _compensations(self, batch: Batch, undone_by: Sequence[str]) -> tuple[CompensationLine, ...]:
+        """A link batch's compensations, oldest first: every one that undid a chunk and the one open on it, each
+        with its status and the original's links its own committed chunks reversed (keyed reads, a few)."""
+        ids = sorted({*undone_by, *([batch.compensated_by] if batch.compensated_by else [])})
+        if batch.kind != "link" or not ids:
+            return ()
+        found = self.store.batches(ids)
+        lines = [
+            (
+                other.created_at,
+                CompensationLine(
+                    batch_id=other.batch_id,
+                    status=other.status,
+                    outcome=other.outcome,
+                    undone=sum(c.items for c in self.store.batch_chunks(other.batch_id)),
+                ),
+            )
+            for other in found.values()
+        ]
+        return tuple(line for _, line in sorted(lines, key=lambda pair: (pair[0], pair[1].batch_id)))
 
     def _actions(self, batch: Batch, actor: Actor, waiting: int) -> tuple[Action, ...]:
         """The batch page's actions (`PAGE_ACTIONS`), each with `enabled` and why not, as B.3's table words them."""
@@ -1863,7 +2043,10 @@ class BatchService:
             out.append(Action(code, label, "", enabled, None if enabled else why))
 
         if status == "sampling":
-            action("decide_sample", "Decide the sample in the inbox", waiting > 0, WHY_DECIDED)
+            # only a role that decides tasks is sent to decide them: a data owner or technical steward reads
+            works = allowed(actor, "work_tasks")
+            why = WHY_DECIDED if works else NOTICE_READS.format(role=role)
+            action("decide_sample", "Decide the sample in the inbox", works and waiting > 0, why)
         elif status == "ready" and batch.kind == "link" and not self._prepared(batch):
             action("prepare", "Show every change", can and maker, role_why or WHY_PREPARE)
         elif status == "ready" and batch.kind == "link":

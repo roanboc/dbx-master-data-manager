@@ -124,12 +124,30 @@ ROLE_LABELS: Mapping[str, str] = {
     "consumer": "Consumer",
     "administrator": "Administrator",
 }
+#: the local personas (decision 13), each acting in one role under its own name, `persona:<code>`: every role
+#: once, and a second data steward, so a batch's maker, its second steward and a blind reviewer of its links
+#: are three people on a local store (story 3.3). Refused on a shared store like every persona.
+SECOND_DATA_STEWARD = "data_steward_2"
+PERSONAS: Mapping[str, str] = {
+    "data_owner": "data_owner",
+    "data_steward": "data_steward",
+    SECOND_DATA_STEWARD: "data_steward",
+    "coordinating_steward": "coordinating_steward",
+    "technical_steward": "technical_steward",
+    "consumer": "consumer",
+    "administrator": "administrator",
+}
+#: what a person reads for each persona, in the persona menu's order
+PERSONA_LABELS: Mapping[str, str] = {
+    code: ("Data steward 2" if code == SECOND_DATA_STEWARD else ROLE_LABELS[role])
+    for code, role in PERSONAS.items()
+}
 
 
 @dataclass(frozen=True, slots=True)
 class AccessRow:
     """One `mdm_audit.access_log` row a service asks the store to append among many (`append_accesses`): a
-    batch's split writes one per record whose value it compared on a personal comparison. The action, the
+    batch's split writes one per record it takes out of the batch, on a personal comparison. The action, the
     reason and every text of the detail are codes, IDs and source keys (`safe`), checked here and again where
     the store writes them."""
 
