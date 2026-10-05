@@ -5,6 +5,13 @@ style: coexistence
 display_name: "{name}"
 ai_enabled: false
 defaults: {calling_code: "999"}
+icon: building
+colour: teal
+groups:                                  # how the workbench shows the attributes; matching never reads it
+  - {name: identity, label: Identity, icon: id-card, attributes: [name, registered_id]}
+  - {name: contact, label: Contact, icon: mail, attributes: [phone, email, website]}
+  - {name: location, label: Address, icon: map-pin, attributes: [postcode, city, country, addresses]}
+  - {name: lifecycle, label: Lifecycle, icon: calendar, attributes: [closed_on]}
 attributes:
   - {name: name, type: text, standardise: org_name, required: true, criticality: critical}
   - {name: registered_id, type: text, standardise: registered_id, scheme: ORG_REG, checksum: mod97, strong: true, criticality: critical}

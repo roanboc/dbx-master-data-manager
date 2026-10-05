@@ -21,6 +21,28 @@
   --mdm-sunk: #f1f3f5;
   --mdm-muted: #495057;          /* 8.2:1 on white */
   --mdm-rule: #d5dcdf;
+  --mdm-rule-soft: #e9ecef;      /* hairlines between rows: decorative, the rows read without them */
+  /* the canvas the cards sit on, and the navigation on it: a soft grey, so the white of the work rests
+     the eye; muted text reads 7.0:1 on it, a link 4.8:1, a breach 5.1:1 */
+  --mdm-canvas: #eceff3;
+  --mdm-chrome: #eceff3;
+  --mdm-card-border: #dfe3e8;
+  --mdm-card-shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --mdm-group-fill: #f6f7f9;     /* a group's heading row inside a card: muted text 7.9:1 */
+
+  /* the entity hues a model may name (COLOURS): the ink of an icon on its tint, at least 4.5:1 */
+  --mdm-hue-gray: #495057;
+  --mdm-hue-gray-tint: #eef0f3;
+  --mdm-hue-indigo: #3b5bdb;
+  --mdm-hue-indigo-tint: #e7ecff;
+  --mdm-hue-teal: #0b7a6c;
+  --mdm-hue-teal-tint: #dcf4ef;
+  --mdm-hue-grape: #9c36b5;
+  --mdm-hue-grape-tint: #f6e9fb;
+  --mdm-hue-orange: #b34400;
+  --mdm-hue-orange-tint: #ffeedd;
+  --mdm-hue-cyan: #0b7285;
+  --mdm-hue-cyan-tint: #dff6fa;
   --mdm-rule-strong: #868f95;    /* 3.3:1 on white: borders that carry meaning */
   --mdm-focus: #3b5bdb;          /* 5.7:1 on white */
   --mdm-link: #3b5bdb;
@@ -91,6 +113,25 @@
   --mdm-sunk: #2e2e2e;
   --mdm-muted: #a6a7ab;          /* 6.5:1 on #242424 */
   --mdm-rule: #3b3b3b;
+  --mdm-rule-soft: #313131;
+  --mdm-canvas: #1b1c1f;         /* muted text 7.5:1, a link 7.6:1 */
+  --mdm-chrome: #1b1c1f;
+  --mdm-card-border: #303236;
+  --mdm-card-shadow: none;
+  --mdm-group-fill: #2b2c30;
+
+  --mdm-hue-gray: #ced4da;
+  --mdm-hue-gray-tint: #2e3034;
+  --mdm-hue-indigo: #a5b8ff;
+  --mdm-hue-indigo-tint: #262c48;
+  --mdm-hue-teal: #63d6c2;
+  --mdm-hue-teal-tint: #133631;
+  --mdm-hue-grape: #e3a6f5;
+  --mdm-hue-grape-tint: #36233d;
+  --mdm-hue-orange: #ffb27a;
+  --mdm-hue-orange-tint: #3b2817;
+  --mdm-hue-cyan: #6fd8ea;
+  --mdm-hue-cyan-tint: #12333b;
   --mdm-rule-strong: #7d8589;    /* 4.1:1 on #242424 */
   --mdm-focus: #91a7ff;          /* 6.8:1 on #242424 */
   --mdm-link: #91a7ff;
@@ -178,9 +219,112 @@
 }
 
 /* ------------------------------------------------------------------ header and navigation */
+/* one hairline between the chrome and the work, no heavier frame anywhere */
+.mantine-AppShell-root {
+  --app-shell-border-color: var(--mdm-rule-soft);
+}
 .mdm-header {
   background: var(--mdm-surface);
 }
+.mdm-nav {
+  background: var(--mdm-chrome) !important;
+}
+/* the canvas: the work sits on white cards over a soft grey */
+.mdm-main {
+  background: var(--mdm-canvas);
+}
+.mdm-card,
+.mdm-inbox-queue,
+.mdm-inbox-decide,
+#page:not(:has(> .mdm-inbox)) {
+  background: var(--mdm-surface);
+  border: 1px solid var(--mdm-card-border);
+  border-radius: 12px;
+  box-shadow: var(--mdm-card-shadow);
+}
+.mdm-inbox-queue,
+.mdm-inbox-decide {
+  box-sizing: border-box;
+  padding: 12px;
+}
+/* the pane's card keeps its vertical padding small: the whole case fits at 1440 × 900 */
+.mdm-inbox-decide {
+  padding: 6px 10px;
+}
+#page:not(:has(> .mdm-inbox)) {
+  box-sizing: border-box;
+  padding: 20px 24px;
+}
+@media (max-width: 48em) {
+  #page:not(:has(> .mdm-inbox)) {
+    padding: 12px;
+  }
+}
+#page:empty {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ entities and groups */
+.mdm-hue-gray { --mdm-hue: var(--mdm-hue-gray); --mdm-hue-tint: var(--mdm-hue-gray-tint); }
+.mdm-hue-indigo { --mdm-hue: var(--mdm-hue-indigo); --mdm-hue-tint: var(--mdm-hue-indigo-tint); }
+.mdm-hue-teal { --mdm-hue: var(--mdm-hue-teal); --mdm-hue-tint: var(--mdm-hue-teal-tint); }
+.mdm-hue-grape { --mdm-hue: var(--mdm-hue-grape); --mdm-hue-tint: var(--mdm-hue-grape-tint); }
+.mdm-hue-orange { --mdm-hue: var(--mdm-hue-orange); --mdm-hue-tint: var(--mdm-hue-orange-tint); }
+.mdm-hue-cyan { --mdm-hue: var(--mdm-hue-cyan); --mdm-hue-tint: var(--mdm-hue-cyan-tint); }
+/* the entity's badge: its icon in its ink on a rounded tint of its colour */
+.mdm-entity-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: 8px;
+  background: var(--mdm-hue-tint);
+  color: var(--mdm-hue);
+}
+.mdm-entity-mark,
+.mdm-row-entity {
+  color: var(--mdm-hue);
+}
+.mdm-group-entity {
+  white-space: nowrap;
+}
+.mdm-group-entity .mdm-entity-mark .mdm-icon {
+  vertical-align: -0.15em;
+}
+.mdm-row-entity {
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  align-self: center;
+}
+.mdm-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 var(--mdm-space-2);
+}
+.mdm-title-row .mdm-page-title {
+  margin: 0;
+}
+/* a group of attributes: a quiet heading row with its icon, then its rows */
+.mdm-table .mdm-group-row > th {
+  padding: 8px 8px 6px;
+  background: var(--mdm-group-fill);
+  color: var(--mdm-muted);
+  font-size: var(--mdm-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--mdm-rule-soft);
+}
+.mdm-group-row .mdm-icon {
+  margin-right: 8px;
+  vertical-align: -0.2em;
+}
+.mdm-group + .mdm-group .mdm-group-row > th {
+  border-top: 8px solid var(--mdm-surface);
+}
+
 .mdm-brand {
   font-weight: 700;
   font-size: 1.05rem;
@@ -219,6 +363,12 @@
 }
 .mdm-nav-subheading {
   margin-top: var(--mdm-space-3);
+  padding-left: 12px;
+}
+/* the views and kinds hang under the Inbox, on one hairline, so the rail reads as one list and not fifteen */
+.mdm-rail {
+  margin: 2px 0 0 18px;
+  border-left: 1px solid var(--mdm-rule);
 }
 .mdm-nav-note {
   font-size: var(--mdm-text-md);
@@ -230,7 +380,13 @@
   display: none;
 }
 .mdm-rail-link {
-  min-height: 32px;
+  min-height: 30px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  border-radius: 0 6px 6px 0;
+}
+.mdm-rail-link .mantine-NavLink-label {
+  font-size: var(--mdm-text-md);
 }
 /* the Inbox is the heading of its views: never filled; the chosen view carries one accent rule */
 .mdm-nav .mdm-nav-inbox[data-active],
@@ -244,6 +400,7 @@
 }
 .mdm-nav .mdm-rail-link[data-active] {
   box-shadow: inset 2px 0 0 var(--mdm-accent);
+  background: var(--mdm-surface) !important;
 }
 .mdm-nav .mdm-rail-link[data-active] .mantine-NavLink-label {
   font-weight: 600;
@@ -328,7 +485,7 @@
   text-align: left;
   vertical-align: top;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--mdm-rule);
+  border-bottom: 1px solid var(--mdm-rule-soft);
 }
 .mdm-table th {
   font-weight: 600;
@@ -336,6 +493,8 @@
 }
 .mdm-table thead th {
   font-size: var(--mdm-text-xs);
+  font-weight: 500;
+  border-bottom-color: var(--mdm-rule);
 }
 .mdm-table tbody th {
   font-weight: 500;
@@ -665,6 +824,12 @@
 .mdm-health-item {
   white-space: nowrap;
 }
+/* on a phone, inside its card, a long figure wraps rather than push the page sideways */
+@media (max-width: 48em) {
+  .mdm-health-item {
+    white-space: normal;
+  }
+}
 .mdm-health-sep {
   white-space: pre;
 }
@@ -711,13 +876,13 @@
   --ag-header-background-color: var(--mdm-surface);
   --ag-header-text-color: var(--mdm-muted);
   --ag-header-font-size: 12px;
-  --ag-header-font-weight: 600;
+  --ag-header-font-weight: 500;
   --ag-header-column-border: none;
   --ag-odd-row-background-color: var(--mdm-surface);
   --ag-row-hover-color: var(--mdm-row-hover);
   --ag-selected-row-background-color: var(--mdm-row-selected);
   --ag-border-color: var(--mdm-rule);
-  --ag-row-border: 1px solid var(--mdm-rule);
+  --ag-row-border: 1px solid var(--mdm-rule-soft);
   --ag-header-row-border: 1px solid var(--mdm-rule);
   --ag-wrapper-border: none;
   --ag-wrapper-border-radius: 0;
@@ -779,9 +944,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* the second line: the band, then the reason, the suggestion and the entity, wrapping to two lines at
-   any width so the reason is never lost (the 56 px row holds them); past two lines the entity, last, is
-   what gets cut, with the full text in the title */
+/* the second line: the band, then the reason and the suggestion, wrapping to two lines at any width so
+   the reason is never lost (the 56 px row holds them); past two lines the suggestion, last, is what gets
+   cut, with the full text in the title */
 .mdm-task-second {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -854,13 +1019,15 @@
 }
 .mdm-pane-full {
   position: absolute;
-  top: 0;
-  right: 0;
+  top: 10px;
+  right: 12px;
   z-index: 3;
   color: var(--mdm-muted) !important;
 }
 .mdm-decide-scroll {
-  max-height: calc(100vh - 88px);
+  /* the header (56), the main's top padding (16), the card's padding and border (14), and a little room
+     under the card, which ends within the main's bottom padding */
+  max-height: calc(100vh - 98px);
   overflow-y: auto;
   padding-right: 4px;
   /* room for the sticky footer, so a control focused in the pane scrolls clear of it (WCAG 2.2 SC 2.4.11) */
@@ -875,9 +1042,9 @@
 .mdm-decide-body {
   flex: 1 0 auto;
 }
-/* the pane's rhythm: one step of space between its blocks, no box around any */
+/* the pane's rhythm: 10 px between its blocks, no box around any, so a case fits at 1440 × 900 */
 .mdm-decide-body > * + * {
-  margin-top: var(--mdm-space-3);
+  margin-top: 10px;
 }
 .mdm-decide-empty {
   padding-right: 44px;
@@ -888,8 +1055,8 @@
 .mdm-decide-headline {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 12px;
+  align-items: center;
+  gap: 2px 10px;
 }
 .mdm-decide-title {
   font-size: 1.05rem;

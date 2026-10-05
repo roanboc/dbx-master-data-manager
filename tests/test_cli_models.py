@@ -17,6 +17,7 @@ from mdm.demo import DemoConfig, evaluate, generate, land
 from mdm.engine.blocking import key_attributes
 from mdm.engine.compare import level_count
 from mdm.models.entity_model import EntityModel
+from mdm.models.errors import ModelError
 from mdm.services.context import Hub
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,3 +113,35 @@ def test_starter_weights_resolve_the_demo_world(hub: Hub) -> None:
         scores = evaluate(hub.store, entity, world)
         assert scores["precision"] >= PRECISION, (entity, scores)
         assert scores["recall"] >= RECALL, (entity, scores)
+
+
+def test_every_starter_names_its_look_and_groups_every_value_attribute(
+    models: dict[str, EntityModel],
+) -> None:
+    for model in models.values():
+        assert model.icon != "entity" and model.colour != "gray"  # each starter has a look of its own
+        grouped = {name for group in model.groups for name in group.attributes}
+        assert grouped == {a.name for a in model.column_attributes()}  # a reference shows as a relationship
+        assert EntityModel.from_dict(model.to_dict()) == model
+
+
+def test_a_model_without_a_look_draws_the_generic_one_and_a_bad_look_is_refused() -> None:
+    doc = _doc(MODELS / "person.yaml")
+    bare = {key: value for key, value in doc.items() if key not in ("icon", "colour", "groups")}
+    model = EntityModel.from_dict(bare)
+    assert (model.icon, model.colour, model.groups) == ("entity", "gray", ())
+    bad = {
+        **bare,
+        "icon": "Not An Icon",
+        "colour": "neon",
+        "groups": [
+            {"name": "a", "label": "A", "attributes": ["email", "nowhere"]},
+            {"name": "b", "label": "B", "attributes": ["email"]},
+            {"name": "a", "label": "Again", "attributes": []},
+        ],
+    }
+    with pytest.raises(ModelError) as raised:
+        EntityModel.from_dict(bad)
+    problems = " ".join(raised.value.problems)
+    for code in ("bad_icon", "bad_value", "unknown_attribute", "in_two_groups", "duplicate"):
+        assert code in problems, code

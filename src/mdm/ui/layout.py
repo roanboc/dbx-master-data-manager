@@ -223,7 +223,8 @@ def navbar() -> list[Component]:
     return [
         html.Div(
             [
-                html.H2("Work", className="mdm-nav-heading"),
+                # the navigation's name, for a screen reader; on screen the Inbox heads its own list
+                html.H2("Work", className="mdm-nav-heading mdm-sr-only"),
                 dmc.NavLink(
                     id=ids.NAV_INBOX,
                     label="Inbox",
@@ -278,7 +279,7 @@ def shell(settings: Settings | None = None, badges: HubBadges | None = None) -> 
             dmc.AppShell(
                 id=ids.APP_SHELL,
                 header={"height": 56},
-                navbar={"width": 240, "breakpoint": "sm", "collapsed": {"mobile": True}},
+                navbar={"width": 224, "breakpoint": "sm", "collapsed": {"mobile": True}},
                 padding="md",
                 children=[
                     dmc.AppShellHeader(header(settings, badges), id=ids.HEADER, className="mdm-header"),

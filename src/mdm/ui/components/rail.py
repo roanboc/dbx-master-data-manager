@@ -1,5 +1,6 @@
 """The view rail under Inbox: My queue, Team, Breaching, Snoozed, Escalated, Quality samples and Alike
-reviews, then the open tasks by kind, each a plain link with its capped count as muted text (red when a
+reviews, then the kinds that have open tasks ("By kind"; an empty kind is left out unless it is the one
+chosen, and the heading goes with the last of them), each a plain link with its capped count as muted text (red when a
 breach is counted, and for Quality samples when one is past its service level, said in words under it
 too), the chosen one marked `aria-current="page"` and by one accent rule (S6). Quality samples have their
 own view only, so they are not among the kinds.
@@ -35,8 +36,10 @@ VIEW_LABELS = {
     "escalated": "Escalated",
     SAMPLES_VIEW: "Quality samples",
 }
-#: the kinds listed under "Open tasks by kind": a quality sample has its own view instead
+#: the kinds listed under "By kind": a quality sample has its own view instead
 RAIL_KINDS = tuple(kind for kind in TASK_KINDS if kind != "quality_sample")
+#: the heading over the kinds that have open tasks
+KINDS_HEADING = "By kind"
 #: the view a kind's link opens: every open task of that kind
 KIND_VIEW = "team"
 #: the rail's mark for the Alike reviews page, a batch page and the inbox filtered to a group or a batch;
@@ -140,12 +143,12 @@ def render(counts: ViewCounts, query: Mapping[str, str | None]) -> Component:
     kinds = [
         _link(KIND_LABELS[name], counts.kinds.get(name, 0), href(KIND_VIEW, name), active=name == kind)
         for name in RAIL_KINDS
+        if counts.kinds.get(name, 0) or name == kind
     ]
-    return html.Div(
-        [
-            html.Div(views, className="mdm-rail-group"),
-            html.H3("Open tasks by kind", className="mdm-nav-subheading"),
+    parts: list[Component] = [html.Div(views, className="mdm-rail-group")]
+    if kinds:
+        parts += [
+            html.H3(KINDS_HEADING, className="mdm-nav-subheading"),
             html.Div(kinds, className="mdm-rail-group"),
-        ],
-        className="mdm-rail",
-    )
+        ]
+    return html.Div(parts, className="mdm-rail")

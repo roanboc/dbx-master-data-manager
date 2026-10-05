@@ -12,7 +12,7 @@ from mdm.config import Settings
 from mdm.models.authority import Actor
 from mdm.models.canonical import utcnow
 from mdm.models.errors import PlatformRefused
-from mdm.models.workbench import HubBadges, ServiceLevels
+from mdm.models.workbench import EntityLook, HubBadges, ServiceLevels
 from mdm.services.arrival import ArrivalService
 from mdm.services.authority import AuthorityService
 from mdm.services.batches import BatchService
@@ -167,11 +167,14 @@ class Hub:
             and bool(self.settings.agent_endpoint)
             and any(self.registry.published(entity).ai_enabled for entity in entities)
         )
+        models = {entity: self.registry.published(entity) for entity in entities}
         return HubBadges(
             engine=engine or self.store.engine,
             assistant="endpoint" if endpoint else "stub",
             local=self.settings.local_mode,
             entities=entities,
+            looks={entity: EntityLook(model.icon, model.colour) for entity, model in models.items()},
+            groups={entity: model.groups for entity, model in models.items()},
         )
 
     @classmethod

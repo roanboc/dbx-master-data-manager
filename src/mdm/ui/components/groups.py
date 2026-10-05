@@ -17,7 +17,7 @@ Owner: WORKBENCH (plan 5, B.2).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from urllib.parse import urlencode
 
 import dash_mantine_components as dmc
@@ -26,9 +26,10 @@ from dash.development.base_component import Component
 
 from mdm import capacity
 from mdm.models.authority import ROLE_LABELS
-from mdm.models.workbench import AgreementView, BatchLine, GroupList, GroupRow, LabelHistory, Mark
+from mdm.models.workbench import AgreementView, BatchLine, EntityLook, GroupList, GroupRow, LabelHistory, Mark
 from mdm.ui import ids
 from mdm.ui.components import breaker
+from mdm.ui.components import entity as entity_ui
 from mdm.ui.components.common import count_text, empty_state, page_title
 
 TITLE = "Alike reviews"
@@ -223,11 +224,15 @@ def _cell(column: str, children: object, *, className: str | None = None) -> Com
     return html.Td(children, className=className, **{"data-column": column})
 
 
-def group_row(row: GroupRow, *, can_draw: bool, sample_base: int = 5) -> Component:
-    """One group's row; it carries its key (`data-group`), never its signature."""
+def group_row(
+    row: GroupRow, *, can_draw: bool, sample_base: int = 5, look: EntityLook | None = None
+) -> Component:
+    """One group's row; it carries its key (`data-group`), never its signature. The entity is named after
+    its model's icon (`look`), when given."""
+    entity_cell = [entity_ui.mark(look), " ", row.entity_label] if look is not None else row.entity_label
     return html.Tr(
         [
-            _cell("Entity", row.entity_label),
+            _cell("Entity", entity_cell, className="mdm-group-entity"),
             _cell("Pattern", marks(row.marks), className="mdm-group-pattern"),
             _cell("Reviews", count_link(row), className="mdm-num"),
             _cell("Labels", labels_cell(row.labels)),
@@ -238,13 +243,26 @@ def group_row(row: GroupRow, *, can_draw: bool, sample_base: int = 5) -> Compone
     )
 
 
-def groups_table(rows: Sequence[GroupRow], *, can_draw: bool, sample_base: int = 5) -> Component:
+def groups_table(
+    rows: Sequence[GroupRow],
+    *,
+    can_draw: bool,
+    sample_base: int = 5,
+    looks: Mapping[str, EntityLook] | None = None,
+) -> Component:
     """The groups, one row each, with column headers and a caption for screen readers."""
     return html.Table(
         [
             html.Caption(CAPTION, className="mdm-sr-only"),
             html.Thead(html.Tr([html.Th(name, scope="col") for name in COLUMNS])),
-            html.Tbody([group_row(row, can_draw=can_draw, sample_base=sample_base) for row in rows]),
+            html.Tbody(
+                [
+                    group_row(
+                        row, can_draw=can_draw, sample_base=sample_base, look=(looks or {}).get(row.entity)
+                    )
+                    for row in rows
+                ]
+            ),
         ],
         className="mdm-table mdm-group-table",
     )
@@ -292,7 +310,14 @@ def confirm_section(lines: Sequence[BatchLine]) -> Component | None:
     )
 
 
-def groups_section(view: GroupList, *, can_draw: bool, role: str, sample_base: int = 5) -> Component:
+def groups_section(
+    view: GroupList,
+    *,
+    can_draw: bool,
+    role: str,
+    sample_base: int = 5,
+    looks: Mapping[str, EntityLook] | None = None,
+) -> Component:
     """The groups' table and what was grouped; "No two open reviews share a pattern yet." when none."""
     parts: list[Component] = [html.H2(GROUPS_HEADING, className="mdm-section-title")]
     if not can_draw and view.groups:
@@ -302,21 +327,30 @@ def groups_section(view: GroupList, *, can_draw: bool, role: str, sample_base: i
             )
         )
     if view.groups:
-        parts.append(html.Div(groups_table(view.groups, can_draw=can_draw, sample_base=sample_base)))
+        parts.append(
+            html.Div(groups_table(view.groups, can_draw=can_draw, sample_base=sample_base, looks=looks))
+        )
     else:
         parts.append(empty_state(NO_GROUPS))
     parts.append(html.P(grouped_line(view), className="mdm-group-note"))
     return html.Section(parts, className="mdm-groups-section", **{"aria-label": GROUPS_HEADING})
 
 
-def render(view: GroupList, *, can_draw: bool, role: str, sample_base: int = 5) -> list[Component]:
+def render(
+    view: GroupList,
+    *,
+    can_draw: bool,
+    role: str,
+    sample_base: int = 5,
+    looks: Mapping[str, EntityLook] | None = None,
+) -> list[Component]:
     """The page's regions (GROUPS_LIST's children): the title and introduction, the batches waiting for
-    the steward's confirmation, and the groups."""
+    the steward's confirmation, and the groups, each entity after its icon (`looks`)."""
     parts: list[Component] = [page_title(TITLE), html.P(INTRODUCTION, className="mdm-page-intro")]
     waiting = confirm_section(view.to_confirm)
     if waiting is not None:
         parts.append(waiting)
-    parts.append(groups_section(view, can_draw=can_draw, role=role, sample_base=sample_base))
+    parts.append(groups_section(view, can_draw=can_draw, role=role, sample_base=sample_base, looks=looks))
     return parts
 
 

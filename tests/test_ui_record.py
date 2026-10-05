@@ -21,10 +21,13 @@ from dash.development.base_component import Component
 
 from mdm import capacity
 from mdm.backend.factory import open_store
+from mdm.models.entity_model import AttributeGroup
 from mdm.models.records import SourceKey
+from mdm.models.workbench import EntityLook
 from mdm.services.context import Hub
 from mdm.ui import app as app_module
 from mdm.ui import context, ids
+from mdm.ui.components import entity as entity_ui
 from mdm.ui.components import provenance, reveal, timeline
 from mdm.ui.pages import record, source
 from tests import helpers
@@ -655,3 +658,52 @@ def test_a_reveal_through_dash_fills_the_table_and_keeps_nothing_else(app: Dash,
         json.dumps(ids.reveal(ids.REVEAL_MODAL, "record"), sort_keys=True, separators=(",", ":"))
     ]
     assert modal["opened"] is False
+
+
+# ------------------------------------------------------------------------------------------ groups and looks
+
+
+GROUPS = (
+    AttributeGroup("contact", "Contact", "mail", ("phone", "email")),
+    AttributeGroup("identity", "Identity", "id-card", ("name",)),
+)
+
+
+def test_the_golden_values_fall_in_the_models_groups_with_other_last() -> None:
+    table = record.golden_table("ORG-000123", samples.VALUES, GROUPS)
+    bodies = [c for c in walk(table) if type(c).__name__ == "Tbody"]
+    rows = [
+        [c.children[0] for c in walk(body) if type(c).__name__ == "Th" and getattr(c, "scope", None) == "row"]
+        for body in bodies
+    ]
+    headings = [
+        c.children[-1].children  # after the group's icon, its label
+        for c in walk(table)
+        if type(c).__name__ == "Th" and getattr(c, "scope", None) == "rowgroup"
+    ]
+    # the model's order, not the values'; the attributes it groups in none under Other, last
+    assert headings == ["Contact", "Identity", "Other"]
+    assert rows == [["Phone"], ["Name"], ["Website", "Registered ID"]]
+    plain = record.golden_table("ORG-000123", samples.VALUES)
+    assert len([c for c in walk(plain) if type(c).__name__ == "Tbody"]) == 1  # no groups declared: one body
+
+
+def test_grouping_keeps_order_drops_empty_groups_and_puts_the_rest_under_other() -> None:
+    items = ["email", "city", "name", "phone"]
+    out = entity_ui.grouped(GROUPS, items, lambda name: name)
+    assert [(group.name, members) for group, members in out] == [
+        ("contact", ["email", "phone"]),
+        ("identity", ["name"]),
+        ("other", ["city"]),
+    ]
+    assert entity_ui.grouped((), items, lambda name: name) == [(entity_ui.OTHER, items)]
+    assert entity_ui.grouped(GROUPS, [], lambda name: name) == []
+
+
+def test_an_entity_badge_draws_its_models_icon_and_colour_or_the_generic_ones() -> None:
+    badge = entity_ui.badge(EntityLook("building", "teal"))
+    assert "mdm-hue-teal" in badge.className and getattr(badge, "aria-hidden") == "true"
+    assert "mdm-icon-building" in badge.children.className
+    unknown = entity_ui.badge(EntityLook("rocket", "neon"), label="Organisation")
+    assert "mdm-hue-gray" in unknown.className and "mdm-icon-entity" in unknown.children.className
+    assert unknown.role == "img" and getattr(unknown, "aria-label") == "Organisation"

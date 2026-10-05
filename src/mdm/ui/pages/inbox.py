@@ -44,13 +44,15 @@ from mdm.models.workbench import (
     SAMPLES_VIEW,
     SNOOZE_HOURS,
     BatchView,
+    EntityLook,
     TaskPage,
     TaskRow,
     TrayEntry,
 )
 from mdm.services import display
 from mdm.ui import context, ids, messages
-from mdm.ui.components import compare, decide, health, reveal
+from mdm.ui.components import compare, decide, health, icons, reveal
+from mdm.ui.components import entity as entity_ui
 from mdm.ui.components.band import band_words, score_text
 from mdm.ui.components.common import count_text, duration, notify, page_title
 from mdm.ui.components.icons import icon
@@ -134,9 +136,9 @@ ROW_CLASSES = {
 }
 #: the list and the pane: side by side from 1200 px (five twelfths, at least 480 px, and seven), stacked
 #: below; with F the list is hidden and the pane grows into its place
-QUEUE_PART = {"flex": "5 1 0", "minWidth": "min(480px, 100%)"}
+QUEUE_PART = {"flex": "5 1 0", "minWidth": "min(460px, 100%)"}
 DECIDE_PART = {"flex": "7 1 0", "minWidth": 0, "position": "relative"}
-GRID_STYLE = {"height": "calc(100vh - 250px)", "minHeight": "320px", "width": "100%"}
+GRID_STYLE = {"height": "calc(100vh - 276px)", "minHeight": "320px", "width": "100%"}
 HEADING_STYLE = {"fontSize": "0.95rem", "fontWeight": 600, "margin": "0 0 8px"}
 #: the page's own copies of what the shell announces (see `ids`)
 ADDRESS = ids.INBOX_ADDRESS
@@ -416,13 +418,20 @@ def second_line(band_text: str, entity_label: str, row: TaskRow) -> str:
 
 
 def grid_row(
-    row: TaskRow, now: datetime | None = None, *, entity_shown: bool = True, kind_shown: bool = True
+    row: TaskRow,
+    now: datetime | None = None,
+    *,
+    entity_shown: bool = True,
+    kind_shown: bool = True,
+    looks: Mapping[str, EntityLook] | None = None,
 ) -> dict:
     """A task row as the grid's row dict: codes, IDs and masked text only, never HTML. `entity_shown`
-    false (the header's entity filter is set) leaves the entity out of the second line; `kind_shown` false
-    (the list holds one kind) leaves the kind out of the first."""
+    false (the header's entity filter is set) leaves the entity out of the first line; `kind_shown` false
+    (the list holds one kind) leaves the kind out of the first. `looks` (the hub's badges) gives the
+    entity's icon and colour as codes, which the cell draws before the kind."""
     now = now if now is not None else utcnow()
     band_text, band = band_cell(row)
+    look = (looks or {}).get(row.entity, EntityLook())
     staged = row.staged
     entity_label = row.entity.replace("_", " ").capitalize() if entity_shown else ""
     return {
@@ -431,6 +440,8 @@ def grid_row(
         "kind_label": row.kind_label if kind_shown else "",
         "entity": row.entity,
         "entity_label": entity_label,
+        "entity_icon": icons.known(look.icon),
+        "entity_hue": entity_ui.hue(look.colour),
         "title": row.title,
         "subject": row.subject,
         "band": band,
@@ -474,7 +485,11 @@ def load(
     now = utcnow()
     chosen = select_after_load(page.rows, moved, selected)
     shown = not query.get("entity")
-    rows = [grid_row(row, now, entity_shown=shown, kind_shown=mixed_kinds(query)) for row in page.rows]
+    looks = ctx.badges.looks
+    rows = [
+        grid_row(row, now, entity_shown=shown, kind_shown=mixed_kinds(query), looks=looks)
+        for row in page.rows
+    ]
     return (
         rows,
         {"ids": [chosen]} if chosen else [],
@@ -758,6 +773,7 @@ def result_store(
     *,
     entity_shown: bool = True,
     kind_shown: bool = True,
+    looks: Mapping[str, EntityLook] | None = None,
 ) -> dict:
     """ACT_RESULT: what the advance callback (I8) needs — the task acted on, whether to move on, a counter
     so every act is a change, and the grid row to update or remove (codes, IDs and masked text only)."""
@@ -767,7 +783,7 @@ def result_store(
         "advance": result.advance,
         "n": n,
         "touched": result.touched,
-        "row": grid_row(result.row, now, entity_shown=entity_shown, kind_shown=kind_shown)
+        "row": grid_row(result.row, now, entity_shown=entity_shown, kind_shown=kind_shown, looks=looks)
         if result.row is not None
         else None,
         "remove": result.remove,
@@ -832,7 +848,14 @@ def case_view(
         return decide.empty_pane(text), None
     context.prefetch(ctx, next_hint if next_hint != task_id else None)
     shown = split if kept or case.staged is not None else None
-    return decide.render(case, chosen=chosen, split=shown), stamp_of(case)
+    entity = case.row.entity
+    pane = decide.render(
+        case,
+        chosen=chosen,
+        split=shown,
+        look=ctx.badges.look(entity),
+    )
+    return pane, stamp_of(case)
 
 
 def reveal_view(
@@ -908,7 +931,9 @@ def settled_updates(
             continue
         row, gone = _row_again(ctx, task_id)
         if row is not None:
-            update.append(grid_row(row, now, entity_shown=entity_shown, kind_shown=kind_shown))
+            update.append(
+                grid_row(row, now, entity_shown=entity_shown, kind_shown=kind_shown, looks=ctx.badges.looks)
+            )
         elif gone:
             remove.append({"task_id": task_id})
     if not remove and not update:
@@ -1382,6 +1407,7 @@ def register(app) -> None:
                 previous,
                 entity_shown=not (query or {}).get("entity"),
                 kind_shown=mixed_kinds(query),
+                looks=request_ctx.badges.looks,
             ),
             (case_version or 0) + 1 if result.bump_case else no_update,
             (tray_version or 0) + 1 if result.bump_tray else no_update,

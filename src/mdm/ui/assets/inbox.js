@@ -175,10 +175,10 @@
     var seconds = Math.max(Math.ceil(ms / 1000), 0);
     return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
   }
-  // the task: line 1 its kind (muted, in a mixed list only) and its title, the title a button that opens
-  // it (Tab reaches it, Enter or a click selects the row); line 2, muted, at most two lines with its full
-  // text in its title: the band (a dot and "79 review"), then the reason, the suggestion and the entity, so
-  // the entity is what a narrow list cuts, never the reason
+  // the task: line 1 its kind (in a mixed list only) and entity, muted ("Review · Person"), then its title,
+  // a button that opens it (Tab reaches it, Enter or a click selects the row); line 2, muted, at most two
+  // lines with its full text in its title: the band (a dot and "79 review"), then the reason and the
+  // suggestion, so a row reads in two lines and a narrow list cuts the suggestion, never the reason
   cells.MdmTask = function (props) {
     var d = props.data || {};
     var h = window.React.createElement;
@@ -189,8 +189,19 @@
       }
     }
     var first = [];
-    if (d.kind_label) {
-      first.push(h("span", {key: "kind", className: "mdm-kind"}, String(d.kind_label)));
+    // the entity's icon in its colour, as its model declares (codes only: a class, never markup)
+    if (d.entity_icon) {
+      first.push(
+        h("span", {
+          key: "glyph",
+          className: "mdm-icon mdm-row-entity mdm-glyph-" + d.entity_icon + " mdm-hue-" + (d.entity_hue || "gray"),
+          "aria-hidden": "true",
+        })
+      );
+    }
+    var label = joined([d.kind_label, d.entity_label]);
+    if (label) {
+      first.push(h("span", {key: "kind", className: "mdm-kind"}, label));
     }
     first.push(
       h(
@@ -205,7 +216,7 @@
       second.push(h("span", {key: "band", className: "mdm-band mdm-band-" + band}, String(d.band_text)));
     }
     second.push(
-      h("span", {key: "words", className: "mdm-task-words"}, joined([d.reason, d.suggestion, d.entity_label]))
+      h("span", {key: "words", className: "mdm-task-words"}, joined([d.reason, d.suggestion]))
     );
     return h("div", {className: "mdm-task-cell"}, [
       h("div", {key: "first", className: "mdm-task-first"}, first),

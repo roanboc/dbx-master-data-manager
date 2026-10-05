@@ -412,7 +412,8 @@ def test_the_rail_links_every_view_and_kind_with_capped_counts() -> None:
     links = [c for c in walk(tree) if type(c).__name__ == "NavLink"]
     hrefs = [c.href for c in links]
     assert hrefs[:5] == [f"/?view={view}" for view in ("mine", "team", "breaching", "snoozed", "escalated")]
-    assert "/?view=team&kind=review" in hrefs and "/?view=team&kind=unresolved_reference" in hrefs
+    assert "/?view=team&kind=review" in hrefs and "/?view=team&kind=held" in hrefs
+    assert "/?view=team&kind=unresolved_reference" not in hrefs  # an empty kind is left out
     chosen = [c for c in links if getattr(c, "aria-current", None) == "page"]
     assert [c.href for c in chosen] == ["/?view=team&kind=review"]
     assert "999+" in texts_in(tree)
@@ -461,6 +462,21 @@ def test_the_rail_lists_quality_samples_after_escalated_and_not_as_a_kind() -> N
     assert rail.chosen({"view": "samples", "kind": "held"}) == ("samples", None)
     assert rail.chosen({"view": "nowhere"}) == ("mine", None)
     assert layout.inbox_query("/", "?view=samples&kind=held") == {"view": "samples", "kind": None}
+
+
+def test_the_rail_leaves_out_an_empty_kind_unless_it_is_chosen() -> None:
+    hrefs = [
+        c.href
+        for c in walk(rail.render(samples.COUNTS_UNDER_CAP, {"view": "mine"}))
+        if type(c).__name__ == "NavLink"
+    ]
+    assert "/?view=team&kind=exception" not in hrefs and "/?view=team&kind=orphan" in hrefs
+    assert "/?view=snoozed" in hrefs  # the views always show, at 0 too
+    chosen = rail.render(samples.COUNTS_UNDER_CAP, {"view": "team", "kind": "exception"})
+    assert "/?view=team&kind=exception" in [c.href for c in walk(chosen) if type(c).__name__ == "NavLink"]
+    calm = replace(samples.COUNTS_UNDER_CAP, kinds={})
+    assert rail.KINDS_HEADING not in texts_in(rail.render(calm, {"view": "mine"}))
+    assert rail.KINDS_HEADING in texts_in(rail.render(samples.COUNTS_UNDER_CAP, {"view": "mine"}))
 
 
 def test_the_rail_is_plain_links() -> None:
@@ -1197,3 +1213,14 @@ def test_undo_from_the_tray_says_a_batch_is_ready_again() -> None:
     assert tray.undo(ctx, "TR-1")["message"] == "Undone. The batch is ready again, and nothing was undone."
     entry.decision = "link"
     assert tray.undo(ctx, "TR-1")["message"] == "Undone. The task is back in your queue."
+
+
+def test_a_models_icon_name_falls_back_and_every_icon_has_a_class_for_the_grid() -> None:
+    assert icons.known("building") == "building" and icons.known("rocket") == "entity"
+    assert "mdm-icon-entity" in icons.glyph("rocket").className
+    css = icons.glyph_css()
+    assert all(f".mdm-glyph-{name}{{" in css for name in icons.NAMES)
+    assert (
+        '<style id="mdm-glyphs">' in app_module.INDEX_STRING
+        and ".mdm-glyph-person{" in app_module.INDEX_STRING
+    )

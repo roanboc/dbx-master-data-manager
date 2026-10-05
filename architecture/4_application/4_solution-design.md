@@ -544,7 +544,7 @@ flowchart LR
 
 A new entity needs no code change, which is the test of [principle [`P8`] Entity models are data; the product is neutral](../1_strategy/1_motivation.md#principles).
 
-1. A technical steward writes `models/<entity>.yaml`, a YAML (YAML Ain't Markup Language) file. It holds the attributes, the sources with their trust ranks and policies, and the match, survivorship and validation rules.
+1. A technical steward writes `models/<entity>.yaml`, a YAML (YAML Ain't Markup Language) file. It holds the attributes, the sources with their trust ranks and policies, and the match, survivorship and validation rules, and how the workbench shows the entity: its icon, its colour and its attributes in labelled groups, each with an icon.
 2. A data owner runs `mdm model load models/<entity>.yaml --publish`. The model is validated and published, and the hub creates `mdm_core.<entity>` and its masked view `mdm_read.<entity>`.
 3. The integration platform lands rows with that `entity` value in the same landing table. No new table and no new grant are needed.
 4. `mdm arrive` settles them. Listening systems read the new table through the default privileges of the [listener interface](./5_interface-contracts.md#listener-interface).

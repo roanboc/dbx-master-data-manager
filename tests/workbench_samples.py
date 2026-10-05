@@ -29,6 +29,7 @@ from mdm.models.workbench import (
     Choice,
     CompareRow,
     CompensationLine,
+    EntityLook,
     FlushReport,
     GroupList,
     GroupRow,
@@ -1469,7 +1470,14 @@ SOURCE_VIEW = SourceView(
     open_tasks=(ROW_HELD_UPDATE.task_id,),
     rule_failures=(),
 )
-HUB_BADGES = HubBadges(engine="DuckDB", assistant="stub", local=True, entities=("organisation", "person"))
+LOOK_ORGANISATION = EntityLook(icon="building", colour="teal")
+HUB_BADGES = HubBadges(
+    engine="DuckDB",
+    assistant="stub",
+    local=True,
+    entities=("organisation", "person"),
+    looks={"organisation": LOOK_ORGANISATION, "person": EntityLook(icon="person", colour="indigo")},
+)
 HUB_BADGES_SHARED = HubBadges(engine="Lakebase", assistant="stub", local=False, entities=("organisation",))
 
 # ---------------------------------------------------------------------------------------------- signature batches
@@ -2182,6 +2190,7 @@ ALL = (
     SOURCE_VIEW,
     HUB_BADGES,
     HUB_BADGES_SHARED,
+    LOOK_ORGANISATION,
     *MARKS_PERSON,
     LABELS,
     AGREEMENT,

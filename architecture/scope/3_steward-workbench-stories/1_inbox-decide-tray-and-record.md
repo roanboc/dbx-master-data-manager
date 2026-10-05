@@ -30,9 +30,9 @@ _[← Scope document](../3_steward-workbench.md)_
 
 ### Inbox and decide pane
 
-- [x] The inbox lists open tasks by due time in keyed pages of 50, with Previous, Next and "51–100". Its views are My queue, with how many of its tasks the steward has claimed, Team, Breaching, Snoozed and Escalated, and it filters by task kind, each with its count. Counts are exact to 999, then "999+", and refresh every 30 seconds.
+- [x] The inbox lists open tasks by due time in keyed pages of 50, with Previous, Next and "51–100". Its views are My queue, with how many of its tasks the steward has claimed, Team, Breaching, Snoozed and Escalated, and it filters by each task kind that has open tasks, with its count. Counts are exact to 999, then "999+", and refresh every 30 seconds.
 - [x] A row shows the kind, the entity, the subject's display name masked by role, the band and score, the suggestion, the reason in plain words, the service-level clock, the claimant and a staged marker. Columns neither sort nor filter, because a page is one slice of the queue.
-- [x] The health strip shows the last arrival run, the open tasks, the breaching tasks, the tray and the last commit version.
+- [x] The health strip shows the last arrival run, the open tasks, the breaching tasks and the tray when there are any, and the last commit version.
 - [x] J and K, or the arrow keys in the list, move the one selection through the inbox, and 1, 2 and 3 choose a candidate, without waiting for the server. Moving claims nothing; the first decision on a task claims it for 10 minutes.
 - [x] With the single-key shortcuts off, Tab reaches each row, then leaves the list for its pages and the decide pane, and nothing traps the keyboard; Enter on a row opens its task.
 - [x] A review task shows the arriving record and up to three candidates as columns, coloured and marked where they agree. It shows the match-weight waterfall of the chosen candidate to scale, from a zero line, with both band edges marked as scores; what would flip it, in plain words and with the score it would reach; the golden values that linking changes; and one impact line.

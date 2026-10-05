@@ -30,9 +30,12 @@ from dash.development.base_component import Component
 
 from mdm import capacity
 from mdm.models.canonical import utcnow
+from mdm.models.entity_model import AttributeGroup
 from mdm.models.workbench import MemberView, RecordHeader, RelationshipView, ValueView
 from mdm.ui import context, ids, messages
 from mdm.ui.components import common, provenance, reveal, timeline
+from mdm.ui.components import entity as entity_ui
+from mdm.ui.components.icons import glyph
 from mdm.ui.context import UiContext
 from mdm.ui.pages import source as source_page
 from mdm.ui.pages.source import entity_label, record_href, status_badge, task_href, task_links, unknown_page
@@ -110,8 +113,11 @@ def header_view(ctx: UiContext, header: RecordHeader, *, offer_reveal: bool) -> 
         facts.extend([" · ", open_tasks_link(ctx, header.open_tasks)])
     facts.extend([" · ", members])
     facts.append(f" · last changed in commit {header.commit_version}")
+    look = ctx.badges.look(header.entity)
     lines: list[Component] = [
-        common.page_title(header.title),
+        html.Div(
+            [entity_ui.badge(look, size=36), common.page_title(header.title)], className="mdm-title-row"
+        ),
         html.P(facts, className="mdm-record-facts"),
     ]
     if header.survivor_id and header.survivor_id != header.master_id:
@@ -138,10 +144,51 @@ def header_view(ctx: UiContext, header: RecordHeader, *, offer_reveal: bool) -> 
 # ---------------------------------------------------------------------------------------------- the tabs
 
 
-def golden_table(master_id: str, values: Sequence[ValueView]) -> Component:
+def golden_table(
+    master_id: str, values: Sequence[ValueView], groups: Sequence[AttributeGroup] = ()
+) -> Component:
     """The golden values (GOLDEN_TABLE's children): attribute (critical marked), then the value (masked
     unless revealed) with its provenance chip right after it; the chip opens the value's Why in a row
-    under it (WHY_ROW), so the value it explains stays in view."""
+    under it (WHY_ROW), so the value it explains stays in view. With the model's `groups`, one row group
+    each ("Identity", "Contact", …), headed by its icon and label, and "Other" last."""
+    if not groups:
+        body: list[Component] = [html.Tbody(_golden_rows(values))]
+    else:
+        body = [
+            html.Tbody(
+                [
+                    html.Tr(
+                        html.Th(
+                            [glyph(group.icon, size=14), html.Span(group.label)],
+                            colSpan=2,
+                            scope="rowgroup",
+                        ),
+                        className="mdm-group-row",
+                    ),
+                    *_golden_rows(members),
+                ],
+                className="mdm-group",
+            )
+            for group, members in entity_ui.grouped(groups, values, lambda v: v.attribute)
+        ]
+    return html.Table(
+        [
+            html.Caption(f"Golden values of {master_id}", className="mdm-sr-only"),
+            html.Thead(
+                html.Tr(
+                    [
+                        html.Th("Attribute", scope="col", style={"width": "24%"}),
+                        html.Th("Value and where it comes from", scope="col"),
+                    ]
+                )
+            ),
+            *body,
+        ],
+        className="mdm-table mdm-golden",
+    )
+
+
+def _golden_rows(values: Sequence[ValueView]) -> list[Component]:
     rows: list[Component] = []
     for value in values:
         label: list[Component | str] = [value.label]
@@ -170,21 +217,7 @@ def golden_table(master_id: str, values: Sequence[ValueView]) -> Component:
                     className="mdm-why-row mdm-hidden",
                 )
             )
-    return html.Table(
-        [
-            html.Caption(f"Golden values of {master_id}", className="mdm-sr-only"),
-            html.Thead(
-                html.Tr(
-                    [
-                        html.Th("Attribute", scope="col", style={"width": "24%"}),
-                        html.Th("Value and where it comes from", scope="col"),
-                    ]
-                )
-            ),
-            html.Tbody(rows),
-        ],
-        className="mdm-table mdm-golden",
-    )
+    return rows
 
 
 def _latest(member: MemberView, now: datetime) -> Component | str:
@@ -348,7 +381,9 @@ def tab_content(ctx: UiContext, entity: str, master_id: str, tab: str) -> Compon
     """One tab's panel, filled when first shown (R1)."""
     lookup = ctx.hub.lookup
     if tab == "golden":
-        return golden_table(master_id, lookup.golden(entity, master_id, actor=ctx.actor))
+        return golden_table(
+            master_id, lookup.golden(entity, master_id, actor=ctx.actor), ctx.badges.groups.get(entity, ())
+        )
     if tab == "sources":
         members = lookup.members(entity, master_id, actor=ctx.actor)
         total = len(members)
@@ -387,7 +422,7 @@ def golden_page(
     personal = [v.attribute for v in values if v.personal]
     filled = {"golden", tab}
     contents: dict[str, Component | list] = {name: common.empty_state(LOADING) for name in TABS}
-    contents["golden"] = golden_table(master_id, values)
+    contents["golden"] = golden_table(master_id, values, ctx.badges.groups.get(entity, ()))
     items: list[Component] = []
     cursor: list[int] | None = None
     if tab == "timeline":
@@ -596,7 +631,8 @@ def reveal_golden(ctx: UiContext, data: Any, reason: Any) -> tuple[Component | N
     )
     if values is None:
         return None, failure, None
-    return golden_table(master_id, values), source_page.shown_notice(values), None
+    table = golden_table(master_id, values, ctx.badges.groups.get(entity, ()))
+    return table, source_page.shown_notice(values), None
 
 
 def older_events(ctx: UiContext, data: Any, cursor: Any) -> tuple[list[Component], list[int] | None]:

@@ -52,6 +52,7 @@ from mdm.models.workbench import (
     SNOOZE_HOURS,
     Action,
     Candidate,
+    EntityLook,
     Mark,
     Revealed,
     TaskCase,
@@ -59,6 +60,7 @@ from mdm.models.workbench import (
 )
 from mdm.ui import ids
 from mdm.ui.components import breaker, compare, impact, waterfall
+from mdm.ui.components import entity as entity_ui
 from mdm.ui.components.band import band_chip, score_text
 from mdm.ui.components.common import duration, empty_state, kbd, notice
 from mdm.ui.components.icons import icon
@@ -450,13 +452,16 @@ def meta_line(case: TaskCase, row: TaskRow, now: datetime) -> list:
     return meta
 
 
-def header(case: TaskCase, now: datetime) -> Component:
-    """The title (masked) with its band; a muted line with the kind, the subject's IDs, due and claim;
-    then the reason."""
+def header(case: TaskCase, now: datetime, look: EntityLook | None = None) -> Component:
+    """The entity's badge, the title (masked) with its band; a muted line with the kind, the subject's IDs,
+    due and claim; then the reason."""
     row = case.row
     if case.shape == "golden_pair" and any(c.blocked_by for c in case.candidates):
         row = replace(row, kept_apart=True)  # a rule keeps the pair apart, whatever the score says
-    headline: list[Component] = [html.H2(row.title, className="mdm-decide-title")]
+    headline: list[Component] = [
+        entity_ui.badge(look or EntityLook(), size=22),
+        html.H2(row.title, className="mdm-decide-title"),
+    ]
     # a dispute's band would be the first decision's, beside the waterfall of the record as it is now
     chip = None if case.blind or case.shape in ("disputed", "disputed_pair") else row_band_chip(row)
     if chip is not None:
@@ -855,12 +860,13 @@ def render(
     chosen: str | None = None,
     split: str | None = None,
     now: datetime | None = None,
+    look: EntityLook | None = None,
 ) -> Component:
-    """The pane (DECIDE_PANE's children) for `case`; `revealed` renders the compare table in clear once;
+    """The pane (DECIDE_PANE's children) for `case`; `look` is the badge its entity's model declares; `revealed` renders the compare table in clear once;
     `chosen` is the candidate the steward chose on this task, and `split` the comparison named on a
     forced-sample review (both kept when the same task renders again)."""
     now = now if now is not None else utcnow()
-    body: list = [header(case, now)]
+    body: list = [header(case, now, look)]
     sample = sample_notice(case)
     if sample is not None:
         body.append(sample)

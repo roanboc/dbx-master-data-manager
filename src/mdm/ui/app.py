@@ -33,7 +33,7 @@ from mdm.models.safety import SAFE_TEXT_RE
 from mdm.services.context import Hub
 from mdm.services.tray import TrayWorker
 from mdm.ui import context, ids, layout, web
-from mdm.ui.components import common, keys, tray
+from mdm.ui.components import common, icons, keys, tray
 from mdm.ui.context import EXTENSION, UiContext, UiState
 from mdm.ui.pages import batch, groups, inbox, record, source
 
@@ -53,6 +53,7 @@ INDEX_STRING = """<!DOCTYPE html>
         <title>{%title%}</title>
         {%favicon%}
         {%css%}
+        <style id="mdm-glyphs">GLYPHS</style>
     </head>
     <body>
         <noscript>The workbench needs JavaScript.</noscript>
@@ -64,7 +65,7 @@ INDEX_STRING = """<!DOCTYPE html>
         </footer>
     </body>
 </html>
-"""
+""".replace("GLYPHS", icons.glyph_css())
 #: an address echoed in the unknown-page notice only when it has this shape
 ECHO_PATH_RE = re.compile(r"^[A-Za-z0-9/_:.\-]{0,80}\Z")
 

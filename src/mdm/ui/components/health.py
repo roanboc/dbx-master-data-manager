@@ -1,6 +1,6 @@
 """The inbox's health strip, one quiet line with "·" between its figures: "Last arrival 5 min ago · 291 read
 · 96% settled automatically · Open 31 · Breaching 3 · In the tray 1 · Last commit 6, 4 min ago"; Breaching
-is red and a link when above 0. Counts capped. Under it, only while the quality breaker has paused an
+is red and a link when above 0, and Breaching and In the tray are left out at 0, so a calm hub reads calm. Counts capped. Under it, only while the quality breaker has paused an
 entity's automatic linking, one short line per entity in the warning colour (`components.breaker`); quality
 samples count in none of these figures.
 
@@ -60,24 +60,23 @@ def _separated(items: list[Component]) -> list[Component]:
 
 def render(health: Health, now: datetime) -> Component:
     """The strip (HEALTH_STRIP's children): one quiet line of muted figures separated by "·" (styles.css
-    `.mdm-health`); Breaching turns red, a link, only when above 0. A paused entity adds its line under the
+    `.mdm-health`); Breaching shows only when above 0, red and a link, and In the tray only when above 0. A paused entity adds its line under the
     figures, with no live role (the strip is drawn again on every poll)."""
-    breaching: Component
-    if health.breaching:
-        breaching = dmc.Anchor(
-            [icon("alert"), f"Breaching {count_text(health.breaching)}"],
-            href=rail.href("breaching"),
-            className="mdm-health-item mdm-breaches",
-        )
-    else:
-        breaching = _figure("Breaching", "0")
     items: list[Component] = [
         html.Span(arrival_text(health, now), className="mdm-health-item"),
         _figure("Open", count_text(health.open_tasks)),
-        breaching,
-        _figure("In the tray", count_text(health.staged)),
-        html.Span(commit_text(health, now), className="mdm-health-item"),
     ]
+    if health.breaching:
+        items.append(
+            dmc.Anchor(
+                [icon("alert"), f"Breaching {count_text(health.breaching)}"],
+                href=rail.href("breaching"),
+                className="mdm-health-item mdm-breaches",
+            )
+        )
+    if health.staged:
+        items.append(_figure("In the tray", count_text(health.staged)))
+    items.append(html.Span(commit_text(health, now), className="mdm-health-item"))
     strip = html.Div(
         _separated(items),
         className="mdm-health",

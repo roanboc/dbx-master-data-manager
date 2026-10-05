@@ -73,6 +73,8 @@ def test_an_incompatible_version_is_refused(bare) -> None:
     doc["validation"]["rules"] = [r for r in doc["validation"]["rules"] if r["attribute"] != "website"]
     doc["sources"] = [{k: v for k, v in s.items() if k != "trust_by_attribute"} for s in doc["sources"]]
     doc["survivorship"]["attributes"].pop("website")
+    for group in doc["groups"]:
+        group["attributes"] = [name for name in group["attributes"] if name != "website"]
     bare.registry.load_doc(doc, bare.actor)
     with pytest.raises(ModelError) as raised:
         bare.registry.publish("organisation", 2, bare.actor)

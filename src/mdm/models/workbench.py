@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from mdm.models.entity_model import DEFAULT_ICON, AttributeGroup
+
 #: inbox views (the left rail); kinds come from tasks.TASK_KINDS
 TASK_VIEWS = ("mine", "team", "breaching", "snoozed", "escalated")
 #: the quality samples' own view (story 3.2): samples never appear in the task views above
@@ -806,8 +808,22 @@ class SourceView:
 
 
 @dataclass(frozen=True, slots=True)
+class EntityLook:
+    """How the workbench draws an entity: its model's icon and colour (codes, never a value)."""
+
+    icon: str = DEFAULT_ICON
+    colour: str = "gray"
+
+
+@dataclass(frozen=True, slots=True)
 class HubBadges:
     engine: str  # "DuckDB", "Postgres", "Lakebase"
     assistant: str  # "stub" or "endpoint"
     local: bool
     entities: tuple[str, ...]  # published entities
+    looks: Mapping[str, EntityLook] = field(default_factory=dict)  # entity -> its icon and colour
+    groups: Mapping[str, tuple[AttributeGroup, ...]] = field(default_factory=dict)  # entity -> its groups
+
+    def look(self, entity: str) -> EntityLook:
+        """The entity's icon and colour, as its model names them, or the generic ones."""
+        return self.looks.get(entity, EntityLook())

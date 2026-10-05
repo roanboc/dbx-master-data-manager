@@ -23,7 +23,7 @@ from mdm import capacity
 from mdm.backend.factory import open_store
 from mdm.models.canonical import utcnow
 from mdm.models.records import SourceKey
-from mdm.models.workbench import Action, CompareRow, Preview
+from mdm.models.workbench import Action, CompareRow, EntityLook, Preview
 from mdm.services.context import Hub
 from mdm.ui import context, ids, messages
 from mdm.ui.components import breaker, compare, decide, health, impact, reveal, waterfall
@@ -351,7 +351,7 @@ def test_the_health_strip_reads_capped_counts_and_relative_times() -> None:
     links = [c for c in walk(tree) if type(c).__name__ == "Anchor"]
     assert [prop(c, "href") for c in links] == ["/?view=breaching"]
     empty = health.render(samples.HEALTH_EMPTY, NOW)
-    assert text_of(empty) == "No arrival run yet · Open 0 · Breaching 0 · In the tray 0 · No commit yet"
+    assert text_of(empty) == "No arrival run yet · Open 0 · No commit yet"  # a calm hub reads calm
     assert not [c for c in walk(empty) if type(c).__name__ == "Anchor"]
     capped = replace(samples.HEALTH, open_tasks=capacity.COUNT_CAP, breaching=capacity.COUNT_CAP)
     assert "Open 999+ · Breaching 999+" in text_of(health.render(capped, NOW))
@@ -428,8 +428,10 @@ def test_the_header_is_the_title_with_its_band_and_one_muted_line() -> None:
     head = decide.header(samples.CASE_CLOSE_CALL, NOW)
     assert not [c for c in walk(head) if type(c).__name__ == "Badge"]  # plain words, no pills
     headline = next(c for c in walk(head) if "mdm-decide-headline" in classes(c))
-    assert [type(c).__name__ for c in headline.children] == ["H2", "Span"]
-    assert classes(headline.children[1]) == {"mdm-band", "mdm-band-review"}
+    # the entity's badge (the generic one, as no look is given), the title and the band
+    assert [type(c).__name__ for c in headline.children] == ["Span", "H2", "Span"]
+    assert {"mdm-entity-badge", "mdm-hue-gray"} <= classes(headline.children[0])
+    assert classes(headline.children[2]) == {"mdm-band", "mdm-band-review"}
     meta = next(c for c in walk(head) if "mdm-decide-meta" in classes(c))
     row = samples.CASE_CLOSE_CALL.row
     assert text_of(meta) == f"{row.kind_label} · crm:C000812 · Due in 7 h 40 min · Not claimed"
@@ -1843,3 +1845,13 @@ def test_the_skeleton_holds_the_split_choice_and_its_store() -> None:
         if f"{ids.INBOX_CURSOR}.data@" in c["output"] and "rowTransaction" in c["output"]
     ]
     assert settled["prevent_initial_call"] is True
+
+
+def test_a_row_carries_its_entitys_icon_and_colour_as_codes() -> None:
+    looks = {"organisation": EntityLook("building", "teal")}
+    row = inbox.grid_row(samples.ROW_CLOSE_CALL, NOW, looks=looks)
+    assert (row["entity_icon"], row["entity_hue"]) == ("building", "teal")
+    bare = inbox.grid_row(samples.ROW_CLOSE_CALL, NOW)
+    assert (bare["entity_icon"], bare["entity_hue"]) == ("entity", "gray")  # a model without a look
+    odd = inbox.grid_row(samples.ROW_CLOSE_CALL, NOW, looks={"organisation": EntityLook("rocket", "neon")})
+    assert (odd["entity_icon"], odd["entity_hue"]) == ("entity", "gray")  # never a class the page lacks

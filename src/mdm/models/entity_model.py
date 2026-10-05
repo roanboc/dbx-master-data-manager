@@ -158,6 +158,14 @@ DEFAULT_STANDARDISER: Mapping[str, str] = {"text": "text", "date": "date"}  # ev
 
 _NAME = re.compile(NAME_RE)
 _CODE = re.compile(CODE_RE)
+#: an icon's name: a code the workbench draws, or its generic glyph when it has none by that name
+_ICON = re.compile(r"^[a-z][a-z0-9-]{0,31}\Z")
+#: the icon an entity or a group gets when its YAML names none
+DEFAULT_ICON = "entity"
+#: the colours an entity may be shown in: hues the workbench draws at AA contrast in both schemes
+COLOURS = ("gray", "indigo", "teal", "grape", "orange", "cyan")
+#: the longest label a group of attributes may carry
+GROUP_LABEL_MAX = 40
 _SCHEME = re.compile(SCHEME_RE)
 _KEY_EXPR = re.compile(
     r"^\s*(?:(?P<fn>[a-z_]+)\(\s*(?P<arg>[a-z0-9_.]+)\s*(?:,\s*(?P<n>\d+)\s*)?\)|(?P<bare>[a-z0-9_.]+))\s*\Z"
@@ -330,6 +338,17 @@ class ValidationRules:
 
 
 @dataclass(frozen=True, slots=True)
+class AttributeGroup:
+    """Attributes shown together, under one label and icon ("Contact": email, phone). Presentation only:
+    matching, survivorship and storage never read it."""
+
+    name: str
+    label: str
+    icon: str
+    attributes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class EntityModel:
     entity: str
     code: str
@@ -344,6 +363,13 @@ class EntityModel:
     validation: ValidationRules
     ai_enabled: bool = False
     defaults: Mapping[str, Any] = field(default_factory=dict)  # e.g. {"calling_code": "999"}
+    icon: str = DEFAULT_ICON  # the workbench's glyph for the entity, e.g. "person"
+    colour: str = "gray"  # one of COLOURS: the entity's badge and marks
+    groups: tuple[AttributeGroup, ...] = ()  # in display order; an attribute in none shows under "Other"
+
+    def group_of(self, attribute: str) -> AttributeGroup | None:
+        """The group that lists `attribute`, or None."""
+        return next((g for g in self.groups if attribute in g.attributes), None)
 
     def attribute(self, name: str) -> Attribute:
         for attribute in self.attributes:
@@ -490,6 +516,9 @@ class _Parser:
             "display_name",
             "ai_enabled",
             "defaults",
+            "icon",
+            "colour",
+            "groups",
             "attributes",
             "sources",
             "match",
@@ -517,6 +546,7 @@ class _Parser:
             "reference",
         }
     )
+    GROUP_KEYS = frozenset({"name", "label", "icon", "attributes"})
     SOURCE_KEYS = frozenset({"system", "trust", "policy", "date_order", "versioned", "trust_by_attribute"})
     MATCH_KEYS = frozenset(
         {"version", "mode", "prior", "bands", "blocking", "comparisons", "hard_rules", "estimation"}
@@ -659,6 +689,9 @@ class _Parser:
         match = self.match(doc.get("match"), entity, by_name)
         survivorship = self.survivorship(doc.get("survivorship"), entity, by_name)
         validation = self.validation(doc.get("validation"), entity, by_name)
+        icon = self.icon(doc.get("icon"), entity, "icon")
+        colour = self.choice(doc, "colour", COLOURS, "gray", entity)
+        groups = self.groups(doc.get("groups"), entity, by_name)
         return EntityModel(
             entity=entity,
             code=code,
@@ -673,7 +706,59 @@ class _Parser:
             validation=validation,
             ai_enabled=ai_enabled,
             defaults=defaults,
+            icon=icon,
+            colour=colour,
+            groups=groups,
         )
+
+    def icon(self, value: Any, *path: Any) -> str:
+        if value is None:
+            return DEFAULT_ICON
+        if not isinstance(value, str) or not _ICON.match(value):
+            self.problem("bad_icon", *path)
+            return DEFAULT_ICON
+        return value
+
+    def groups(self, value: Any, entity: str, by_name: Mapping[str, Attribute]) -> tuple[AttributeGroup, ...]:
+        """The attribute groups: each named once, with a short label, and listing known attributes, each in
+        one group at most."""
+        if value is None:
+            return ()
+        out: list[AttributeGroup] = []
+        names: set[str] = set()
+        placed: set[str] = set()
+        for index, item in enumerate(self.sequence(value, entity, "groups")):
+            doc = self.mapping(item, entity, "groups", index, allowed=self.GROUP_KEYS)
+            if not doc:
+                continue
+            name = self.text(doc, "name", entity, "groups", index) or ""
+            if not self.name(name, entity, "groups", index, "name"):
+                continue
+            if name in names:
+                self.problem("duplicate", entity, "groups", name)
+                continue
+            names.add(name)
+            label = self.text(doc, "label", entity, "groups", name) or name
+            if len(label) > GROUP_LABEL_MAX:
+                self.problem("too_long", entity, "groups", name, "label")
+            members: list[str] = []
+            for attribute in self.sequence(doc.get("attributes"), entity, "groups", name, "attributes"):
+                if not isinstance(attribute, str) or attribute not in by_name:
+                    self.problem("unknown_attribute", entity, "groups", name, _token(attribute))
+                elif attribute in placed:
+                    self.problem("in_two_groups", entity, "groups", name, attribute)
+                else:
+                    placed.add(attribute)
+                    members.append(attribute)
+            out.append(
+                AttributeGroup(
+                    name=name,
+                    label=label,
+                    icon=self.icon(doc.get("icon"), entity, "groups", name, "icon"),
+                    attributes=tuple(members),
+                )
+            )
+        return tuple(out)
 
     def defaults(self, value: Any, entity: str) -> dict[str, Any]:
         doc = self.mapping(value, entity, "defaults")

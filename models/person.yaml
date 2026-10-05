@@ -5,6 +5,13 @@ style: consolidated
 display_name: "{given_name} {family_name}"
 ai_enabled: false
 defaults: {calling_code: "999"}          # reserved code: invented demo numbers never reach a real network
+icon: person
+colour: indigo
+groups:                                  # how the workbench shows the attributes; matching never reads it
+  - {name: identity, label: Identity, icon: id-card, attributes: [given_name, family_name, birth_date, person_ref]}
+  - {name: contact, label: Contact, icon: mail, attributes: [email, phone]}
+  - {name: location, label: Address, icon: map-pin, attributes: [postcode, city, country, addresses]}
+  - {name: lifecycle, label: Lifecycle, icon: calendar, attributes: [left_on]}
 attributes:
   - {name: given_name, type: text, masking: personal, standardise: person_name, required: true}
   - {name: family_name, type: text, masking: personal, standardise: person_name, required: true, criticality: critical}

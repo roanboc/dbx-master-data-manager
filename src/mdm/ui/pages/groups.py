@@ -67,6 +67,7 @@ def view(ctx: UiContext, entity: str | None) -> list[Component]:
         can_draw=ctx.can("batch_link"),
         role=ctx.actor.role,
         sample_base=ctx.settings.forced_sample_base,
+        looks=ctx.badges.looks,
     )
 
 
